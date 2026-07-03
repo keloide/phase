@@ -11,7 +11,8 @@ use nom::Parser;
 
 use super::oracle_effect::become_copy_except::parse_except_clause;
 use super::oracle_effect::{
-    parse_effect_chain, parse_effect_chain_with_context, try_parse_named_choice,
+    parse_effect_chain, parse_effect_chain_with_context, parse_effect_clause,
+    try_parse_named_choice,
 };
 use super::oracle_ir::context::ParseContext;
 use super::oracle_ir::replacement::ReplacementIr;
@@ -1654,7 +1655,7 @@ fn parse_as_enters_choose(norm_lower: &str, original_text: &str) -> Option<Repla
     }
 
     // Extract the "choose a ..." clause — scan_split_at_phrase returns (prefix, rest_starting_at_match)
-    let (_, choose_text) = nom_primitives::scan_split_at_phrase(norm_lower, |i| {
+    let (prefix_lower, choose_text) = nom_primitives::scan_split_at_phrase(norm_lower, |i| {
         tag::<_, _, OracleError<'_>>("choose ").parse(i)
     })?;
     let choice_type = try_parse_named_choice(choose_text)?;
@@ -1667,6 +1668,42 @@ fn parse_as_enters_choose(norm_lower: &str, original_text: &str) -> Option<Repla
             selection: crate::types::ability::TargetSelectionMode::Chosen,
         },
     );
+
+    // CR 614.1c + CR 614.1d: Some "as ~ enters" replacements carry a leading
+    // imperative before the choice (Anointed Peacekeeper: "As ~ enters the
+    // battlefield, look at an opponent's hand, then choose any card name."). We
+    // extract that middle clause by anchoring on the LAST enters-frame in the
+    // pre-"choose" prefix: this drops the whole "as <subject> enters[ the
+    // battlefield], " head AND any earlier enters-tapped sentence (Thriving
+    // Grove's first "enters"), leaving only the interposed instruction.
+    // Iterating `scan_preceded` retains the final frame match rather than
+    // `str::rfind` on raw text. All work is on `norm_lower` (lowercased) — its
+    // byte offsets do NOT map to `original_text` because `~` substitution
+    // changed the length, so the extracted slice is fed to `parse_effect_clause`
+    // (which accepts lowercased text) rather than recovered from the original.
+    fn frame(i: &str) -> nom::IResult<&str, &str, OracleError<'_>> {
+        alt((
+            tag::<_, _, OracleError<'_>>("enters the battlefield, "),
+            tag("enters, "),
+        ))
+        .parse(i)
+    }
+    let mut middle_lower = "";
+    let mut cursor = prefix_lower;
+    while let Some((_, _, rest)) = nom_primitives::scan_preceded(cursor, frame) {
+        middle_lower = rest;
+        cursor = rest;
+    }
+    let middle_lower = middle_lower.trim();
+    // Structural trailing-connector cleanup (not parsing dispatch): "..., then" /
+    // "... then" / "...," → bare instruction. `strip_suffix` is sanctioned for
+    // structural, non-dispatch string normalization.
+    let middle_lower = middle_lower
+        .strip_suffix(", then")
+        .or_else(|| middle_lower.strip_suffix(" then"))
+        .or_else(|| middle_lower.strip_suffix(','))
+        .unwrap_or(middle_lower)
+        .trim();
 
     // CR 614.1c + CR 614.1d: The Thriving land cycle ("This land enters tapped.
     // As it enters, choose a color other than <C>.") layers TWO replacement
@@ -1684,6 +1721,35 @@ fn parse_as_enters_choose(norm_lower: &str, original_text: &str) -> Option<Repla
         && !has_phrase("unless")
         && !has_phrase("if you control");
 
+    // Compose the leading imperative (if any) ahead of the persisted choice.
+    // With no middle clause this is `choose` unchanged (every existing plain
+    // `Choose` / `SetTapState.sub_ability(Choose)` anchor still parses identically).
+    let core = if middle_lower.is_empty() {
+        choose
+    } else {
+        let leading = parse_effect_clause(middle_lower, &mut ParseContext::default());
+        // Honest-coverage gate: if the interposed clause didn't parse, leave the
+        // whole line Unimplemented rather than emitting a replacement that
+        // silently drops the leading instruction (e.g. the hand-look).
+        if matches!(leading.effect, Effect::Unimplemented { .. }) {
+            return None;
+        }
+        // R3: refuse to drop peeled structural slots we are not threading here
+        // (optional / duration / for-each-derived condition / multi-target /
+        // distribute / unless-pay / an existing sub_ability we'd clobber).
+        if leading.duration.is_some()
+            || leading.sub_ability.is_some()
+            || leading.distribute.is_some()
+            || leading.multi_target.is_some()
+            || leading.condition.is_some()
+            || leading.optional
+            || leading.unless_pay.is_some()
+        {
+            return None;
+        }
+        AbilityDefinition::new(AbilityKind::Spell, leading.effect).sub_ability(choose)
+    };
+
     let execute = if enters_tapped {
         AbilityDefinition::new(
             AbilityKind::Spell,
@@ -1693,9 +1759,9 @@ fn parse_as_enters_choose(norm_lower: &str, original_text: &str) -> Option<Repla
                 state: TapStateChange::Tap,
             },
         )
-        .sub_ability(choose)
+        .sub_ability(core)
     } else {
-        choose
+        core
     };
 
     Some(
@@ -10530,6 +10596,66 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // CR 614.1c + CR 614.1d: Anointed Peacekeeper's ETB carries a leading
+    // instruction ("look at an opponent's hand") before the persisted choice.
+    // The composed Moved replacement must execute the private hand look as its
+    // "real work" and ride the persisted `Choose(CardName)` as its sub-ability —
+    // reverting the composition drops the RevealHand and yields a bare Choose.
+    #[test]
+    fn as_enters_look_at_hand_then_choose_composes_reveal_and_choice() {
+        let def = parse_replacement_line(
+            "As Anointed Peacekeeper enters the battlefield, look at an opponent's hand, then choose any card name.",
+            "Anointed Peacekeeper",
+        )
+        .expect("look-at-hand + choose ETB must produce a replacement");
+        assert_eq!(def.event, ReplacementEvent::Moved);
+        assert_eq!(def.valid_card, Some(TargetFilter::SelfRef));
+        assert!(matches!(def.mode, ReplacementMode::Mandatory));
+        let execute = def.execute.as_ref().unwrap();
+        assert!(
+            matches!(
+                &*execute.effect,
+                Effect::RevealHand { reveal: false, target: TargetFilter::Typed(tf), .. }
+                    if tf.controller == Some(ControllerRef::Opponent)
+            ),
+            "primary effect must be a private opponent-hand look, got {:?}",
+            execute.effect
+        );
+        let sub = execute
+            .sub_ability
+            .as_ref()
+            .expect("the persisted card-name choice must ride as a sub-ability");
+        assert!(
+            matches!(
+                *sub.effect,
+                Effect::Choose {
+                    choice_type: ChoiceType::CardName,
+                    persist: true,
+                    ..
+                }
+            ),
+            "sub-ability must be a persisted CardName choice, got {:?}",
+            sub.effect
+        );
+    }
+
+    // Honest-coverage gate: an interposed clause the effect parser cannot handle
+    // must bail the whole handler (None) so the line falls through to
+    // Effect::unimplemented rather than emitting a Choose that silently drops the
+    // leading instruction. Reverting the gate makes this produce a plain Choose
+    // (Some), so `.is_none()` flips.
+    #[test]
+    fn as_enters_unparseable_leading_clause_bails_out() {
+        assert!(
+            parse_as_enters_choose(
+                "as ~ enters, florble the wumpus, then choose a color.",
+                "As ~ enters, florble the wumpus, then choose a color.",
+            )
+            .is_none(),
+            "unparseable leading clause must bail the whole as-enters-choose handler"
+        );
     }
 
     #[test]
