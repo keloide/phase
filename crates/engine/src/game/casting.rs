@@ -509,6 +509,17 @@ fn restriction_scope_matches_player(
             debug_assert!(false, "ScopedPlayer should be resolved by add_restriction");
             false
         }
+        RestrictionPlayerScope::ParentObjectTargetController => {
+            // CR 109.4: resolved to `SpecificPlayer` by `add_restriction` when the
+            // restriction is created (via `parent_target_controller`), so an
+            // unresolved scope here means the object referent could not be found —
+            // fail-closed, restrict no one.
+            debug_assert!(
+                false,
+                "ParentObjectTargetController should be resolved by add_restriction"
+            );
+            false
+        }
         RestrictionPlayerScope::OpponentsOfSourceController => {
             source_controller.is_some_and(|controller| controller != caster)
         }
