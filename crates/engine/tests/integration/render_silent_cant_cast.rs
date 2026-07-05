@@ -16,6 +16,9 @@
 
 use engine::game::casting::can_cast_object_now;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+use engine::types::ability::{
+    GameRestriction, ProhibitedActivity, RestrictionExpiry, RestrictionPlayerScope,
+};
 use engine::types::card_type::CoreType;
 use engine::types::game_state::{CastingVariant, StackEntry, StackEntryKind};
 use engine::types::identifiers::{CardId, ObjectId};
@@ -51,6 +54,59 @@ fn put_spell_on_stack(runner: &mut GameRunner, controller: PlayerId) -> ObjectId
         },
     });
     spell
+}
+
+/// CR 109.4 fail-closed enforcement: if an "its controller can't cast spells"
+/// restriction is ever stored with an UNRESOLVED `ParentObjectTargetController`
+/// scope (no object referent — the malformed/hostile state that
+/// `add_restriction`'s `parent_object_target_controller_unresolved_without_object_target`
+/// proves `fill_runtime_fields` can leave), a later castability query must return
+/// "unrestricted" and MUST NOT panic. This drives the public `can_cast_object_now`
+/// against exactly that stored state — it panicked before the enforcement arm's
+/// `debug_assert!(false)` was removed, and now returns fail-closed (restrict no
+/// one). Guards `casting::restriction_scope_matches_player`.
+#[test]
+fn unresolved_parent_object_target_controller_restriction_is_fail_closed() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let mut p0_spell = scenario.add_spell_to_hand_from_oracle(P0, "P0 Spell", true, "Draw a card.");
+    p0_spell.with_mana_cost(ManaCost::Cost {
+        generic: 0,
+        shards: vec![ManaCostShard::Blue],
+    });
+    let p0_spell = p0_spell.id();
+    scenario.add_basic_land(P0, ManaColor::Blue);
+
+    let mut runner = scenario.build();
+
+    // Baseline: castable before any restriction exists.
+    assert!(
+        can_cast_object_now(runner.state(), P0, p0_spell),
+        "sanity: P0's spell must be castable before the restriction is stored"
+    );
+
+    // Store the hostile UNRESOLVED restriction directly — the exact state the
+    // sibling unit test proves `fill_runtime_fields` leaves when there is no
+    // object referent (scope stays `ParentObjectTargetController`, never lowered
+    // to `SpecificPlayer`).
+    runner
+        .state_mut()
+        .restrictions
+        .push(GameRestriction::ProhibitActivity {
+            source: ObjectId(9999),
+            affected_players: RestrictionPlayerScope::ParentObjectTargetController,
+            expiry: RestrictionExpiry::EndOfTurn,
+            activity: ProhibitedActivity::CastSpells { spell_filter: None },
+        });
+
+    // Fail-closed: the unresolved scope restricts NO ONE and must not panic. This
+    // call routes through `restriction_scope_matches_player`'s
+    // `ParentObjectTargetController` arm.
+    assert!(
+        can_cast_object_now(runner.state(), P0, p0_spell),
+        "an unresolved ParentObjectTargetController restriction must restrict no one (fail-closed)"
+    );
 }
 
 /// Put a spell on the stack whose OWNER and CONTROLLER differ: `owner` owns the
