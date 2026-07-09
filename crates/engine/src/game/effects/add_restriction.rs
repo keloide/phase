@@ -148,9 +148,6 @@ fn fill_runtime_fields(
                 // last-known information. If the referent can't be resolved (no
                 // parent object target), leave the scope unresolved — enforcement
                 // then restricts no one (fail-closed).
-                // NOTE: the owner!=controller LKI branch (CR 608.2h) — countering
-                // an opponent-OWNED spell — is not exercised by the primary
-                // integration fixture (a player countering their own-owned spell).
                 RestrictionPlayerScope::ParentObjectTargetController => {
                     if let Some(controller) =
                         crate::game::ability_utils::parent_target_controller(ability, state)
