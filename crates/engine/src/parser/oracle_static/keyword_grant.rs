@@ -40,10 +40,12 @@ pub(crate) fn parse_graveyard_granted_keyword_kind(
         value(GrantedCastKeywordKind::Flashback, tag("flashback")),
         value(GrantedCastKeywordKind::Escape, tag("escape")),
         value(GrantedCastKeywordKind::Mayhem, tag("mayhem")),
-        // CR 702.97 / CR 702.141: Varolz, Young Deathclaws (scavenge);
-        // Wire Surgeons (encore) grant activated graveyard keywords.
+        // CR 702.97 / CR 702.141 / CR 702.128: Varolz, Young Deathclaws
+        // (scavenge); Wire Surgeons (encore); Naktamun (embalm) grant
+        // activated graveyard keywords.
         value(GrantedCastKeywordKind::Scavenge, tag("scavenge")),
         value(GrantedCastKeywordKind::Encore, tag("encore")),
+        value(GrantedCastKeywordKind::Embalm, tag("embalm")),
         // CR 702.143a / CR 702.94a: Dream Devourer grants foretell, Aminatou
         // grants miracle — hand-zone cast keywords (gated by `grant_zone`).
         value(GrantedCastKeywordKind::Foretell, tag("foretell")),
@@ -119,6 +121,7 @@ fn graveyard_granted_kind_for_keyword(keyword: &Keyword) -> Option<GrantedCastKe
         GrantedCastKeywordKind::Mayhem,
         GrantedCastKeywordKind::Scavenge,
         GrantedCastKeywordKind::Encore,
+        GrantedCastKeywordKind::Embalm,
         GrantedCastKeywordKind::Foretell,
         GrantedCastKeywordKind::Miracle,
     ]
@@ -514,6 +517,47 @@ pub(crate) fn parse_spells_have_keyword(tp: &TextPair<'_>, text: &str) -> Option
             }
             return Some(def);
         }
+    }
+
+    // Pattern 4: "[type] spells have [keyword]" — the NON-possessive, all-players
+    // form (Ood Sphere: "Noncreature spells have convoke."). Planes and other
+    // global statics grant a casting keyword to EVERY player's matching spells,
+    // not just the controller's.
+    //
+    // CR 702.51a + CR 113.6b: convoke (and any casting keyword) "functions while
+    // the spell with convoke is on the stack" — it is read during casting via
+    // `granted_spell_keywords`, which consumes ONLY `StaticMode::CastWithKeyword`.
+    // The generic anthem `AddKeyword` continuous static (the fallthrough this
+    // branch preempts) applies in Layer 6 to battlefield objects and is never seen
+    // by the casting-keyword path, so the grant was runtime-inert. Emit
+    // `CastWithKeyword` so it actually functions.
+    //
+    // Unlike Pattern 1's possessive "spells you cast" form, the affected filter
+    // stays controller-agnostic: `apply_spell_keyword_subject_constraints` would
+    // force-inject `ControllerRef::You`, wrongly restricting the grant to the
+    // plane-controller's spells. The `you cast`/`you own`/graveyard subjects are
+    // already claimed by Patterns 1-3 above, so reaching here means the subject
+    // carries no possessive; the trailing noun being `spell`/`spells` (a
+    // word-boundary last-word scan, CLAUDE.md `rsplit(' ').next()` idiom) is the
+    // sole discriminator.
+    let last_word = subject.rsplit(' ').next().unwrap_or("");
+    if matches!(last_word, "spell" | "spells") {
+        // `type_part` is everything before the trailing noun. The offset idiom
+        // (`len - last_word.len()`) is correct for the last space-delimited token.
+        let type_part = subject[..subject.len() - last_word.len()].trim();
+        let base_filter = if type_part.is_empty() {
+            TargetFilter::Typed(TypedFilter::card())
+        } else {
+            parse_type_phrase(type_part).0
+        };
+        let mut def = StaticDefinition::new(StaticMode::CastWithKeyword { keyword })
+            .affected(base_filter)
+            .description(text.to_string())
+            .active_zones(vec![Zone::Battlefield]);
+        if let Some(condition) = condition.clone() {
+            def = def.condition(condition);
+        }
+        return Some(def);
     }
     None
 }
@@ -1531,6 +1575,39 @@ pub(crate) fn parse_continuous_modifications(text: &str) -> Vec<ContinuousModifi
     modifications
 }
 
+/// CR 613.4c + CR 702: In a granted-keyword "where X is its `<P/T/mana value>`"
+/// clause, "its" refers to the RECIPIENT of the grant — the creature that has the
+/// keyword — not the grant's source object. `parse_quantity_ref_complete` maps a
+/// bare "its power" / "its toughness" / "its mana value" to `Source` scope (the
+/// correct default in a self-referential context); rebind those to `Recipient` so
+/// the continuous layer resolves the value against each affected creature
+/// (Infantry Shield: "Equipped creature has … mobilize X, where X is its power" →
+/// the equipped creature's power). Self-grants (subject `~`) are unaffected — for
+/// them the recipient IS the source, so both scopes resolve identically.
+fn rebind_source_scope_to_recipient(
+    qty: crate::types::ability::QuantityRef,
+) -> crate::types::ability::QuantityRef {
+    use crate::types::ability::{ObjectScope, QuantityRef};
+    match qty {
+        QuantityRef::Power {
+            scope: ObjectScope::Source,
+        } => QuantityRef::Power {
+            scope: ObjectScope::Recipient,
+        },
+        QuantityRef::Toughness {
+            scope: ObjectScope::Source,
+        } => QuantityRef::Toughness {
+            scope: ObjectScope::Recipient,
+        },
+        QuantityRef::ObjectManaValue {
+            scope: ObjectScope::Source,
+        } => QuantityRef::ObjectManaValue {
+            scope: ObjectScope::Recipient,
+        },
+        other => other,
+    }
+}
+
 pub(crate) fn push_grant_clause_modifications(
     modifications: &mut Vec<ContinuousModification>,
     part: &str,
@@ -1583,7 +1660,9 @@ pub(crate) fn push_grant_clause_modifications(
                 {
                     modifications.push(ContinuousModification::AddDynamicKeyword {
                         kind,
-                        value: QuantityExpr::Ref { qty: qty_ref },
+                        value: QuantityExpr::Ref {
+                            qty: rebind_source_scope_to_recipient(qty_ref),
+                        },
                     });
                     return;
                 }

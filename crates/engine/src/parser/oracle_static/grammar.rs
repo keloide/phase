@@ -6,7 +6,7 @@ use super::prelude::*;
 #[allow(unused_imports)]
 use super::support::*;
 use crate::types::ability::PlayerFilter;
-use nom::character::complete::{alphanumeric1, digit1, one_of};
+use nom::character::complete::{alphanumeric1, char, digit1, one_of};
 use nom::combinator::{all_consuming, not, opt, peek, recognize};
 use nom::sequence::{delimited, pair};
 
@@ -122,6 +122,10 @@ pub(crate) fn rule_static_affected_is_player_scope(affected: &TargetFilter) -> b
             | TargetFilter::OriginalController
             | TargetFilter::ScopedPlayer
             | TargetFilter::SpecificPlayer { .. }
+            // CR 607.2d / CR 607.2m (by analogy): "players who last chose <anchor>"
+            // is a player-scope subject for rule statics (Two Streams Facility's
+            // land-drop grant).
+            | TargetFilter::PlayerWhoChoseLabel { .. }
             | TargetFilter::SourceChosenPlayer
             | TargetFilter::ParentTargetController
             | TargetFilter::ParentTargetOwner
@@ -1320,7 +1324,10 @@ pub(crate) fn parse_quoted_ability(text: &str) -> AbilityDefinition {
             });
         // CR 702.142b: Tag as Boast for meta-reference effects.
         def.ability_tag = Some(AbilityTag::Boast);
-        def.description = Some(format!("Boast \u{2014} {}", rest_original));
+        def.description = Some(format!(
+            "Boast \u{2014} {}",
+            sanitize_granting_placeholder(rest_original)
+        ));
         return def;
     }
 
@@ -1369,14 +1376,28 @@ pub(crate) fn parse_quoted_ability(text: &str) -> AbilityDefinition {
             parse_effect_chain_with_context(&effect_text, AbilityKind::Activated, &mut ctx);
         def.cost = Some(cost);
         def.activation_restrictions.extend(constraints.restrictions);
-        def.description = Some(text.to_string());
+        // CR 601.2f: Fold a trailing self-referential "This ability costs {X}
+        // less to activate, where X is ~'s power" node into `cost_reduction`
+        // (the same AST-level extractor standalone activated abilities use). The
+        // reduction's `Power{Source}` is host-referential (the equipped
+        // creature), an untouched third channel — no interaction with the
+        // GrantingObject cost/effect rewrite. Enables The Dominion Bracelet.
+        crate::parser::oracle::extract_cost_reduction_from_chain(&mut def);
+        def.description = Some(sanitize_granting_placeholder(text));
         def
     } else {
         // No cost separator — treat as spell-like ability text
         let mut def = parse_effect_chain(text, AbilityKind::Spell);
-        def.description = Some(text.to_string());
+        def.description = Some(sanitize_granting_placeholder(text));
         def
     }
+}
+
+/// CR 201.5a: Descriptions render the granter self-reference as `~` (matching
+/// pre-fix display); the `GRANTING_SELF_PLACEHOLDER` marker is a parse-time
+/// signal only and must never leak the raw private-use char into stored text.
+fn sanitize_granting_placeholder(text: &str) -> String {
+    text.replace(crate::parser::oracle_util::GRANTING_SELF_PLACEHOLDER, "~")
 }
 
 /// True when `trimmed_prefix` is a bracketed planeswalker loyalty cost (`[+N]`,
@@ -1508,6 +1529,26 @@ pub(crate) fn extract_lose_keyword_clause(text: &str) -> Option<&str> {
     }
 
     None
+}
+
+/// Parse a leading P/T pair from Oracle text, returning values and remainder.
+///
+/// CR 613.4b: Layer 7b base power/toughness literals after "with base power
+/// and toughness". Composes the signed [`nom_primitives::parse_pt_modifier`]
+/// path and an unsigned `N/N` path so trailing clause text (e.g. "and loses
+/// all abilities") is left in the nom remainder for downstream parsers.
+pub(crate) fn parse_pt_mod_with_remainder(input: &str) -> OracleResult<'_, (i32, i32)> {
+    let input = input.trim();
+    alt((
+        nom_primitives::parse_pt_modifier,
+        (
+            nom_primitives::parse_number,
+            char('/'),
+            nom_primitives::parse_number,
+        )
+            .map(|(power, _, toughness)| (power as i32, toughness as i32)),
+    ))
+    .parse(input)
 }
 
 /// Parse a P/T modifier like "+2/+3", "-1/-1", "+3/-2" from Oracle text.

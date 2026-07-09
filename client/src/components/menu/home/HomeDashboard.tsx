@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 
-import { ACTIVE_DECK_KEY } from "../../../constants/storage";
+import { ACTIVE_DECK_KEY, isRandomDeckSelection } from "../../../constants/storage";
 import { MenuShell } from "../MenuShell";
 import { MenuActionTile, type MenuTileTone } from "../MenuActionTile";
 import type { TileMotif } from "../TileMotif";
@@ -172,7 +172,9 @@ function ActiveDeckCard() {
   // Resolve the deck's representative card so the card can show real art, the
   // same way the deck tiles do. Hook runs unconditionally (Rules of Hooks);
   // an empty name yields no src and falls back to the loading shimmer.
-  const repCard = name ? getRepresentativeCard(name) : null;
+  const randomDeckSelected = isRandomDeckSelection(name);
+  const displayName = randomDeckSelected ? t("myDecks.randomDeckTile") : name;
+  const repCard = name && !randomDeckSelected ? getRepresentativeCard(name) : null;
   const { src: artSrc } = useCardImage(repCard ?? "", { size: "art_crop" });
 
   if (!name) {
@@ -183,8 +185,8 @@ function ActiveDeckCard() {
       </button>
     );
   }
-  const count = getDeckCardCount(name);
-  const colors = getDeckColorIdentity(name);
+  const count = randomDeckSelected ? 0 : getDeckCardCount(name);
+  const colors = randomDeckSelected ? [] : getDeckColorIdentity(name);
   return (
     <button
       type="button"
@@ -212,8 +214,10 @@ function ActiveDeckCard() {
       </div>
       {/* Body: deck name + card count. */}
       <div className="flex flex-1 flex-col justify-center gap-1 px-4 py-3">
-        <div className="truncate font-display text-[1.12rem] font-semibold tracking-[-0.02em] text-fg">{name}</div>
-        <span className="text-xs text-fg-muted tabular-nums">{t("home.dashboard.cards", { count })}</span>
+        <div className="truncate font-display text-[1.12rem] font-semibold tracking-[-0.02em] text-fg">{displayName}</div>
+        {!randomDeckSelected && (
+          <span className="text-xs text-fg-muted tabular-nums">{t("home.dashboard.cards", { count })}</span>
+        )}
       </div>
     </button>
   );
@@ -265,6 +269,34 @@ function CoverageCard() {
   );
 }
 
+/**
+ * Slim entry point to the Replay Viewer (`/replay`). Uses an inline SVG
+ * rather than a `/icons/sections/*.png` asset — those are curated section
+ * icons and this is a lightweight secondary link, not a primary bento tile.
+ */
+function ReplayLinkButton() {
+  const { t } = useTranslation("replay");
+  const navigate = useNavigate();
+  return (
+    <button
+      type="button"
+      onClick={() => navigate("/replay")}
+      className={`${INFO_CARD} flex w-full cursor-pointer items-center gap-2 text-left transition-colors hover:border-hairline-hover`}
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 20 20"
+        fill="currentColor"
+        aria-hidden="true"
+        className="h-3.5 w-3.5 shrink-0 opacity-70"
+      >
+        <path d="M3 4a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4Zm5 2.5v7l6-3.5-6-3.5Z" />
+      </svg>
+      <span className={SECTION_LABEL}>{t("viewer.title")}</span>
+    </button>
+  );
+}
+
 /* ------------------------------------------------------------- dashboard --- */
 export function HomeDashboard() {
   const { t } = useTranslation("menu");
@@ -300,6 +332,7 @@ export function HomeDashboard() {
           <ActiveDeckCard />
           <CoverageCard />
         </div>
+        <ReplayLinkButton />
       </div>
     </MenuShell>
   );
