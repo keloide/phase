@@ -213,31 +213,7 @@ pub fn record_spell_cast(
     );
 }
 
-/// CR 117.1 + CR 202.3d + CR 702.102b: The single authority for projecting a
-/// spell object into a [`SpellCastRecord`]. Every consumer — spell-cast history
-/// (`record_spell_cast_from_zone`), live cost-modifier / cast-prohibition filters
-/// (`spell_record_for_restrictions`, `spell_cast_record_from_object`), and
-/// per-turn cast-limit filters — routes through here so the spell's mana value and
-/// colors come from the split-aware `spell_mana_value`/`spell_colors` authority. A
-/// FUSED split spell therefore records the COMBINED value of both halves rather
-/// than its front half, so `Cmc`/`HasColor`/`ColorCount`/multicolored filters see
-/// the fused spell (CR 709.4d). `spell_mana_value` honors announced X on the stack
-/// for non-fused spells (CR 202.3e).
-pub(crate) fn spell_cast_record(
-    obj: &GameObject,
-    from_zone: Zone,
-    cast_variant: crate::types::game_state::CastingVariant,
-) -> SpellCastRecord {
-    // CR 702.102b: A spell is fused when the persisted `fused_split_spell` marker
-    // is set (payment-time / on-stack casts) OR the caller is projecting a
-    // pre-payment `CastingVariant::Fuse` cast whose marker is not yet set (option
-    // enumeration / cast preparation on an immutable `&GameState`). Both must
-    // present the COMBINED characteristics of the two halves.
-    let fused = cast_variant == crate::types::game_state::CastingVariant::Fuse;
-    spell_cast_record_for(obj, from_zone, cast_variant, fused)
-}
-
-/// Fuse-aware sibling of [`spell_cast_record`]. `fused_hint` is the caller's
+/// The single fuse-aware authority for spell-cast record projection. `fused_hint` is the caller's
 /// pre-payment determination that the projected spell is a fused split spell
 /// (CR 702.102b), for seams that know the `CastingVariant::Fuse` intent before the
 /// `fused_split_spell` marker is set. The effective fused-ness is `fused_hint` OR
