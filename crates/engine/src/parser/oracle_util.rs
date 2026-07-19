@@ -456,9 +456,10 @@ pub fn parse_count_expr(text: &str) -> Option<(QuantityExpr, &str)> {
         }
     }
 
-    // CR 609.3: "that many" / "that much" — chained-effect amount referring
-    // to the previous effect's count. Resolves to `EventContextAmount` (which
-    // falls back to `state.last_effect_count` for chained sub-ability
+    // CR 608.2c: "that many" / "that much" — an anaphoric back-reference to the
+    // previous effect's count (read the whole text and apply the rules of
+    // English). Resolves to `EventContextAmount` (which falls back to
+    // `state.last_effect_count` for chained sub-ability
     // continuations). Composes with the "twice"/"three times" multipliers
     // above so "twice that many cards" parses as Multiply{2, EventContextAmount}.
     if let Some(((), rest)) = super::oracle_nom::bridge::nom_on_lower(text, &lower, |i| {
@@ -1389,6 +1390,24 @@ pub fn has_unconsumed_conditional(text: &str) -> bool {
         .any(|kw| lower.contains(kw))
 }
 
+/// CR 201.5c: Some cards refer to themselves by a shortened printed name.
+///
+/// For comma-form names, the short self-reference is the span before the comma
+/// after removing MTGJSON's structural Alchemy `A-` prefix.
+pub(crate) fn comma_short_self_name(card_name: &str) -> Option<&str> {
+    let effective_name = if card_name.as_bytes().get(0..2) == Some(b"A-") {
+        &card_name[2..]
+    } else {
+        card_name
+    };
+    let (_, (short_name, _)) = nom_primitives::split_once_on(effective_name, ", ").ok()?;
+    if short_name.len() >= 2 {
+        Some(short_name)
+    } else {
+        None
+    }
+}
+
 /// Replace all occurrences of `needle` in `haystack` with `replacement`,
 /// case-sensitively, only at word boundaries.
 fn replace_all_words_case_sensitive(haystack: &str, needle: &str, replacement: &str) -> String {
@@ -1459,6 +1478,40 @@ fn precedes_type_addition_clause(haystack: &str, end: usize) -> bool {
     parse_in_addition_type_probe(&lower).is_ok()
 }
 
+/// CR 205.3j + CR 205.2: A subtype-word occurrence immediately followed by a
+/// core-type word is a TYPE reference ("a Gideon planeswalker", "Sliver
+/// creatures"), never a self-reference — the type-adjective position is
+/// grammatically incompatible with a name subject, which is always followed
+/// by a verb ("Gideon becomes …"). Keep such occurrences literal so
+/// type-phrase parsers (e.g. the "you control a Gideon planeswalker"
+/// condition on Gideon of the Trials' emblem) can read the subtype.
+/// Per-occurrence sibling of `precedes_type_addition_clause`.
+///
+/// Scoped to true CR 205.2a core-type words: the informational "card"/"spell"
+/// suffixes are deliberately excluded, because "a <Subtype> card" phrases
+/// (Curse of Misfortunes' "a Curse card that doesn't have the same name as
+/// …") ride search-filter suffix grammar that today parses only through the
+/// `~`-normalized short name; keeping them normalizing preserves that
+/// behavior. Extend to "card"/"spell" only together with search-filter
+/// support for literal subtype words.
+/// `end` is the byte index just past the matched word.
+fn precedes_core_type_word(haystack: &str, end: usize) -> bool {
+    let next_word = haystack[end..]
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_ascii_lowercase();
+    // Accept the regular plural too ("Sliver creatures").
+    [
+        next_word.as_str(),
+        // allow-noncombinator: plural fold on a word already extracted by split_whitespace (structural, not parsing dispatch)
+        next_word.strip_suffix('s').unwrap_or(""),
+    ]
+    .iter()
+    .any(|word| is_core_type_name(word) && !matches!(*word, "card" | "spell"))
+}
+
 fn replace_all_words_case_sensitive_preserving_subtype_status_refs(
     haystack: &str,
     needle: &str,
@@ -1478,6 +1531,7 @@ fn replace_all_words_case_sensitive_preserving_subtype_status_refs(
             && pos >= last_end
             && !follows_subtype_status_qualifier(haystack, pos)
             && !precedes_type_addition_clause(haystack, end)
+            && !precedes_core_type_word(haystack, end)
         {
             result.push_str(&haystack[last_end..pos]);
             result.push_str(replacement);
@@ -1655,6 +1709,31 @@ fn unmask_card_name_keyword_action(text: String, originals: &[String]) -> String
 
 fn parse_card_named_literal_prefix(input: &str) -> OracleResult<'_, usize> {
     alt((
+        // CR 201.2a + CR 201.5c: a meld RESULT name ("meld them into Titania,
+        // Gaea Incarnate") is a distinct object's literal name, not a self-ref to
+        // the instigator. Mask it during `~` normalization so a legend whose
+        // result shares its pre-comma short name (Titania, Voice of Gaea →
+        // "Titania, Gaea Incarnate"; Urza, Lord Protector → "Urza, Planeswalker")
+        // is not folded to "~, …" — a corrupted result string that later misses
+        // the runtime meld-result registry lookup (green-but-dead). The name span
+        // terminates at "." (`parse_card_named_clause_boundary`), so the whole
+        // comma-bearing result masks as one unit. Results that share no token with
+        // the instigator (Gisela → Brisela) are already clean; the mask is a no-op
+        // for them. Improvement-only for the activated melds' result string
+        // (Urza, Lord Protector) — their activated-meld runtime path is unchanged.
+        value("meld them into ".len(), tag("meld them into ")),
+        value("permanents named ".len(), tag("permanents named ")),
+        value("permanent named ".len(), tag("permanent named ")),
+        value("creatures named ".len(), tag("creatures named ")),
+        value("creature named ".len(), tag("creature named ")),
+        value("artifacts named ".len(), tag("artifacts named ")),
+        value("artifact named ".len(), tag("artifact named ")),
+        value("enchantments named ".len(), tag("enchantments named ")),
+        value("enchantment named ".len(), tag("enchantment named ")),
+        value("lands named ".len(), tag("lands named ")),
+        value("land named ".len(), tag("land named ")),
+        value("spells named ".len(), tag("spells named ")),
+        value("spell named ".len(), tag("spell named ")),
         value("cards named ".len(), tag("cards named ")),
         value("card named ".len(), tag("card named ")),
     ))
@@ -1827,10 +1906,11 @@ fn card_named_literal_span_len(lower: &str) -> usize {
         .unwrap_or(lower.len())
 }
 
-/// CR 201.2 / CR 201.5: the text after "card(s) named ..." is a literal card
-/// name, not a self-reference to the source card. Mask only that literal name
-/// span while `normalize_card_name_refs` runs so first-word fallback cannot
-/// rewrite cards like Emerald Collector's "Mox Emerald" into "Mox ~".
+/// CR 201.2 / CR 201.5: the text after "[object] named ..." is a literal name,
+/// not a self-reference to the source card. Mask only that literal name span
+/// while `normalize_card_name_refs` runs so first-word fallback cannot rewrite
+/// cards like Emerald Collector's "Mox Emerald" into "Mox ~" or Kookus's
+/// "Keeper of Kookus" into "Keeper of ~".
 fn mask_card_named_literal_spans(text: &str) -> (String, Vec<String>) {
     let lower = text.to_ascii_lowercase();
     let mut masked = String::with_capacity(text.len());
@@ -1868,6 +1948,178 @@ fn unmask_card_named_literal_spans(text: String, originals: &[String]) -> String
     result
 }
 
+/// CR 201.5a: The granting-object self-reference marker. Emitted by
+/// [`mask_granting_self_reference_in_quotes`] when a card's own printed name
+/// appears in a self-reference (verb-object) position inside a *quoted granted
+/// body*. Unlike the other placeholders in this module it is deliberately NOT
+/// unmasked at the end of normalization — it survives into the parser, where
+/// `parse_self_reference` and the cost self-ref combinators map it to
+/// `TargetFilter::GrantingObject` (concretized to the granting object at
+/// grant-clone time). Any un-migrated parser path that still sees it degrades it
+/// to `~` (host `SelfRef`) via a final cleanup in `parse_quoted_ability`, so a
+/// missed site is never worse than the pre-fix host binding.
+pub(crate) const GRANTING_SELF_PLACEHOLDER: &str = "\u{E0002}";
+
+/// CR 201.5a: Self-reference verb-object trigger phrases — the positions whose
+/// downstream combinator (`parse_cost_self_reference` in `oracle_cost.rs` /
+/// `parse_self_reference` in `oracle_nom/target.rs`) actually CONSUMES the
+/// placeholder as `TargetFilter::GrantingObject`. The masker is an ALLOWLIST: an
+/// in-quote name occurrence is marked ONLY when its immediately-preceding text
+/// ends with one of these. This keeps the placeholder confined to positions that
+/// consume it (so it never survives unconsumed) and leaves every other position
+/// — QuantityRef, condition, damage-source, exclusion, name-filter (`named
+/// <name>`), and nullary self-costs (`unattach`/`tap` <name>) — to normalize to
+/// `~` exactly as before, preserving byte-identical pre-fix parse output.
+///
+/// Singular `counter on ` (PutCounter target: "put a <kind> counter on <name>")
+/// is included; plural `counters on ` (QuantityRef: "number of <kind> counters
+/// on <name>") is deliberately NOT a prefix of it, so the two are distinguished.
+const GRANTER_SELF_REF_VERB_PREFIXES: &[&str] = &[
+    "sacrifice ",  // Sacrifice cost
+    "exile ",      // Exile cost
+    "return ",     // ReturnToHand cost / Bounce effect
+    "counter on ", // PutCounter target ("put a <kind> counter on <name>")
+];
+// Deliberately excluded: `destroy ` / `control of ` — no measured class card
+// references its own name cleanly in those positions (Shuriken's "gains control
+// of Shuriken unless it was unattached from a Ninja" carries an unless-rider that
+// parses to `Unimplemented`, so masking it would leak the placeholder rather than
+// producing GrantingObject). Add such a verb only with a card that provably
+// consumes the placeholder there. Nullary self-costs (`unattach`/`tap <name>`)
+// are also excluded — they carry no TargetFilter and expect `~`.
+
+/// CR 201.5a: Within each double-quoted region of `text`, replace occurrences of
+/// the card's own name with [`GRANTING_SELF_PLACEHOLDER`] ONLY in a
+/// self-reference verb-object position (see [`GRANTER_SELF_REF_VERB_PREFIXES`]),
+/// so a granted ability's by-name reference to its GRANTING object survives
+/// distinct from the host self-reference (`~`, "this creature").
+///
+/// Bounded to quoted regions and to consumer-taught verb-object positions:
+/// everywhere else (outside quotes, or in-quote QuantityRef / condition /
+/// damage-source / exclusion / name-filter positions) the card name still
+/// normalizes to `~` (host self-ref), byte-identical to pre-fix. Only the
+/// deterministic proper-noun variants (full multi-word name and comma-separated
+/// short name) are masked, mirroring `normalize_card_name_refs` strategies 1–2;
+/// the risky single-word / of-short fallbacks are skipped to avoid matching
+/// English words.
+fn mask_granting_self_reference_in_quotes(text: &str, card_name: &str) -> String {
+    // allow-noncombinator: structural masking of a card-name self-reference
+    // before `~` normalization (mirrors `mask_card_name_keyword_action`), not
+    // parsing dispatch.
+    // allow-noncombinator: strip MTGJSON A- prefix (structural, mirrors normalize_card_name_refs)
+    let effective_name = card_name.strip_prefix("A-").unwrap_or(card_name);
+    // (name, case_sensitive). Multi-word / comma-short are case-insensitive
+    // (proper nouns); a single-word name is matched case-sensitively so it only
+    // hits the capitalized card-name occurrence — mirroring
+    // `normalize_card_name_refs`' single-word discipline. Position-gating (the
+    // verb-object allowlist) makes even single-word masking safe here.
+    let mut variants: Vec<(&str, bool)> = Vec::new();
+    if effective_name.contains(' ') {
+        variants.push((effective_name, false));
+    } else if effective_name.len() >= 3 {
+        // `>= 3`: skip 1-2 char names, matching normalize_card_name_refs guards.
+        variants.push((effective_name, true));
+    }
+    // allow-noncombinator: comma-short name extraction (structural, not parsing dispatch)
+    if let Some(comma_pos) = effective_name.find(", ") {
+        let short = &effective_name[..comma_pos];
+        // `>= 2`: matches the comma-short guard in `normalize_card_name_refs`.
+        if short.len() >= 2 && short.contains(' ') {
+            variants.push((short, false));
+        }
+    }
+    if variants.is_empty() {
+        return text.to_string();
+    }
+    // Segments split on `"`: odd indices are inside a quoted region.
+    let mut result = String::with_capacity(text.len());
+    for (seg_idx, segment) in text.split('"').enumerate() {
+        if seg_idx > 0 {
+            result.push('"');
+        }
+        if seg_idx % 2 == 1 {
+            let mut masked = segment.to_string();
+            for &(name, case_sensitive) in &variants {
+                masked = mask_name_occurrences_in_segment(&masked, name, case_sensitive);
+            }
+            result.push_str(&masked);
+        } else {
+            result.push_str(segment);
+        }
+    }
+    result
+}
+
+/// Word-boundary-aware, case-insensitive replacement of `name` occurrences with
+/// [`GRANTING_SELF_PLACEHOLDER`] within a single (already inside-quotes)
+/// `segment`, masking ONLY occurrences in a self-reference verb-object position
+/// ([`GRANTER_SELF_REF_VERB_PREFIXES`]).
+fn mask_name_occurrences_in_segment(segment: &str, name: &str, case_sensitive: bool) -> String {
+    // allow-noncombinator: structural occurrence masking mirroring
+    // `mask_card_name_keyword_action`, not parsing dispatch.
+    let lower_seg = segment.to_ascii_lowercase();
+    let lower_name = name.to_ascii_lowercase();
+    // Case-sensitive matching searches the original segment; case-insensitive
+    // searches the lowercased copy. The verb-object lookbehind always uses the
+    // lowercased prefix.
+    let (haystack, needle): (&str, &str) = if case_sensitive {
+        (segment, name)
+    } else {
+        (lower_seg.as_str(), lower_name.as_str())
+    };
+    let mut out = String::with_capacity(segment.len());
+    let mut rest = segment;
+    let mut hay_rest = haystack;
+    while let Some(idx) = hay_rest.find(needle) {
+        let after = idx + needle.len();
+        let before_ok = idx == 0
+            || !rest[..idx]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric());
+        let after_ok = after >= rest.len()
+            || !rest[after..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric());
+        // `rest` is always a tail slice of `segment`, so the absolute start of
+        // this occurrence is recoverable for the verb-object lookbehind.
+        let abs_start = segment.len() - rest.len() + idx;
+        let prefix_lower = segment[..abs_start].to_ascii_lowercase();
+        // CR 201.5a: mask (→ GrantingObject) ONLY in a self-reference verb-object
+        // position a downstream self-ref combinator consumes. Positions NOT in the
+        // allowlist — QuantityRef ("... counters on <name>"), condition,
+        // damage-source ("dealt ... by <name>"), exclusion ("other than <name>"),
+        // name-filter ("named <name>"), nullary self-costs ("unattach/tap <name>")
+        // — are left to normalize to `~` (host), byte-identical to pre-fix.
+        //
+        // KNOWN CR 201.5a FOLLOW-UP: the declined non-verb-object granter-name
+        // references (QuantityRef / condition / damage-source / exclusion) host-bind
+        // today but per CR 201.5a should bind to the GRANTER — e.g. Gutter Grime's
+        // token counting "slime counters on Gutter Grime" should count the granting
+        // enchantment's counters, not the token's. Restoring the host binding here
+        // is not a new regression (it is the pre-fix behavior); the correct
+        // granter binding for these channels is a deferred fix-sweep, and this
+        // guard is the boundary that sweep must extend.
+        // allow-noncombinator: verb-object lookbehind (structural masking, not parsing dispatch)
+        let is_self_ref_object = before_ok
+            && after_ok
+            && GRANTER_SELF_REF_VERB_PREFIXES
+                .iter()
+                .any(|p| prefix_lower.ends_with(p));
+        if is_self_ref_object {
+            out.push_str(&rest[..idx]);
+            out.push_str(GRANTING_SELF_PLACEHOLDER);
+        } else {
+            out.push_str(&rest[..after]);
+        }
+        rest = &rest[after..];
+        hay_rest = &hay_rest[after..];
+    }
+    out.push_str(rest);
+    out
+}
+
 pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
     let pre = mask_ring_tempts_you_phrase(text);
     // CR 701.40a/701.58a/701.62a: protect the keyword-action body verb on cards
@@ -1887,6 +2139,11 @@ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
     // "A-" doesn't cling to a `~` placeholder when the suffix is replaced.
     // Both case-variants ("A-…" and "a-…") show up in normalized text.
     let mut result = text.to_string();
+    // CR 201.5a: mark the card's own name inside quoted granted bodies as a
+    // granting-object self-reference (GRANTING_SELF_PLACEHOLDER) BEFORE it
+    // collapses to `~` below. Bounded to quoted regions and skips `named <name>`
+    // filter positions, so only a granter self-ref is marked.
+    result = mask_granting_self_reference_in_quotes(&result, card_name);
     // allow-noncombinator: structural detection of MTGJSON A-/a- card-name prefix (not parsing)
     if card_name.starts_with("A-") || card_name.starts_with("a-") {
         let prefixed_upper = format!("A-{effective_name}");
@@ -1932,11 +2189,8 @@ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
     // Part-Time Mutant" (full form, inside an except clause). The earlier
     // `replace_all_words` is word-boundary-aware, so re-running on the
     // residue cannot re-touch a `~` produced by the prior pass.
-    if let Some(comma_pos) = effective_name.find(", ") {
-        let short_name = &effective_name[..comma_pos];
-        if short_name.len() >= 2 {
-            result = replace_all_words(&result, short_name, "~");
-        }
+    if let Some(short_name) = comma_short_self_name(card_name) {
+        result = replace_all_words(&result, short_name, "~");
     }
 
     // "Of"-based short name: "Rosie Cotton of South Lane" → "Rosie Cotton"
@@ -1994,7 +2248,21 @@ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
                 && !subtype_in_type_change_context
                 && !of_short_name_collides_with_possessive_zone_phrase(&result, short_name)
             {
-                result = replace_all_words(&result, short_name, "~");
+                // CR 205.3j + CR 201.3a: when the short name is also a subtype
+                // word ("Gideon of the Trials" → "Gideon", a planeswalker
+                // type), an occurrence used as a type adjective ("a Gideon
+                // planeswalker") must stay literal while subject occurrences
+                // ("Gideon becomes …") still normalize to `~`. Route through
+                // the per-occurrence preserving replacer — the same replacer
+                // (and case-sensitivity precedent) the single-word subtype
+                // name branch above already uses.
+                result = if is_subtype_word(&lower_short) {
+                    replace_all_words_case_sensitive_preserving_subtype_status_refs(
+                        &result, short_name, "~",
+                    )
+                } else {
+                    replace_all_words(&result, short_name, "~")
+                };
             }
         }
     }
@@ -2216,6 +2484,41 @@ mod tests {
     }
 
     #[test]
+    fn normalize_masks_shared_token_meld_result_name() {
+        // CR 201.2a + CR 201.5c: a meld RESULT whose name shares its instigator's
+        // pre-comma short token must not be folded to `~`. Titania, Voice of Gaea →
+        // "Titania, Gaea Incarnate" and Urza, Lord Protector → "Urza, Planeswalker"
+        // both share the leading legendary token; the "meld them into " mask arm
+        // protects the whole comma-bearing result span so the result string stays
+        // verbatim (a corrupted "~, …" would later miss the runtime meld registry).
+        assert_eq!(
+            normalize_card_name_refs(
+                "you both own and control Titania, Voice of Gaea and a land named Argoth, \
+                 Sanctum of Nature, exile them, then meld them into Titania, Gaea Incarnate.",
+                "Titania, Voice of Gaea"
+            ),
+            "you both own and control ~ and a land named Argoth, Sanctum of Nature, exile \
+             them, then meld them into Titania, Gaea Incarnate."
+        );
+        assert_eq!(
+            normalize_card_name_refs(
+                "exile them, then meld them into Urza, Planeswalker.",
+                "Urza, Lord Protector"
+            ),
+            "exile them, then meld them into Urza, Planeswalker."
+        );
+        // Control: a result sharing no token with its instigator was already clean
+        // and stays clean (the mask is a no-op).
+        assert_eq!(
+            normalize_card_name_refs(
+                "exile them, then meld them into Brisela, Voice of Nightmares.",
+                "Gisela, the Broken Blade"
+            ),
+            "exile them, then meld them into Brisela, Voice of Nightmares."
+        );
+    }
+
+    #[test]
     fn normalize_preserves_keyword_action_card_name_regenerate() {
         // CR 701.19a: the card Regenerate's own name IS the keyword-action verb.
         // `mask_card_name_keyword_action` must protect the leading verb from `~`
@@ -2269,6 +2572,46 @@ mod tests {
                 "Manifest Dread"
             ),
             "Manifest dread. A manifested permanent you control gets +1/+1."
+        );
+    }
+
+    #[test]
+    fn normalize_of_short_name_keeps_subtype_type_reference_literal() {
+        // CR 205.3j + CR 201.3a: "Gideon of the Trials" — the of-derived short
+        // name "Gideon" is also a planeswalker type. A subject occurrence
+        // ("Gideon becomes …") normalizes to `~`, while a type-adjective
+        // occurrence ("a Gideon planeswalker") must stay literal so the
+        // emblem's "you control a Gideon planeswalker" condition can parse.
+        // Full three-line Oracle text, production-shaped (normalization runs
+        // once over the whole text).
+        let text = "[+1]: Until your next turn, prevent all damage target permanent would deal.\n[0]: Until end of turn, Gideon becomes a 4/4 Human Soldier creature with indestructible that's still a planeswalker. Prevent all damage that would be dealt to him this turn.\n[0]: You get an emblem with \"As long as you control a Gideon planeswalker, you can't lose the game and your opponents can't win the game.\"";
+        let normalized = normalize_card_name_refs(text, "Gideon of the Trials");
+        // Subject occurrence ("Gideon becomes") folds to `~`; the type-adjective
+        // occurrence ("a Gideon planeswalker") stays literal — asserted against
+        // the full normalized text so no other span silently changes.
+        assert_eq!(
+            normalized,
+            "[+1]: Until your next turn, prevent all damage target permanent would deal.\n[0]: Until end of turn, ~ becomes a 4/4 Human Soldier creature with indestructible that's still a planeswalker. Prevent all damage that would be dealt to him this turn.\n[0]: You get an emblem with \"As long as you control a Gideon planeswalker, you can't lose the game and your opponents can't win the game.\""
+        );
+    }
+
+    #[test]
+    fn normalize_of_short_name_curse_of_misfortunes_keeps_card_suffix_normalizing() {
+        // CR 205.3j + CR 201.3a: Curse of Misfortunes — the sensitive sibling
+        // the of-branch guard comment names. The `precedes_core_type_word`
+        // probe is scoped to true CR 205.2a core-type words, so the
+        // informational "card" suffix does NOT suppress replacement: both
+        // occurrences keep today's `~` normalization (the search-filter
+        // suffix grammar parses through the normalized short name; keeping
+        // this pinned prevents a coverage flip on this card).
+        let text = "At the beginning of your upkeep, you may search your library for a Curse card that doesn't have the same name as a Curse attached to enchanted player, put it onto the battlefield attached to that player, then shuffle.";
+        let normalized = normalize_card_name_refs(text, "Curse of Misfortunes");
+        // Both occurrences keep today's `~` normalization ("card" is an
+        // informational suffix, not a CR 205.2a core type) — asserted against the
+        // full normalized text so a coverage flip on this card cannot slip past.
+        assert_eq!(
+            normalized,
+            "At the beginning of your upkeep, you may search your library for a ~ card that doesn't have the same name as a ~ attached to enchanted player, put it onto the battlefield attached to that player, then shuffle."
         );
     }
 
@@ -2362,6 +2705,17 @@ mod tests {
     }
 
     #[test]
+    fn normalize_named_object_literal_preserves_embedded_source_name() {
+        assert_eq!(
+            normalize_card_name_refs(
+                "At the beginning of your upkeep, if you don't control a creature named Keeper of Kookus, this creature deals 3 damage to you.",
+                "Kookus",
+            ),
+            "At the beginning of your upkeep, if you don't control a creature named Keeper of Kookus, ~ deals 3 damage to you."
+        );
+    }
+
+    #[test]
     fn normalize_card_named_literal_keeps_comma_name_before_cost_list() {
         assert_eq!(
             normalize_card_name_refs(
@@ -2435,6 +2789,20 @@ mod tests {
         assert_eq!(
             normalize_card_name_refs("When Sprouting Goblin enters", "A-Sprouting Goblin"),
             "When ~ enters"
+        );
+    }
+
+    #[test]
+    fn comma_short_self_name_extracts_comma_prefix() {
+        assert_eq!(comma_short_self_name("Mishra, Eminent One"), Some("Mishra"));
+        assert_eq!(comma_short_self_name("Gilded Lotus"), None);
+    }
+
+    #[test]
+    fn comma_short_self_name_strips_alchemy_prefix() {
+        assert_eq!(
+            comma_short_self_name("A-Mishra, Eminent One"),
+            Some("Mishra")
         );
     }
 

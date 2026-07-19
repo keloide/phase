@@ -104,6 +104,7 @@ pub fn resolve(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::ExileTop,
         source_id: ability.source_id,
+        subject: None,
     });
     Ok(())
 }
@@ -569,6 +570,7 @@ mod tests {
                 condition: DelayedTriggerCondition::AtNextPhaseForPlayer {
                     phase: Phase::End,
                     player: PlayerId(0),
+                    gate: crate::types::ability::TurnGate::None,
                 },
                 effect: Box::new(recall_inner),
                 uses_tracked_set: true,
@@ -690,6 +692,7 @@ mod tests {
                     qty: QuantityRef::TrackedSetAggregate {
                         function: AggregateFunction::Sum,
                         property: ObjectProperty::ManaValue,
+                        source: crate::types::ability::TrackedAnaphorSource::ChainSet,
                     },
                 },
                 target: TargetFilter::Controller,

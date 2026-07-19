@@ -81,6 +81,7 @@ pub fn resolve_become_prepared(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::BecomePrepared,
         source_id: ability.source_id,
+        subject: None,
     });
     Ok(())
 }
@@ -110,6 +111,7 @@ pub fn resolve_become_unprepared(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::BecomeUnprepared,
         source_id: ability.source_id,
+        subject: None,
     });
     Ok(())
 }
@@ -251,6 +253,7 @@ fn synthesize_prepared_copy_object(
 
     let mut copy_obj = src_clone;
     copy_obj.id = copy_id;
+    // allow-raw-zone: prepared-copy birth in exile has no from-zone event (CR 722.3c).
     copy_obj.zone = Zone::Exile;
     copy_obj.controller = controller;
     copy_obj.owner = controller;
@@ -272,6 +275,7 @@ fn synthesize_prepared_copy_object(
             duration: None,
             graveyard_replacement: None,
             enters_with_counter: None,
+            enters_with_modifications: Vec::new(),
             mana_spend_permission: None,
         });
     state.objects.insert(copy_id, copy_obj);
@@ -593,6 +597,7 @@ mod tests {
             &[],
             None,
             false,
+            None,
             None,
             &mut events,
         );
@@ -1015,6 +1020,7 @@ mod tests {
                     duration: None,
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
             source.back_face = Some(BackFaceForTest::prepare_with_cost(ManaCost::Cost {

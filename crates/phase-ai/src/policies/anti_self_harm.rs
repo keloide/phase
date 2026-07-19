@@ -1117,6 +1117,7 @@ mod tests {
                 target_slots: vec![TargetSelectionSlot {
                     legal_targets,
                     optional: false,
+                    chooser: None,
                 }],
                 mode_labels: Vec::new(),
                 selection: Default::default(),
@@ -1764,6 +1765,7 @@ mod tests {
                 target_slots: vec![TargetSelectionSlot {
                     legal_targets: legal_targets.clone(),
                     optional: false,
+                    chooser: None,
                 }],
                 mode_labels: Vec::new(),
                 selection: Default::default(),
@@ -1855,6 +1857,7 @@ mod tests {
                         TargetRef::Player(PlayerId(1)),
                     ],
                     optional: false,
+                    chooser: None,
                 }],
                 mode_labels: Vec::new(),
                 selection: Default::default(),
@@ -2756,6 +2759,7 @@ mod tests {
                 target_slots: vec![TargetSelectionSlot {
                     legal_targets: vec![TargetRef::Object(target_id)],
                     optional: true,
+                    chooser: None,
                 }],
                 mode_labels: Vec::new(),
                 selection: Default::default(),
@@ -3032,6 +3036,7 @@ mod tests {
                 target_slots: vec![TargetSelectionSlot {
                     legal_targets,
                     optional: false,
+                    chooser: None,
                 }],
                 mode_labels: Vec::new(),
                 selection: Default::default(),
@@ -3381,6 +3386,7 @@ mod tests {
                 target_slots: vec![TargetSelectionSlot {
                     legal_targets: legal_targets.clone(),
                     optional: false,
+                    chooser: None,
                 }],
                 mode_labels: Vec::new(),
                 target_constraints: Vec::new(),
@@ -3574,6 +3580,7 @@ mod tests {
                 target_slots: vec![TargetSelectionSlot {
                     legal_targets,
                     optional: false,
+                    chooser: None,
                 }],
                 mode_labels: Vec::new(),
                 selection: Default::default(),
@@ -4038,6 +4045,7 @@ mod tests {
             self_loss.then_some(DelayedTriggerCondition::AtNextPhaseForPlayer {
                 phase: Phase::End,
                 player: PlayerId(0),
+                gate: engine::types::ability::TurnGate::None,
             }),
         )
     }
@@ -4200,6 +4208,7 @@ mod tests {
             Some(DelayedTriggerCondition::AtNextPhaseForPlayer {
                 phase: Phase::Upkeep,
                 player: PlayerId(0),
+                gate: engine::types::ability::TurnGate::None,
             }),
         );
 

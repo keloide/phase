@@ -77,6 +77,7 @@ pub(crate) fn epic_upkeep_trigger(effect: &EpicEffect) -> DelayedTrigger {
         condition: DelayedTriggerCondition::AtNextPhaseForPlayer {
             phase: Phase::Upkeep,
             player: effect.controller,
+            gate: crate::types::ability::TurnGate::None,
         },
         ability: ResolvedAbility::new(
             Effect::EpicCopy {
@@ -114,6 +115,7 @@ pub(crate) fn resolve(
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),
             source_id: ability.source_id,
+            subject: None,
         });
         return Ok(());
     };
@@ -128,6 +130,7 @@ pub(crate) fn resolve(
     let mut copy_obj = source_obj.clone();
     copy_obj.id = copy_id;
     copy_obj.controller = controller;
+    // allow-raw-zone: spell-copy birth directly on stack has no from-zone event (CR 707.10).
     copy_obj.zone = Zone::Stack;
     copy_obj.is_token = true;
     copy_obj.additional_cost_payment_count = 0;
@@ -184,6 +187,7 @@ pub(crate) fn resolve(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),
         source_id: ability.source_id,
+        subject: None,
     });
     Ok(())
 }

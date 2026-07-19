@@ -53,7 +53,18 @@ pub(super) fn finalize_trigger_target_selection(
                 // on the stack with empty `distribution`; mutate the on-stack
                 // ability's targets (so they match what was just chosen) and
                 // keep `pending_trigger_entry` set until division completes.
-                triggers::mutate_pending_trigger_entry(state, &trigger.ability);
+                if !triggers::mutate_pending_trigger_entry(state, &trigger.ability) {
+                    // Unexpected dangling cursor: the entry is gone before the
+                    // division prompt could open. Recover per CR 608.2b / CR
+                    // 800.4a (a stack object that has left the stack does not
+                    // resolve) — record the diagnostic, abandon, hand back
+                    // priority. Matches the DistributeAmong-return convention
+                    // below; the next priority pass re-normalizes (CR 117.3b
+                    // would give the active player).
+                    triggers::abandon_ceased_pending_trigger(state, &trigger.ability);
+                    priority::clear_priority_passes(state);
+                    return WaitingFor::Priority { player: controller };
+                }
                 state.pending_trigger = Some(trigger);
                 priority::clear_priority_passes(state);
                 return WaitingFor::DistributeAmong {
@@ -70,7 +81,17 @@ pub(super) fn finalize_trigger_target_selection(
     // the stack (pushed by the pause-path that started selection); mutate its
     // ability with the resolved targets/distribution and clear
     // `pending_trigger_entry` so the resolver may now fire this entry.
-    triggers::finalize_pending_trigger_entry(state, &trigger.ability);
+    if !triggers::finalize_pending_trigger_entry(state, &trigger.ability) {
+        // Unexpected dangling cursor: the entry is no longer on the stack.
+        // Recover per CR 608.2b / CR 800.4a (a stack object that has left the
+        // stack does not resolve) — record the diagnostic, abandon the dead
+        // trigger, and hand control back rather than panic. Returns Priority for
+        // the controller (matching the DistributeAmong convention above); the
+        // next priority pass re-normalizes (CR 117.3b would give active player).
+        triggers::abandon_ceased_pending_trigger(state, &trigger.ability);
+        priority::clear_priority_passes(state);
+        return WaitingFor::Priority { player: controller };
+    }
 
     priority::clear_priority_passes(state);
     // CR 113.2c + CR 603.2 + CR 603.3b: After the active trigger is on the
@@ -115,21 +136,28 @@ pub(super) fn handle_trigger_target_selection_select_targets(
     let mut ability = pending.ability.clone();
     // Read the firing batch's subject count out of `pending` before any mutation
     // of `state`, so the shared borrow of `state.pending_trigger` ends here.
+    let pending_trigger_event = pending.trigger_event.clone();
+    let pending_trigger_events = if state.pending_trigger_event_batch.is_empty() {
+        pending_trigger_event.iter().cloned().collect::<Vec<_>>()
+    } else {
+        state.pending_trigger_event_batch.clone()
+    };
     let pending_match_count = pending.subject_match_count;
     // CR 601.2c + CR 603.2c: A variable target count ("up to X target creatures,
     // where X is the number milled this way") is fixed when the ability is put on
-    // the stack and does not change. Re-stamp the firing batch's subject count into
-    // resolution scope so `multi_target.max = EventContextAmount` resolves to that
-    // count instead of collapsing to 0. This must wrap BOTH validation and
-    // assignment: each recomputes `target_slot_specs`, and with bounds 0 the
-    // per-slot specs vanish so the CR 601.2c same-instance distinctness check is
-    // bypassed — a duplicate-object selection (`[A, A]`) would then be wrongly
-    // accepted at the validation gate rather than rejected. Save/restore (not a
-    // bare stamp) because `current_trigger_match_count` is not cleared at `apply()`
-    // start. Mirrors the choose-target walk and the auto-target path's
+    // the stack and does not change. Re-stamp the full firing event context into
+    // resolution scope so target legality recomputation sees the same event player
+    // and subject count as the original prompt. This must wrap BOTH validation and
+    // assignment: each recomputes `target_slot_specs`. Save/restore (not a bare
+    // stamp) because trigger context is resolution-local and must not leak into the
+    // next action. Mirrors the choose-target walk and the auto-target path's
     // push/restore_trigger_event_context in triggers.rs.
-    let prev_match_count = state.current_trigger_match_count;
-    state.current_trigger_match_count = pending_match_count;
+    let context_snapshot = super::triggers::push_trigger_event_context(
+        state,
+        pending_trigger_event.as_ref(),
+        &pending_trigger_events,
+        pending_match_count,
+    );
     let select_result = match validate_selected_targets_for_ability(
         state,
         &ability,
@@ -140,7 +168,7 @@ pub(super) fn handle_trigger_target_selection_select_targets(
         Ok(()) => assign_targets_in_chain(state, &mut ability, &targets),
         Err(e) => Err(e),
     };
-    state.current_trigger_match_count = prev_match_count;
+    super::triggers::restore_trigger_event_context(state, context_snapshot);
     select_result?;
     // CR 603.3d: Consume the pending trigger only after the fallible assignment
     // succeeds. `apply()` does not roll back on Err and `sync_waiting_for` never

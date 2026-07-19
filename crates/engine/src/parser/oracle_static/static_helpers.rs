@@ -38,11 +38,149 @@ pub(crate) fn parse_chosen_name_source_filter(subject_lower: &str) -> Option<Tar
 /// CR 601.2f: Parse the spell-type prefix of a cost-modification line before
 /// `"cost"`. Handles compound subjects such as Goblin Anarchomancer's
 /// "Each spell you cast that's red or green" via `parse_that_clause_suffix`.
+/// CR 205.4a: A bare supertype spell subject ("Legendary spells you cast cost
+/// {1} less", Kethis, the Hidden Hand) — `parse_type_phrase` doesn't consume a
+/// lone supertype word (it requires a following type noun), so the restriction
+/// would otherwise drop and reduce the cost of EVERY spell. Emit a `HasSupertype`
+/// card filter instead.
+fn parse_bare_supertype_spell_filter(base: &str) -> Option<TargetFilter> {
+    let lower = base.to_lowercase();
+    let (_, supertype) = all_consuming(nom_target::parse_supertype_word)
+        .parse(lower.as_str())
+        .ok()?;
+    Some(TargetFilter::Typed(TypedFilter::card().properties(vec![
+        FilterProp::HasSupertype { value: supertype },
+    ])))
+}
+
+/// CR 105.2 + CR 700.6 + CR 205.4a + CR 601.2f: Resolve a BARE-word spell-subject
+/// filter for a cost modifier — a color or color-CATEGORY ("white", "colorless",
+/// "monocolored", "multicolored"), "historic", or a supertype ("legendary").
+/// `parse_type_phrase` declines all of these because they carry no trailing type
+/// noun (it needs "white creature", not a lone "white"), so without this the
+/// whole restriction dropped and the cost modifier (mis)applied to EVERY spell.
+///
+/// The color word routes through the single [`nom_filter::parse_color_property`]
+/// authority, so the color-CATEGORY axis resolves identically to the noun-bearing
+/// path: colorless → `ColorCount { EQ, 0 }`, monocolored → `{ EQ, 1 }`,
+/// multicolored → `{ GE, 2 }`, a named color → `HasColor`. The prior fallback
+/// hand-rolled only the five named colors via `parse_named_color`, so it dropped
+/// the category axis (Herald of Kozilek, Ugin, Urza's Filter, It That Heralds the
+/// End) and "historic" (Jhoira's Familiar) — all of which then cheapened every spell.
+fn parse_bare_spell_subject_filter(base: &str) -> Option<TargetFilter> {
+    let lower = base.trim().to_ascii_lowercase();
+    // CR 105.2: color / color-category, via the single color-property authority.
+    if let Ok((_, prop)) = all_consuming(nom_filter::parse_color_property).parse(lower.as_str()) {
+        return Some(TargetFilter::Typed(
+            TypedFilter::card().properties(vec![prop]),
+        ));
+    }
+    // CR 700.6: "historic" = legendary supertype, artifact card type, or Saga subtype.
+    if all_consuming(tag::<_, _, OracleError<'_>>("historic"))
+        .parse(lower.as_str())
+        .is_ok()
+    {
+        return Some(TargetFilter::Typed(
+            TypedFilter::card().properties(vec![FilterProp::Historic]),
+        ));
+    }
+    // CR 205.4a: a lone supertype word ("legendary", "snow", ...).
+    parse_bare_supertype_spell_filter(&lower)
+}
+
+/// CR 202.3: Nom parse of a trailing "with/of mana value N or greater/less"
+/// (also "or more"/"or fewer") qualifier — returns the prefix BEFORE the
+/// qualifier plus the `FilterProp::Cmc` it selects. Fails (nom `Err`) when no
+/// mana-value qualifier is present.
+fn parse_cost_mod_mana_value_qualifier(prefix: &str) -> OracleResult<'_, (&str, FilterProp)> {
+    let (rest, before) = alt((
+        take_until::<_, _, OracleError<'_>>(" with mana value "),
+        take_until(" of mana value "),
+    ))
+    .parse(prefix)?;
+    let (rest, _) = alt((tag(" with mana value "), tag(" of mana value "))).parse(rest)?;
+    let (rest, mv) = nom_primitives::parse_number(rest)?;
+    let (rest, comparator) = alt((
+        value(Comparator::GE, alt((tag(" or greater"), tag(" or more")))),
+        value(Comparator::LE, alt((tag(" or less"), tag(" or fewer")))),
+    ))
+    .parse(rest)?;
+    Ok((
+        rest,
+        (
+            before,
+            FilterProp::Cmc {
+                comparator,
+                value: QuantityExpr::Fixed { value: mv as i32 },
+            },
+        ),
+    ))
+}
+
+/// CR 202.3 + CR 601.2f: Peel a trailing "with mana value N or greater/less"
+/// spell-selection qualifier off a cost-modifier subject prefix, returning the
+/// prefix WITHOUT the qualifier plus the parsed `FilterProp::Cmc`. The mana-value
+/// gate sits AFTER the "spells you cast" infix ("Instant and sorcery spells you
+/// cast with mana value 4 or greater cost {X} less" — The Scarlet Witch, #5606),
+/// so the caller's "you cast"/"spells" end-trims cannot reach the type words
+/// until this qualifier is peeled. Covers the whole MV-gated cost-modifier class,
+/// not one card.
+fn strip_cost_mod_mana_value_qualifier(prefix: &str) -> (&str, Option<FilterProp>) {
+    match parse_cost_mod_mana_value_qualifier(prefix) {
+        Ok((_, (before, prop))) => (before, Some(prop)),
+        Err(_) => (prefix, None),
+    }
+}
+
+/// Compose an optional mana-value `FilterProp::Cmc` (from
+/// `strip_cost_mod_mana_value_qualifier`) into the cost-modifier spell filter.
+/// A typed filter absorbs the prop directly; an `Or` (or any non-`Typed`)
+/// filter is `And`-wrapped with a card+prop leaf; a bare mana-value gate with no
+/// type restriction ("spells you cast with mana value 4 or greater") becomes a
+/// card filter carrying the prop.
+fn compose_cost_mod_mana_value(
+    filter: Option<TargetFilter>,
+    prop: Option<FilterProp>,
+) -> Option<TargetFilter> {
+    let Some(prop) = prop else {
+        return filter;
+    };
+    match filter {
+        Some(TargetFilter::Typed(mut tf)) => {
+            tf.properties.push(prop);
+            Some(TargetFilter::Typed(tf))
+        }
+        Some(other) => Some(TargetFilter::And {
+            filters: vec![
+                other,
+                TargetFilter::Typed(TypedFilter::card().properties(vec![prop])),
+            ],
+        }),
+        None => Some(TargetFilter::Typed(
+            TypedFilter::card().properties(vec![prop]),
+        )),
+    }
+}
+
 fn parse_cost_mod_spell_type_prefix(type_desc: &str) -> Option<TargetFilter> {
     let base = type_desc.trim();
     let base = tag::<_, _, OracleError<'_>>("each ")
         .parse(base)
         .map_or(base, |(rest, _)| rest);
+
+    // CR 105.1 + CR 601.2f: Compound BARE-color subject — "<color> spells and
+    // <color> spells" (the Prophecy Familiar cycle: Nightscape / Stormscape /
+    // Sunscape / Thornscape / Thunderscape Familiar). The single-subject path
+    // below maps a lone bare color via `parse_named_color`, and
+    // `parse_type_phrase` decomposes compounds whose operands carry a type noun
+    // ("Angel spells and Human spells", "red creature spells and green creature
+    // spells"). A two-BARE-color compound falls through both and yields
+    // `None` — which silently drops the color restriction and reduces EVERY
+    // spell. Recognize it here and emit the same `Or` of `HasColor` typed
+    // filters the noun-bearing compounds already produce.
+    if let Some(filter) = parse_cost_mod_compound_color_subject(base) {
+        return Some(filter);
+    }
 
     let that_split: Result<(&str, (&str, &str)), nom::Err<OracleError<'_>>> = all_consuming(alt((
         (
@@ -94,14 +232,14 @@ fn parse_cost_mod_spell_type_prefix(type_desc: &str) -> Option<TargetFilter> {
             TargetFilter::Or { filters } if !filters.is_empty() && remainder.is_empty() => {
                 Some(filter)
             }
-            // Bare color words ("white", "red") are not consumed by parse_type_phrase
-            // because color prefixes require a trailing type word ("white creature").
+            // Bare color/color-category words ("white", "colorless",
+            // "multicolored"), "historic", and bare supertype words ("legendary")
+            // are not consumed by parse_type_phrase, which requires a trailing type
+            // noun ("white creature", "legendary permanent"). Route them through
+            // the single bare-subject authority so the color-category axis is not
+            // dropped (CR 105.2 + CR 700.6 + CR 205.4a).
             _ if remainder.is_empty() || remainder.eq_ignore_ascii_case(base_part) => {
-                parse_named_color(base_part).map(|color| {
-                    TargetFilter::Typed(
-                        TypedFilter::card().properties(vec![FilterProp::HasColor { color }]),
-                    )
-                })
+                parse_bare_spell_subject_filter(base_part)
             }
             _ => None,
         }
@@ -124,6 +262,45 @@ fn parse_cost_mod_spell_type_prefix(type_desc: &str) -> Option<TargetFilter> {
         )),
     };
     filter.map(remap_cost_mod_imprint_exile_reference)
+}
+
+/// CR 105.1 + CR 601.2f: Decompose a compound BARE-color cost-mod subject —
+/// "<color>[ spells] and <color>[ spells]" — into an `Or` of `HasColor` typed
+/// filters. Each operand is a color name (`nom_primitives::parse_color`)
+/// optionally trailed by the spell noun; operands are joined by " and ".
+///
+/// The Prophecy Familiar cycle (Nightscape Familiar "Blue spells and red
+/// spells you cast cost {1} less to cast", plus Stormscape / Sunscape /
+/// Thornscape / Thunderscape Familiar) is the exemplar class. Requires two or
+/// more colors and full consumption, so a lone bare color ("Red spells …") and
+/// a noun-bearing operand ("red creature spells and …") both decline here and
+/// fall through to the single-subject path and `parse_type_phrase` respectively.
+fn parse_cost_mod_compound_color_subject(base: &str) -> Option<TargetFilter> {
+    // Operand: a bare color name, optionally followed by the spell noun. The
+    // trailing " spell[s]" is present on every operand except the last (the
+    // caller strips one trailing " spells" before this runs).
+    fn color_operand(input: &str) -> OracleResult<'_, ManaColor> {
+        let (input, color) = nom_primitives::parse_color(input)?;
+        let (input, _) = opt(alt((tag(" spells"), tag(" spell")))).parse(input)?;
+        Ok((input, color))
+    }
+
+    let (rest, colors) = separated_list1(tag::<_, _, OracleError<'_>>(" and "), color_operand)
+        .parse(base.trim())
+        .ok()?;
+    if !rest.trim().is_empty() || colors.len() < 2 {
+        return None;
+    }
+
+    let filters = colors
+        .into_iter()
+        .map(|color| {
+            TargetFilter::Typed(
+                TypedFilter::card().properties(vec![FilterProp::HasColor { color }]),
+            )
+        })
+        .collect();
+    Some(TargetFilter::Or { filters })
 }
 
 /// CR 607.2a + CR 607.3: Cost-mod lines such as Semblance Anvil reference
@@ -194,7 +371,7 @@ fn strip_cost_mod_during_your_turn_scope(text: &str) -> (&str, Option<StaticCond
     (text, None)
 }
 
-fn strip_cost_mod_spell_noun_suffix(input: &str) -> &str {
+pub(super) fn strip_cost_mod_spell_noun_suffix(input: &str) -> &str {
     let (_, stripped) = all_consuming(alt((
         value("", terminated(tag::<_, _, OracleError<'_>>("spells"), eof)),
         value("", terminated(tag("spell"), eof)),
@@ -281,6 +458,9 @@ pub(crate) fn try_parse_impose_additional_cost(
             }
             Some(ControllerRef::ScopedPlayer) => TargetFilter::Typed(TypedFilter::card()),
             Some(ControllerRef::TargetPlayer) => TargetFilter::Typed(TypedFilter::card()),
+            // CR 109.4: TargetOpponent, like TargetPlayer, has no cost-static
+            // semantics — fall back to an untyped card filter.
+            Some(ControllerRef::TargetOpponent) => TargetFilter::Typed(TypedFilter::card()),
             Some(ControllerRef::ParentTargetController) => TargetFilter::Typed(TypedFilter::card()),
             Some(ControllerRef::ParentTargetOwner) => TargetFilter::Typed(TypedFilter::card()),
             Some(ControllerRef::DefendingPlayer) => TargetFilter::Typed(TypedFilter::card()),
@@ -290,6 +470,9 @@ pub(crate) fn try_parse_impose_additional_cost(
             // CR 303.4b: Enchanted-player scope is not supported for cost statics;
             // fall back to untyped filter (same as TriggeringPlayer).
             Some(ControllerRef::EnchantedPlayer) => TargetFilter::Typed(TypedFilter::card()),
+            // CR 102.1: active-player scope is not emitted for cost statics;
+            // fall back to an untyped card filter (same as TriggeringPlayer).
+            Some(ControllerRef::ActivePlayer) => TargetFilter::Typed(TypedFilter::card()),
             None => TargetFilter::Typed(TypedFilter::card()),
         }
     };
@@ -467,6 +650,12 @@ pub(crate) fn try_parse_cost_modification(
         } else {
             (without_chosen, false)
         };
+        // CR 202.3 + CR 601.2f: Peel a trailing "with mana value N or greater/less"
+        // gate BEFORE the "you cast"/"spells" end-trims. The qualifier sits after
+        // the "spells you cast" infix, so without peeling it the trims never reach
+        // the type words and the whole type+MV restriction is dropped (The Scarlet
+        // Witch reduced EVERY spell, not just instants/sorceries — #5606).
+        let (without_chosen, mana_value_prop) = strip_cost_mod_mana_value_qualifier(without_chosen);
         let type_desc = without_chosen
             .trim_end_matches(" you cast") // allow-noncombinator: moved legacy static parser code; refactor-only split preserves behavior.
             .trim_end_matches(" your opponents cast") // allow-noncombinator: moved legacy static parser code; refactor-only split preserves behavior.
@@ -510,13 +699,15 @@ pub(crate) fn try_parse_cost_modification(
         // Compose chosen-name constraint with the typed prefix (if any). Bare
         // "Spells with the chosen name" → `HasChosenName` alone; typed
         // "<Type> spells with the chosen name" → `And{Typed, HasChosenName}`.
-        match (typed_filter, has_chosen_name) {
+        let base_filter = match (typed_filter, has_chosen_name) {
             (Some(tf), true) => Some(TargetFilter::And {
                 filters: vec![tf, TargetFilter::HasChosenName],
             }),
             (None, true) => Some(TargetFilter::HasChosenName),
             (tf, false) => tf,
-        }
+        };
+        // CR 202.3: fold the peeled mana-value gate back into the spell filter.
+        compose_cost_mod_mana_value(base_filter, mana_value_prop)
     } else {
         None
     };
@@ -648,6 +839,9 @@ pub(crate) fn try_parse_cost_modification(
             // emit this variant for cost statics.
             Some(ControllerRef::ScopedPlayer) => TargetFilter::Typed(TypedFilter::card()),
             Some(ControllerRef::TargetPlayer) => TargetFilter::Typed(TypedFilter::card()),
+            // CR 109.4: TargetOpponent, like TargetPlayer, has no cost-static
+            // semantics — fall back to an untyped card filter.
+            Some(ControllerRef::TargetOpponent) => TargetFilter::Typed(TypedFilter::card()),
             Some(ControllerRef::ParentTargetController) => TargetFilter::Typed(TypedFilter::card()),
             Some(ControllerRef::ParentTargetOwner) => TargetFilter::Typed(TypedFilter::card()),
             Some(ControllerRef::DefendingPlayer) => TargetFilter::Typed(TypedFilter::card()),
@@ -661,6 +855,9 @@ pub(crate) fn try_parse_cost_modification(
             // CR 303.4b: Enchanted-player scope is not supported for cost statics;
             // fall back to untyped filter (same as TriggeringPlayer).
             Some(ControllerRef::EnchantedPlayer) => TargetFilter::Typed(TypedFilter::card()),
+            // CR 102.1: active-player scope is not emitted for cost statics;
+            // fall back to an untyped card filter (same as TriggeringPlayer).
+            Some(ControllerRef::ActivePlayer) => TargetFilter::Typed(TypedFilter::card()),
             None => TargetFilter::Typed(TypedFilter::card()),
         }
     };
@@ -1383,4 +1580,43 @@ pub(crate) fn extract_cant_untap_condition(lower: &str) -> Option<StaticConditio
             text: condition_text.to_string(),
         })
     })
+}
+
+/// CR 611.3: Peel a `"all <X> … and all <Y> …"` phrase into per-conjunct strings
+/// on the `" and all "` seam. Each conjunct after the first is re-prefixed with
+/// `"all "` because the seam consumes the quantifier. Returns `None` when fewer
+/// than two conjuncts are found — single-subject lines fall through to dedicated
+/// handlers.
+///
+/// Shared by compound-subject static parsers (`parse_compound_all_subjects_filter`
+/// in `type_change.rs`, sibling land/animation handlers) and the effect-layer
+/// compound-quantified become handler (`try_parse_compound_all_subjects_become_clause`
+/// in `oracle_effect/subject.rs`). The mandatory second `all` quantifier is what
+/// distinguishes this compound form from an incidental `" and "` inside a lone
+/// subject phrase.
+pub(crate) fn peel_compound_all_quantified_conjuncts(text: &str) -> Option<Vec<String>> {
+    let trimmed = text.trim().trim_end_matches('.').to_string();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut conjuncts = Vec::new();
+    let mut current_original = trimmed;
+    loop {
+        let current_lower = current_original.to_lowercase();
+        let tp = TextPair::new(&current_original, &current_lower);
+        match tp.split_around(" and all ") {
+            Some((before, after)) => {
+                conjuncts.push(before.original.trim().to_string());
+                current_original = format!("all {}", after.original.trim());
+            }
+            None => {
+                conjuncts.push(current_original.trim().to_string());
+                break;
+            }
+        }
+    }
+    if conjuncts.len() < 2 {
+        return None;
+    }
+    Some(conjuncts)
 }

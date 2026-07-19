@@ -171,6 +171,18 @@ describe("getWaitingForObjectChoiceIds", () => {
       }),
     ).toEqual([]);
   });
+
+  // CR 707.9: Copy Enchantment's copy pool arrives as `CopyTargetChoice`.
+  // Every surface that can offer one of these objects — battlefield card or
+  // the player-attached-Aura dialog — must read the pool from here.
+  it("returns valid_targets for CopyTargetChoice", () => {
+    expect(
+      getWaitingForObjectChoiceIds({
+        type: "CopyTargetChoice",
+        data: { player: 0, source_id: 1, valid_targets: [30, 31] },
+      }),
+    ).toEqual([30, 31]);
+  });
 });
 
 describe("getBattlefieldSacrificeChoice", () => {
@@ -282,6 +294,7 @@ describe("getBoardChoiceView", () => {
         vehicle_id: 30,
         crew_power: 4,
         eligible_creatures: [10, 11],
+        contributions: [2, 3],
       },
     });
     const objects = buildObjectMap(
@@ -297,6 +310,54 @@ describe("getBoardChoiceView", () => {
     expect(buildBoardChoiceAction(choice, [10, 11])).toEqual({
       type: "CrewVehicle",
       data: { vehicle_id: 30, creature_ids: [10, 11] },
+    });
+    expect(choice.cancelAction).toEqual({ type: "CancelCast" });
+  });
+
+  // Regression: a Pilot token (Shorikai) has printed power 1 but crews "as though
+  // its power were 2 greater" (contribution 3). The UI must gate on the engine's
+  // contribution, not raw power, so a lone Pilot satisfies Crew 3. Summing raw
+  // power gave 1 < 3 and wrongly blocked the crew ("crews for just 1").
+  it("gates CrewVehicle by the engine contribution, not printed power", () => {
+    const choice = getBoardChoiceView({
+      type: "CrewVehicle",
+      data: {
+        player: 0,
+        vehicle_id: 30,
+        crew_power: 3,
+        eligible_creatures: [10],
+        contributions: [3],
+      },
+    });
+    const objects = buildObjectMap(buildGameObject({ id: 10, power: 1 }));
+
+    expect(choice).not.toBeNull();
+    if (!choice) return;
+    // Printed power is 1, but the engine says this creature contributes 3.
+    expect(boardChoiceSelectedPower(choice, [10], objects)).toBe(3);
+    expect(canConfirmBoardChoice(choice, [10], objects)).toBe(true);
+  });
+
+  it("gates SaddleMount by the engine contribution, not printed power", () => {
+    const choice = getBoardChoiceView({
+      type: "SaddleMount",
+      data: {
+        player: 0,
+        mount_id: 40,
+        saddle_power: 3,
+        eligible_creatures: [10],
+        contributions: [3],
+      },
+    });
+    const objects = buildObjectMap(buildGameObject({ id: 10, power: 1 }));
+
+    expect(choice).not.toBeNull();
+    if (!choice) return;
+    expect(boardChoiceSelectedPower(choice, [10], objects)).toBe(3);
+    expect(canConfirmBoardChoice(choice, [10], objects)).toBe(true);
+    expect(buildBoardChoiceAction(choice, [10])).toEqual({
+      type: "SaddleMount",
+      data: { mount_id: 40, creature_ids: [10] },
     });
   });
 
@@ -328,6 +389,25 @@ describe("getBoardChoiceView", () => {
     expect(canConfirmBoardChoice(choice, [10, 11], objects)).toBe(true);
     // Keeping only the 5-power creature exceeds the cap of 4.
     expect(canConfirmBoardChoice(choice, [10], objects)).toBe(false);
+  });
+
+  it("renders the engine-provided exact keeper requirement without client-side capping", () => {
+    const choice = getBoardChoiceView({
+      type: "KeepExactPermanentsChoice",
+      data: {
+        player: 0,
+        target_player: 0,
+        eligible: [10, 11],
+        required_count: 5,
+        source_id: 50,
+        remaining_players: [],
+        all_kept: [],
+        scoped_players: [0],
+      },
+    });
+
+    expect(choice).not.toBeNull();
+    expect(choice?.selection).toEqual({ type: "exactCount", count: 5 });
   });
 
   it("maps simple StationTarget and Ring-bearer choices to immediate single actions", () => {
@@ -377,6 +457,41 @@ describe("getBoardChoiceView", () => {
         },
       }),
     ).toBeNull();
+  });
+
+  it("maps resolution TapCreatures PayCost to a non-cancellable board choice", () => {
+    const waitingFor: WaitingFor = {
+      type: "PayCost",
+      data: {
+        player: 0,
+        kind: { type: "TapCreatures" },
+        choices: [4, 5],
+        count: 2,
+        min_count: 2,
+        resume: { type: "Resolution" },
+      },
+    };
+
+    const choice = getBoardChoiceView(
+      waitingFor,
+      buildObjectMap(
+        buildGameObject({ id: 4, zone: "Battlefield" }),
+        buildGameObject({ id: 5, zone: "Battlefield" }),
+      ),
+    );
+
+    expect(choice).toMatchObject({
+      player: 0,
+      objectIds: [4, 5],
+      intent: "tap",
+      selection: { type: "exactCount", count: 2 },
+      response: { type: "SelectCards" },
+      cancelAction: undefined,
+    });
+    expect(choice && buildBoardChoiceAction(choice, [4, 5])).toEqual({
+      type: "SelectCards",
+      data: { cards: [4, 5] },
+    });
   });
 
   it("keeps PayCost choices modal-only unless every candidate is on the battlefield", () => {

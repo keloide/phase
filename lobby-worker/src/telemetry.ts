@@ -46,9 +46,21 @@ export const EVENT_SCHEMAS: Record<string, { blobs: string[]; doubles: string[] 
   engine_panic: { blobs: ["reason", "panic", "game_mode"], doubles: ["fatal", "turn"] },
   stuck_decision: { blobs: ["waiting_for_kind", "game_mode", "phase"], doubles: [] },
   js_error: { blobs: ["name", "message", "top_frame", "source", "route"], doubles: [] },
-  chunk_reload: { blobs: ["reason", "chunk"], doubles: ["deferred"] },
+  // `probe_*` columns are appended (never inserted — AE columns are
+  // positional) and populated only on `reason: "loop-abort"` events: the
+  // client refetches the failing chunk and reports what it actually got.
+  chunk_reload: {
+    blobs: ["reason", "chunk", "probe_cache", "probe_ray"],
+    doubles: ["deferred", "probe_status", "probe_sw"],
+  },
   game_end: {
-    blobs: ["result", "winner_kind", "game_mode", "unimplemented_oracle_ids"],
+    blobs: [
+      "result",
+      "winner_kind",
+      "game_mode",
+      "unimplemented_oracle_ids",
+      "pending_trigger_abandons",
+    ],
     doubles: ["turn_count"],
   },
   card_report: {

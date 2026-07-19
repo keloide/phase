@@ -10,8 +10,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{State, WebSocketUpgrade};
-use axum::response::IntoResponse;
+use axum::extract::{Request, State, WebSocketUpgrade};
+use axum::middleware::{from_fn, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use clap::Parser;
@@ -19,7 +20,7 @@ use engine::ai_support::{
     auto_pass_recommended as engine_auto_pass, legal_actions_full as engine_legal_actions_full,
 };
 use engine::database::CardDatabase;
-use engine::game::derived_views::derive_views;
+use engine::game::derived_views::derive_filtered_views;
 use engine::game::validate_name_deck_for_format_full;
 use engine::types::events::GameEvent;
 use engine::types::game_state::GameState;
@@ -217,6 +218,17 @@ async fn switch_draft_spectator_slot(
     Ok(())
 }
 
+/// Derive presentation state for any server transport after viewer filtering.
+/// Rules authority must always come from the pre-filter snapshot: search-control
+/// provenance is intentionally absent from some viewer-safe states.
+fn derive_transport_views(
+    authoritative_state: &GameState,
+    filtered_state: &GameState,
+    viewer: Option<PlayerId>,
+) -> engine::game::derived_views::DerivedViews {
+    derive_filtered_views(authoritative_state, filtered_state, viewer)
+}
+
 /// Build the `GameStarted` message for a single seat.
 ///
 /// `events` carries the engine's start-of-game events (the d20 first-player
@@ -246,7 +258,7 @@ fn build_game_started_message(
                 Some(name.clone())
             }
         });
-    let derived = derive_views(&filtered, Some(player));
+    let derived = derive_transport_views(&session.state, &filtered, Some(player));
 
     ServerMessage::GameStarted {
         state: filtered,
@@ -312,7 +324,7 @@ fn build_state_update_message(
     })?;
     let is_actor = raw_state.waiting_for.acting_players().contains(&player);
     let filtered = server_core::filter_state_for_player(raw_state, player);
-    let derived = derive_views(&filtered, Some(player));
+    let derived = derive_transport_views(raw_state, &filtered, Some(player));
 
     Ok(ServerMessage::StateUpdate {
         state: filtered,
@@ -346,7 +358,7 @@ fn build_state_update_message(
 fn build_spectator_game_started_message(session: &GameSession) -> Result<ServerMessage, String> {
     guard_game_state_for_broadcast(&session.state)?;
     let filtered = server_core::filter_state_for_player(&session.state, SPECTATOR_PLAYER_ID);
-    let derived = derive_views(&filtered, None);
+    let derived = derive_transport_views(&session.state, &filtered, None);
 
     Ok(ServerMessage::GameStarted {
         state: filtered,
@@ -377,7 +389,7 @@ fn build_spectator_state_update_message(
         spell_costs: &HashMap::new(),
     })?;
     let filtered = server_core::filter_state_for_player(raw_state, SPECTATOR_PLAYER_ID);
-    let derived = derive_views(&filtered, None);
+    let derived = derive_transport_views(raw_state, &filtered, None);
     let eliminated_players = raw_state.eliminated_players.clone();
 
     Ok(ServerMessage::StateUpdate {
@@ -634,6 +646,7 @@ fn reject_if_disabled(msg: &ClientMessage, mode: ServerMode) -> Option<&'static 
         ClientMessage::CreateGame { .. }
         | ClientMessage::JoinGame { .. }
         | ClientMessage::Action { .. }
+        | ClientMessage::PreviewManaPayment { .. }
         | ClientMessage::Reconnect { .. }
         | ClientMessage::SeatMutate { .. }
         | ClientMessage::Concede
@@ -1137,35 +1150,44 @@ async fn main() {
         info!(public_url = %url, "advertising public URL for join-code sharing");
     }
 
-    let app = Router::new()
+    // Public, client-facing HTTP surface. `/p2p-draft-backup*` is part of the
+    // normal P2P draft flow; only the administrative `/admin/*` routes are gated.
+    let mut app = Router::new()
         .route("/ws", get(ws_handler))
         .route("/health", get(health))
-        .route("/admin/drafts", get(admin::admin_list_drafts))
-        .route(
-            "/admin/drafts/{code}",
-            get(admin::admin_get_draft).delete(admin::admin_delete_draft),
-        )
         .route("/p2p-draft-backup", post(admin::p2p_backup_store))
         .route(
             "/p2p-draft-backup/{code}",
             get(admin::p2p_backup_get).delete(admin::p2p_backup_delete),
-        )
-        .layer(cors)
-        .with_state(AppState {
-            sessions: state,
-            draft_sessions,
-            draft_pools,
-            connections,
-            db,
-            lobby,
-            lobby_subscribers,
-            player_count,
-            game_db,
-            draft_spectators,
-            game_spectators,
-            mode,
-            public_url: advertised_public_url,
-        });
+        );
+
+    // Administrative endpoints are destructive and information-disclosing, and
+    // reachable through the same reverse proxy as `/ws` (see deploy nginx).
+    // Mount them only when PHASE_ADMIN_TOKEN is set; otherwise absent (404).
+    let admin_token = admin_token_from_env();
+    match admin_token.as_deref() {
+        Some(_) => info!("admin HTTP endpoints enabled (bearer-token authenticated)"),
+        None => info!("admin HTTP endpoints disabled (set PHASE_ADMIN_TOKEN to enable)"),
+    }
+    if let Some(token) = admin_token.as_deref().filter(|t| !t.is_empty()) {
+        app = mount_admin_routes(app, token);
+    }
+
+    let app = app.layer(cors).with_state(AppState {
+        sessions: state,
+        draft_sessions,
+        draft_pools,
+        connections,
+        db,
+        lobby,
+        lobby_subscribers,
+        player_count,
+        game_db,
+        draft_spectators,
+        game_spectators,
+        mode,
+        public_url: advertised_public_url,
+    });
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", cli.port))
         .await
@@ -1247,6 +1269,80 @@ async fn shutdown_signal() {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Constant-time byte comparison so admin-token validation does not leak the
+/// expected token through response timing.
+fn tokens_match(presented: &[u8], expected: &[u8]) -> bool {
+    if presented.len() != expected.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (a, b) in presented.iter().zip(expected.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
+/// Load the admin bearer token from the environment. Intentionally not a CLI
+/// flag — command-line secrets leak via process listings and shell history.
+fn admin_token_from_env() -> Option<String> {
+    std::env::var("PHASE_ADMIN_TOKEN")
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// Mount bearer-guarded `/admin/*` routes on a router that will receive `AppState`.
+fn mount_admin_routes(app: Router<AppState>, admin_token: &str) -> Router<AppState> {
+    let auth_layer = |expected: Arc<str>| {
+        from_fn(move |request: Request, next: Next| {
+            let expected = expected.clone();
+            async move { require_admin_auth(expected, request, next).await }
+        })
+    };
+    let list_auth = auth_layer(Arc::from(admin_token));
+    let detail_auth = auth_layer(Arc::from(admin_token));
+    app.route(
+        "/admin/drafts",
+        get(admin::admin_list_drafts).route_layer(list_auth),
+    )
+    .route(
+        "/admin/drafts/{code}",
+        get(admin::admin_get_draft)
+            .delete(admin::admin_delete_draft)
+            .route_layer(detail_auth),
+    )
+}
+
+/// Decide whether an `Authorization` header value authorizes an admin request.
+/// Scheme must be `Bearer` (case-insensitive per RFC 9110); credential must
+/// match `expected` in constant time.
+fn admin_request_authorized(auth_header: Option<&str>, expected: &str) -> bool {
+    let Some(value) = auth_header.map(str::trim) else {
+        return false;
+    };
+    let Some((scheme, credentials)) = value.split_once(' ') else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return false;
+    }
+    tokens_match(credentials.trim().as_bytes(), expected.as_bytes())
+}
+
+/// Auth guard for the administrative `/admin/*` routes.
+async fn require_admin_auth(expected: Arc<str>, request: Request, next: Next) -> Response {
+    let auth_header = request
+        .headers()
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+
+    if admin_request_authorized(auth_header, &expected) {
+        next.run(request).await
+    } else {
+        (http::StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+    }
 }
 
 /// Validate an operator-supplied public URL at the system boundary. It must
@@ -2575,6 +2671,7 @@ impl DeckResolver for ServerDeckResolver<'_> {
             main_deck: deck.main_deck,
             sideboard: deck.sideboard,
             commander: deck.commander,
+            companion: deck.companion,
             planar_deck: deck.planar_deck,
             scheme_deck: deck.scheme_deck,
             attraction_deck: deck.attraction_deck,
@@ -2748,7 +2845,7 @@ async fn broadcast_takeback_approved(
                     log_entries: vec![],
                     spell_costs: p_spell_costs,
                     legal_actions_by_object: p_by_object,
-                    derived: derive_views(pstate, Some(*pid)),
+                    derived: derive_transport_views(&raw_state, pstate, Some(*pid)),
                 });
             }
         }
@@ -3038,6 +3135,35 @@ async fn handle_client_message(
             }
         }
 
+        ClientMessage::PreviewManaPayment { request_id, action } => {
+            let response = match (identity.game_code.clone(), identity.player_token.clone()) {
+                (Some(game_code), Some(player_token)) => {
+                    if let Err(reason) = guard_game_action_payload(&action) {
+                        ServerMessage::ManaPaymentPreviewRejected { request_id, reason }
+                    } else {
+                        let mgr = state.lock().await;
+                        match mgr.preview_mana_payment(&game_code, &player_token, &action) {
+                            Ok(source_ids) => ServerMessage::ManaPaymentPreview {
+                                request_id,
+                                source_ids,
+                            },
+                            Err(reason) => {
+                                ServerMessage::ManaPaymentPreviewRejected { request_id, reason }
+                            }
+                        }
+                    }
+                }
+                _ => ServerMessage::ManaPaymentPreviewRejected {
+                    request_id,
+                    reason: "Not in a game".to_string(),
+                },
+            };
+
+            if let Ok(json) = serde_json::to_string(&response) {
+                let _ = socket.send(Message::text(json)).await;
+            }
+        }
+
         ClientMessage::Action { action } => {
             let game_code = match &identity.game_code {
                 Some(c) => c.clone(),
@@ -3231,7 +3357,11 @@ async fn handle_client_message(
                                         log_entries: log_entries.clone(),
                                         spell_costs: p_spell_costs,
                                         legal_actions_by_object: p_by_object,
-                                        derived: derive_views(pstate, Some(*pid)),
+                                        derived: derive_transport_views(
+                                            &raw_state,
+                                            pstate,
+                                            Some(*pid),
+                                        ),
                                     });
                                 }
                             }
@@ -3334,7 +3464,11 @@ async fn handle_client_message(
                                         log_entries: ai_log_entries.clone(),
                                         spell_costs: p_spell_costs,
                                         legal_actions_by_object: p_by_object,
-                                        derived: derive_views(pstate, Some(*pid)),
+                                        derived: derive_transport_views(
+                                            ai_raw_state,
+                                            pstate,
+                                            Some(*pid),
+                                        ),
                                     });
                                 }
                             }
@@ -3729,6 +3863,7 @@ async fn handle_client_message(
                     &deck.main_deck,
                     &deck.sideboard,
                     &deck.commander,
+                    &deck.companion,
                     &deck.planar_deck,
                     &deck.scheme_deck,
                     &deck.signature_spell,
@@ -3781,6 +3916,7 @@ async fn handle_client_message(
                         &ai_deck_data.main_deck,
                         &ai_deck_data.sideboard,
                         &ai_deck_data.commander,
+                        &ai_deck_data.companion,
                         &ai_deck_data.planar_deck,
                         &ai_deck_data.scheme_deck,
                         &ai_deck_data.signature_spell,
@@ -4473,6 +4609,7 @@ async fn handle_client_message(
                     joiner: PlayerId,
                     slot_info: Vec<server_core::PlayerSlotInfo>,
                     current_count: u32,
+                    raw_state: Box<engine::types::game_state::GameState>,
                     filtered_state: Box<engine::types::game_state::GameState>,
                 },
                 Started {
@@ -4540,6 +4677,7 @@ async fn handle_client_message(
                                 joiner,
                                 slot_info: session.player_slot_info(),
                                 current_count: session.current_player_count(),
+                                raw_state: Box::new(session.state.clone()),
                                 filtered_state: Box::new(filtered_state),
                             })
                         }
@@ -4554,8 +4692,10 @@ async fn handle_client_message(
                     joiner,
                     slot_info,
                     current_count,
+                    raw_state,
                     filtered_state,
                 }) => {
+                    let raw_state = *raw_state;
                     let filtered_state = *filtered_state;
                     identity.set_session(game_code.clone(), joiner, player_token);
 
@@ -4587,7 +4727,7 @@ async fn handle_client_message(
                         .await;
                     }
 
-                    let derived = derive_views(&filtered_state, Some(joiner));
+                    let derived = derive_transport_views(&raw_state, &filtered_state, Some(joiner));
                     let msg = ServerMessage::StateUpdate {
                         state: filtered_state,
                         events: vec![],
@@ -5808,6 +5948,53 @@ async fn handle_client_message(
 }
 
 #[cfg(test)]
+mod state_transport_derived_tests {
+    use super::*;
+    use engine::types::ability::SearchSelectionConstraint;
+    use engine::types::game_state::{
+        ActiveSearchDecisionAuthority, ActiveSearchDecisionControl, WaitingFor,
+    };
+
+    #[test]
+    fn human_ai_and_takeback_transports_derive_search_authority_from_raw_state() {
+        let mut raw = GameState::new_two_player(42);
+        raw.waiting_for = WaitingFor::SearchChoice {
+            player: PlayerId(0),
+            library_owner: None,
+            cards: Vec::new(),
+            count: 0,
+            reveal: false,
+            up_to: true,
+            allows_partial_find: true,
+            constraint: SearchSelectionConstraint::None,
+            split: None,
+        };
+        raw.active_search_decision_controls
+            .insert(ActiveSearchDecisionControl {
+                searcher: PlayerId(0),
+                searched_zone_owner: PlayerId(0),
+                authority: ActiveSearchDecisionAuthority::LatchedController {
+                    controller: PlayerId(1),
+                },
+            });
+
+        let mut filtered = server_core::filter_state_for_player(&raw, PlayerId(0));
+        filtered
+            .active_search_decision_controls
+            .remove(&PlayerId(0));
+
+        for transport in ["human action", "AI follow-up", "takeback"] {
+            assert_eq!(
+                derive_transport_views(&raw, &filtered, Some(PlayerId(0)))
+                    .unique_authorized_submitter,
+                Some(PlayerId(1)),
+                "{transport} transport must retain raw search authority",
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod ranked_tests {
     use super::*;
     use tempfile::NamedTempFile;
@@ -6420,6 +6607,10 @@ mod mode_gate_tests {
             ClientMessage::Action {
                 action: GameAction::PassPriority,
             },
+            ClientMessage::PreviewManaPayment {
+                request_id: 1,
+                action: GameAction::PassPriority,
+            },
             ClientMessage::Reconnect {
                 game_code: "X".into(),
                 player_token: "t".into(),
@@ -6520,6 +6711,10 @@ mod mode_gate_tests {
         let msgs: Vec<ClientMessage> = vec![
             ClientMessage::CreateGame { deck: deck() },
             ClientMessage::Action {
+                action: GameAction::PassPriority,
+            },
+            ClientMessage::PreviewManaPayment {
+                request_id: 1,
                 action: GameAction::PassPriority,
             },
             ClientMessage::Concede,
@@ -7041,5 +7236,387 @@ mod issue_4548_deadlock_tests {
         .expect(
             "create_and_connect_multiplayer_session must release state+connections before returning",
         );
+    }
+}
+
+#[cfg(test)]
+mod admin_auth_tests {
+    use std::sync::atomic::AtomicU32;
+    use std::sync::Arc;
+
+    use axum::http::StatusCode;
+    use axum::routing::get;
+    use axum::Router;
+    use lobby_broker::Broker;
+    use server_core::draft_session::DraftSessionManager;
+    use server_core::session::SessionManager;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::Mutex;
+    use url::Url;
+
+    use super::{
+        admin_request_authorized, draft_pools, mount_admin_routes, persistence, tokens_match,
+        AppState, ServerMode,
+    };
+
+    const TOKEN: &str = "s3cr3t-admin-token";
+
+    fn test_app_state(temp_dir: &tempfile::TempDir) -> AppState {
+        let game_db_path = temp_dir.path().join("games.db");
+        let game_db = Arc::new(persistence::GameDb::open(&game_db_path).expect("game db"));
+        AppState {
+            sessions: Arc::new(Mutex::new(SessionManager::new())),
+            draft_sessions: Arc::new(Mutex::new(DraftSessionManager::new())),
+            draft_pools: Arc::new(draft_pools::DraftPools::default()),
+            connections: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            db: Arc::new(engine::database::CardDatabase::default()),
+            lobby: Arc::new(Mutex::new(Broker::new())),
+            lobby_subscribers: Arc::new(Mutex::new(Vec::new())),
+            player_count: Arc::new(AtomicU32::new(0)),
+            game_db,
+            draft_spectators: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            game_spectators: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            mode: ServerMode::Full,
+            public_url: None,
+        }
+    }
+
+    async fn spawn_admin_http_test(
+        admin_token: Option<&str>,
+    ) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_state = test_app_state(&temp_dir);
+        // Mirror production: establish Router<AppState> before mounting admin routes.
+        let mut app = Router::new().route("/ws", get(super::ws_handler));
+        if let Some(token) = admin_token.filter(|t| !t.is_empty()) {
+            app = mount_admin_routes(app, token);
+        }
+        let app = app.with_state(app_state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("test server");
+        });
+        (format!("http://{addr}"), handle, temp_dir)
+    }
+
+    async fn get_admin_drafts(base_url: &str, auth: Option<&str>) -> StatusCode {
+        let url = Url::parse(&format!("{base_url}/admin/drafts")).expect("url");
+        let host = url.host_str().expect("host");
+        let port = url.port().expect("port");
+        let mut stream = tokio::net::TcpStream::connect((host, port))
+            .await
+            .expect("connect");
+        let mut request = String::from("GET /admin/drafts HTTP/1.1\r\n");
+        request.push_str(&format!("Host: {host}\r\n"));
+        if let Some(value) = auth {
+            request.push_str(&format!("Authorization: {value}\r\n"));
+        }
+        request.push_str("Connection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.expect("write");
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).await.expect("read");
+        let response = std::str::from_utf8(&buf[..n]).expect("utf8");
+        let status_code = response
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("status line");
+        StatusCode::from_u16(status_code).expect("status code")
+    }
+
+    #[test]
+    fn tokens_match_is_exact() {
+        assert!(tokens_match(b"abc", b"abc"));
+        assert!(!tokens_match(b"abc", b"abd"));
+        assert!(!tokens_match(b"abc", b"ab"));
+        assert!(!tokens_match(b"", b"x"));
+        assert!(tokens_match(b"", b""));
+    }
+
+    #[test]
+    fn authorized_only_with_matching_bearer_token() {
+        let ok = format!("Bearer {TOKEN}");
+        assert!(admin_request_authorized(Some(&ok), TOKEN));
+        let padded = format!("Bearer   {TOKEN}  ");
+        assert!(admin_request_authorized(Some(&padded), TOKEN));
+        assert!(admin_request_authorized(
+            Some(&format!("bearer {TOKEN}")),
+            TOKEN
+        ));
+        assert!(admin_request_authorized(
+            Some(&format!("BEARER {TOKEN}")),
+            TOKEN
+        ));
+    }
+
+    #[test]
+    fn rejects_missing_wrong_or_malformed_header() {
+        assert!(!admin_request_authorized(None, TOKEN));
+        assert!(!admin_request_authorized(Some(""), TOKEN));
+        assert!(!admin_request_authorized(Some("Bearer wrong-token"), TOKEN));
+        let basic = format!("Basic {TOKEN}");
+        assert!(!admin_request_authorized(Some(&basic), TOKEN));
+        assert!(!admin_request_authorized(Some(TOKEN), TOKEN));
+    }
+
+    #[tokio::test]
+    async fn admin_routes_absent_without_token() {
+        let (base_url, server, _temp) = spawn_admin_http_test(None).await;
+        assert_eq!(
+            get_admin_drafts(&base_url, None).await,
+            StatusCode::NOT_FOUND
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn admin_routes_reject_missing_bearer() {
+        let (base_url, server, _temp) = spawn_admin_http_test(Some(TOKEN)).await;
+        assert_eq!(
+            get_admin_drafts(&base_url, None).await,
+            StatusCode::UNAUTHORIZED
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn admin_routes_reject_wrong_bearer() {
+        let (base_url, server, _temp) = spawn_admin_http_test(Some(TOKEN)).await;
+        assert_eq!(
+            get_admin_drafts(&base_url, Some("Bearer wrong-token")).await,
+            StatusCode::UNAUTHORIZED
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn admin_routes_accept_valid_bearer() {
+        let (base_url, server, _temp) = spawn_admin_http_test(Some(TOKEN)).await;
+        assert_eq!(
+            get_admin_drafts(&base_url, Some(&format!("Bearer {TOKEN}"))).await,
+            StatusCode::OK
+        );
+        server.abort();
+    }
+}
+
+#[cfg(test)]
+mod p2p_backup_delete_tests {
+    use std::sync::atomic::AtomicU32;
+    use std::sync::Arc;
+
+    use axum::http::StatusCode;
+    use axum::routing::{get, post};
+    use axum::Router;
+    use lobby_broker::Broker;
+    use server_core::draft_session::DraftSessionManager;
+    use server_core::session::SessionManager;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::Mutex;
+    use url::Url;
+
+    use super::{admin, draft_pools, persistence, AppState, ServerMode};
+
+    const DRAFT_CODE: &str = "BACK01";
+    const HOST_PEER: &str = "peer-host-owner";
+    const OTHER_PEER: &str = "peer-not-owner";
+    const SNAPSHOT: &str = r#"{"status":"Drafting"}"#;
+
+    fn test_app_state(temp_dir: &tempfile::TempDir) -> AppState {
+        let game_db_path = temp_dir.path().join("games.db");
+        let game_db = Arc::new(persistence::GameDb::open(&game_db_path).expect("game db"));
+        AppState {
+            sessions: Arc::new(Mutex::new(SessionManager::new())),
+            draft_sessions: Arc::new(Mutex::new(DraftSessionManager::new())),
+            draft_pools: Arc::new(draft_pools::DraftPools::default()),
+            connections: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            db: Arc::new(engine::database::CardDatabase::default()),
+            lobby: Arc::new(Mutex::new(Broker::new())),
+            lobby_subscribers: Arc::new(Mutex::new(Vec::new())),
+            player_count: Arc::new(AtomicU32::new(0)),
+            game_db,
+            draft_spectators: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            game_spectators: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            mode: ServerMode::Full,
+            public_url: None,
+        }
+    }
+
+    async fn spawn_p2p_backup_http_test(
+        app_state: AppState,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let app = Router::new()
+            .route("/p2p-draft-backup", post(admin::p2p_backup_store))
+            .route(
+                "/p2p-draft-backup/{code}",
+                get(admin::p2p_backup_get).delete(admin::p2p_backup_delete),
+            )
+            .with_state(app_state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("test server");
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    async fn request_status(base_url: &str, method: &str, path: &str) -> StatusCode {
+        let url = Url::parse(&format!("{base_url}{path}")).expect("url");
+        let host = url.host_str().expect("host");
+        let port = url.port().expect("port");
+        let mut stream = tokio::net::TcpStream::connect((host, port))
+            .await
+            .expect("connect");
+        let mut request = format!("{method} {path} HTTP/1.1\r\n");
+        request.push_str(&format!("Host: {host}\r\n"));
+        request.push_str("Connection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.expect("write");
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).await.expect("read");
+        let response = std::str::from_utf8(&buf[..n]).expect("utf8");
+        let status_code = response
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|s| s.parse::<u16>().ok())
+            .expect("status line");
+        StatusCode::from_u16(status_code).expect("status code")
+    }
+
+    fn seed_backup(app_state: &AppState) {
+        app_state
+            .game_db
+            .save_p2p_backup(DRAFT_CODE, HOST_PEER, SNAPSHOT)
+            .expect("seed backup");
+    }
+
+    #[tokio::test]
+    async fn get_rejects_missing_host_peer_id() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_state = test_app_state(&temp_dir);
+        seed_backup(&app_state);
+        let (base_url, server) = spawn_p2p_backup_http_test(app_state).await;
+
+        assert_eq!(
+            request_status(&base_url, "GET", &format!("/p2p-draft-backup/{DRAFT_CODE}")).await,
+            StatusCode::BAD_REQUEST,
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn get_rejects_mismatched_host_peer_id() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_state = test_app_state(&temp_dir);
+        seed_backup(&app_state);
+        let (base_url, server) = spawn_p2p_backup_http_test(app_state).await;
+
+        assert_eq!(
+            request_status(
+                &base_url,
+                "GET",
+                &format!("/p2p-draft-backup/{DRAFT_CODE}?host_peer_id={OTHER_PEER}")
+            )
+            .await,
+            StatusCode::NOT_FOUND,
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn get_accepts_matching_host_peer_id() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_state = test_app_state(&temp_dir);
+        seed_backup(&app_state);
+        let (base_url, server) = spawn_p2p_backup_http_test(app_state).await;
+
+        assert_eq!(
+            request_status(
+                &base_url,
+                "GET",
+                &format!("/p2p-draft-backup/{DRAFT_CODE}?host_peer_id={HOST_PEER}")
+            )
+            .await,
+            StatusCode::OK,
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_missing_host_peer_id_and_preserves_row() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_state = test_app_state(&temp_dir);
+        seed_backup(&app_state);
+        let game_db = Arc::clone(&app_state.game_db);
+        let (base_url, server) = spawn_p2p_backup_http_test(app_state).await;
+
+        assert_eq!(
+            request_status(
+                &base_url,
+                "DELETE",
+                &format!("/p2p-draft-backup/{DRAFT_CODE}")
+            )
+            .await,
+            StatusCode::BAD_REQUEST,
+        );
+        assert!(
+            game_db.load_p2p_backup(DRAFT_CODE).expect("load").is_some(),
+            "backup must survive DELETE without host_peer_id"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_mismatched_host_peer_id_and_preserves_row() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_state = test_app_state(&temp_dir);
+        seed_backup(&app_state);
+        let game_db = Arc::clone(&app_state.game_db);
+        let (base_url, server) = spawn_p2p_backup_http_test(app_state).await;
+
+        assert_eq!(
+            request_status(
+                &base_url,
+                "DELETE",
+                &format!("/p2p-draft-backup/{DRAFT_CODE}?host_peer_id={OTHER_PEER}"),
+            )
+            .await,
+            StatusCode::FORBIDDEN,
+        );
+        assert!(
+            game_db.load_p2p_backup(DRAFT_CODE).expect("load").is_some(),
+            "backup must survive DELETE with wrong host_peer_id"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn delete_accepts_matching_host_peer_id() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_state = test_app_state(&temp_dir);
+        seed_backup(&app_state);
+        let game_db = Arc::clone(&app_state.game_db);
+        let (base_url, server) = spawn_p2p_backup_http_test(app_state).await;
+
+        assert_eq!(
+            request_status(
+                &base_url,
+                "DELETE",
+                &format!("/p2p-draft-backup/{DRAFT_CODE}?host_peer_id={HOST_PEER}"),
+            )
+            .await,
+            StatusCode::OK,
+        );
+        assert!(
+            game_db.load_p2p_backup(DRAFT_CODE).expect("load").is_none(),
+            "backup must be removed after authorized DELETE"
+        );
+        server.abort();
     }
 }

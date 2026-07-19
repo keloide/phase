@@ -620,7 +620,7 @@ pub fn extract_subtype(p: &Permanents) -> ConvResult<String> {
         // CR 702.14a + CR 702.14c: Landwalk uses the land subtype name as the
         // walk-quality label ("Swamp" → swampwalk, "Forest" → forestwalk,
         // etc.). The native parser stores these as capitalized strings
-        // (matched by `parse_keyword_from_oracle_landwalk_variants`), so
+        // (matched by `parse_granted_keyword_fragment_landwalk_variants`), so
         // we render `LandType` via Debug to produce "Swamp", "Island",
         // "Forest", "Mountain", "Plains", "Desert", "Cave", "Gate", etc.
         Permanents::IsLandType(lt) => Ok(land_type_name(lt)),
@@ -1922,6 +1922,9 @@ fn has_ability_filter(check: &CheckHasable) -> ConvResult<TargetFilter> {
         },
         C::AnyFlashback => FilterProp::HasKeywordKind {
             value: KeywordKind::Flashback,
+        },
+        C::AnyMadness => FilterProp::HasKeywordKind {
+            value: KeywordKind::Madness,
         },
         C::AnySuspend => FilterProp::HasKeywordKind {
             value: KeywordKind::Suspend,

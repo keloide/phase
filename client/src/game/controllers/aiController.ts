@@ -1,6 +1,6 @@
 import { AI_BASE_DELAY_MS, AI_DELAY_VARIANCE_MS, PLAYER_ID } from "../../constants/game";
 import { useGameStore } from "../../stores/gameStore";
-import type { GameAction, WaitingFor } from "../../adapter/types";
+import type { GameAction, GameState, WaitingFor } from "../../adapter/types";
 import { AdapterError, AdapterErrorCode } from "../../adapter/types";
 import { pressureMultiplier, STACK_PRESSURE_ELEVATED } from "../../utils/stackPressure";
 import { effectiveStackPressure } from "../../utils/stackThroughput";
@@ -39,6 +39,38 @@ function isStateLost(err: unknown): boolean {
   return err instanceof AdapterError && err.code === AdapterErrorCode.STATE_LOST;
 }
 
+function choiceTypeKey(choiceType: string | Record<string, unknown>): string {
+  if (typeof choiceType === "string") return choiceType;
+  return Object.keys(choiceType)[0] ?? "Unknown";
+}
+
+function describeAiCardPredicateGuess(
+  action: GameAction,
+  waitingFor: WaitingFor | null | undefined,
+  gameState: GameState | null | undefined,
+): string | null {
+  if (action.type !== "ChooseOption" || waitingFor?.type !== "NamedChoice") return null;
+  if (choiceTypeKey(waitingFor.data.choice_type) !== "CardPredicateGuess") return null;
+
+  const sourceId = waitingFor.data.source_id;
+  const sourceName = sourceId == null ? null : gameState?.objects?.[sourceId]?.name;
+  return sourceName == null
+    ? `guesses ${action.data.choice}`
+    : `guesses ${action.data.choice} for ${sourceName}`;
+}
+
+function waitingForFingerprint(waitingFor: WaitingFor | null | undefined): string {
+  return JSON.stringify(waitingFor ?? null);
+}
+
+function waitingForDebugLabel(waitingFor: WaitingFor | null | undefined): string {
+  if (waitingFor == null) return "none";
+  const data = (waitingFor as { data?: { player?: number } }).data;
+  const player = data?.player == null ? "unknown" : String(data.player);
+  if (waitingFor.type !== "NamedChoice") return `${waitingFor.type} for player ${player}`;
+  return `${waitingFor.type}/${choiceTypeKey(waitingFor.data.choice_type)} for player ${player}`;
+}
+
 export function createAIController(config: AIControllerConfig): AIController {
   let active = false;
   let pending = false;
@@ -52,6 +84,7 @@ export function createAIController(config: AIControllerConfig): AIController {
   let lastWaitingForKey: string | null = null;
   let consecutiveFailures = 0;
   let totalFailures = 0;
+  let lastDispatchError: string | null = null;
   const MAX_CONSECUTIVE_FAILURES = 3;
 
   const difficultyByPlayerId = new Map(config.seats.map((s) => [s.playerId, s.difficulty]));
@@ -60,7 +93,7 @@ export function createAIController(config: AIControllerConfig): AIController {
   /**
    * Stable identity key for a WaitingFor — type + player so Priority{0} ≠ Priority{1}.
    *
-   * For simultaneous-mulligan states (`MulliganDecision`, `MulliganBottomCards`,
+   * For simultaneous-mulligan states (`MulliganDecision`,
    * `OpeningHandBottomCards`)
    * `data.player` is undefined, so falling back to -1 would collapse every
    * pending seat to the same key. We instead key by the AI seat that the
@@ -84,7 +117,6 @@ export function createAIController(config: AIControllerConfig): AIController {
   }): number | null {
     if (
       wf.type !== "MulliganDecision" &&
-      wf.type !== "MulliganBottomCards" &&
       wf.type !== "OpeningHandBottomCards"
     ) {
       return null;
@@ -120,7 +152,6 @@ export function createAIController(config: AIControllerConfig): AIController {
       waitingPlayerId = mulliganPid;
     } else if (
       waitingFor.type === "MulliganDecision" ||
-      waitingFor.type === "MulliganBottomCards" ||
       waitingFor.type === "OpeningHandBottomCards"
     ) {
       // Local human is pending (or no AI players left in pending) — do nothing.
@@ -133,7 +164,12 @@ export function createAIController(config: AIControllerConfig): AIController {
       if (
         !("data" in waitingFor) ||
         !waitingFor.data ||
-        !("player" in waitingFor.data)
+        // CR 732.2a: shortcut offers carry `proposer`, not `player`; route both
+        // legacy and finite pre-cast offers via the engine-derived
+        // `priority_player` like every `player in` state.
+        (!("player" in waitingFor.data) &&
+          waitingFor.type !== "LoopShortcut" &&
+          waitingFor.type !== "PrecastCopyShortcutOffer")
       )
         return;
       // CR 723.5: Under a turn-control effect (Emrakul, the Promised End /
@@ -180,6 +216,7 @@ export function createAIController(config: AIControllerConfig): AIController {
       lastWaitingForKey = key;
       consecutiveFailures = 0;
       totalFailures = 0;
+      lastDispatchError = null;
     }
 
     // Hard stop: if we've burned through both the normal and fallback paths
@@ -192,7 +229,7 @@ export function createAIController(config: AIControllerConfig): AIController {
         `AI controller halting: ${totalFailures} failures on ${waitingFor.type}`,
         "error",
       );
-      notifyEngineLost("ai-controller-stuck");
+      notifyEngineLost(`ai-controller-stuck:${waitingFor.type}`);
       stop();
       return;
     }
@@ -205,58 +242,57 @@ export function createAIController(config: AIControllerConfig): AIController {
       // Guard against re-entry: set pending so subscription callbacks during
       // the fallback dispatch don't trigger another fallback cascade.
       pending = true;
-      // Resolve a guaranteed-legal escape action. A hardcoded empty combat
-      // declaration is NOT always legal — CR 508.1d / CR 701.15b require
-      // goaded / "attacks if able" creatures to be declared. Instead, ask the
-      // engine for its legal-action list (the single authority for legality).
-      // Non-priority legal actions are already scoped to the current
-      // WaitingFor; Priority fallback keeps preferring PassPriority as the
-      // least invasive escape.
-      // CancelCast escapes a stuck casting flow; PassPriority is the final
-      // fallthrough — never dispatch `undefined`.
-      const fallbackPromise: Promise<GameAction> = state.has_pending_cast
-        ? Promise.resolve<GameAction>({ type: "CancelCast" })
-        : (() => {
-            const { adapter } = useGameStore.getState();
-            if (!adapter) return Promise.resolve<GameAction>({ type: "PassPriority" });
-            return adapter.getLegalActions().then((result) => {
-              if (waitingFor.type === "Priority") {
-                return (
-                  result.actions.find((a) => a.type === "PassPriority") ??
-                  { type: "PassPriority" }
-                );
-              }
-              return result.actions[0] ?? { type: "PassPriority" };
-            });
-          })();
-      // Dispatch the fallback as the authorized submitter being unstuck —
-      // NEVER as the local human (which `checkAndSchedule` already excludes via
-      // the `waitingPlayerId === PLAYER_ID` early-return above, CR 723.5). The
-      // engine guard would reject a non-authorized actor. A rejection from
-      // getLegalActions routes into the existing .catch() below.
-      fallbackPromise
-        .then((fallback) => dispatchAction(fallback, waitingPlayerId))
-        .then(() => {
-          consecutiveFailures = 0;
-          totalFailures = 0;
-        })
-        .catch((e) => {
-          // Increment both counters to prevent infinite fallback retry.
-          consecutiveFailures++;
-          totalFailures++;
-          debugLog(
-            `AI fallback also failed (${consecutiveFailures}/${totalFailures}): ${e instanceof Error ? e.message : String(e)}`,
-            "warn",
-          );
-        })
-        .finally(() => {
-          pending = false;
-          if (active) checkAndSchedule();
-        });
+      runEscapeFallback(waitingFor, waitingPlayerId).finally(() => {
+        pending = false;
+        if (active) checkAndSchedule();
+      });
       return;
     }
 
     scheduleAction(waitingPlayerId);
+  }
+
+  function pickEscapeAction(
+    waitingFor: WaitingFor,
+    state: GameState,
+  ): Promise<GameAction> {
+    if (state.has_pending_cast) {
+      return Promise.resolve({ type: "CancelCast" });
+    }
+    const { adapter } = useGameStore.getState();
+    if (!adapter) return Promise.resolve({ type: "PassPriority" });
+    return adapter.getLegalActions().then((result) => {
+      if (waitingFor.type === "Priority") {
+        return (
+          result.actions.find((a) => a.type === "PassPriority") ??
+          { type: "PassPriority" }
+        );
+      }
+      return result.actions[0] ?? { type: "PassPriority" };
+    });
+  }
+
+  async function runEscapeFallback(
+    waitingFor: WaitingFor,
+    waitingPlayerId: number,
+  ): Promise<void> {
+    const state = useGameStore.getState().gameState;
+    if (!state) return;
+    try {
+      const fallback = await pickEscapeAction(waitingFor, state);
+      await dispatchAction(fallback, waitingPlayerId);
+      consecutiveFailures = 0;
+      totalFailures = 0;
+      lastDispatchError = null;
+    } catch (e) {
+      consecutiveFailures++;
+      totalFailures++;
+      lastDispatchError = e instanceof Error ? e.message : String(e);
+      debugLog(
+        `AI fallback also failed (${consecutiveFailures}/${totalFailures}): ${lastDispatchError}`,
+        "warn",
+      );
+    }
   }
 
   function scheduleAction(playerId: number) {
@@ -271,6 +307,8 @@ export function createAIController(config: AIControllerConfig): AIController {
     // can simultaneously run Easy, Medium, and VeryHard policies.
     const difficulty = difficultyByPlayerId.get(playerId) ?? "Medium";
     const waitingForType = gameState?.waiting_for?.type;
+    const scheduledWaitingFor = gameState?.waiting_for ?? null;
+    const scheduledWaitingForFingerprint = waitingForFingerprint(scheduledWaitingFor);
     const actionPromise: Promise<GameAction | null> = Promise.resolve(
       adapter?.getAiAction(difficulty, playerId, waitingForType) ?? null,
     );
@@ -283,7 +321,6 @@ export function createAIController(config: AIControllerConfig): AIController {
     // engine returns (computation is near-instant after our optimizations).
     const isMulligan =
       waitingForType === "MulliganDecision" ||
-      waitingForType === "MulliganBottomCards" ||
       waitingForType === "OpeningHandBottomCards";
     // Collapse the humanization delay under stack pressure. The depth-based skip
     // gate (checkAndSchedule) only fires at Elevated depth, which a 0↔1 trigger
@@ -300,7 +337,6 @@ export function createAIController(config: AIControllerConfig): AIController {
       }
       let failed = false;
       try {
-        const { gameState } = useGameStore.getState();
         let action: GameAction | null;
         try {
           action = await actionPromise;
@@ -340,13 +376,31 @@ export function createAIController(config: AIControllerConfig): AIController {
         // after stop() was called, and dispatching a stale action from the old
         // game into a new game session would corrupt state.
         if (!active) return;
+        const currentGameState = useGameStore.getState().gameState;
+        const currentWaitingFor = currentGameState?.waiting_for ?? null;
+        if (waitingForFingerprint(currentWaitingFor) !== scheduledWaitingForFingerprint) {
+          debugLog(
+            `AI ignored stale ${action?.type ?? "action"} for player ${playerId + 1}: waitingFor changed from ${waitingForDebugLabel(scheduledWaitingFor)} to ${waitingForDebugLabel(currentWaitingFor)}`,
+            "info",
+          );
+          return;
+        }
         if (action == null) {
           debugLog(
-            `AI getAiAction returned null for player ${playerId} (waitingFor: ${gameState?.waiting_for?.type ?? "none"})`,
+            `AI getAiAction returned null for player ${playerId} (waitingFor: ${currentWaitingFor?.type ?? "none"}), dispatching legal-action fallback`,
             "warn",
           );
-          failed = true;
+          const waitingFor = currentWaitingFor;
+          if (waitingFor != null) {
+            await runEscapeFallback(waitingFor, playerId);
+          } else {
+            failed = true;
+          }
           return;
+        }
+        const guess = describeAiCardPredicateGuess(action, currentWaitingFor, currentGameState);
+        if (guess != null) {
+          debugLog(`AI player ${playerId + 1} randomly ${guess}`, "info");
         }
         // Pass `playerId` (the AI seat we're driving) as actor. The engine
         // guard in `apply` verifies actor matches the authorized submitter;
@@ -357,8 +411,10 @@ export function createAIController(config: AIControllerConfig): AIController {
         // Successful dispatch — reset both failure counters
         consecutiveFailures = 0;
         totalFailures = 0;
+        lastDispatchError = null;
       } catch (e) {
-        debugLog(`AI error choosing action: ${e instanceof Error ? e.message : String(e)}`);
+        lastDispatchError = e instanceof Error ? e.message : String(e);
+        debugLog(`AI error choosing action: ${lastDispatchError}`);
         failed = true;
       } finally {
         if (failed) {

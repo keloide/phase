@@ -8,11 +8,12 @@ use engine::database::CardDatabase;
 use engine::game::deck_loading::{DeckPayload, PlayerDeckPayload};
 use engine::game::engine::{apply, start_game};
 use engine::game::finalize_public_state;
+use engine::game::preview::preview_auto_payment_sources;
 use engine::game::{load_and_hydrate_decks, rehydrate_game_from_card_db};
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
 use engine::types::format::FormatConfig;
-use engine::types::game_state::GameState;
+use engine::types::game_state::{GameState, PersistedGameState};
 use engine::types::identifiers::ObjectId;
 use engine::types::log::GameLogEntry;
 use engine::types::mana::ManaCost;
@@ -90,7 +91,7 @@ pub fn acting_players(state: &GameState) -> Vec<PlayerId> {
 /// CR 103.5: True iff `player` is one of the actors permitted to submit an
 /// action for the current WaitingFor. Replaces the
 /// `acting_player(state) == Some(player)` idiom at multiplayer routing sites
-/// so the simultaneous-decision states (MulliganDecision, MulliganBottomCards,
+/// so the simultaneous-decision states (MulliganDecision,
 /// OpeningHandBottomCards)
 /// route legal actions to every pending player, not just the first.
 pub fn is_acting(state: &GameState, player: PlayerId) -> bool {
@@ -408,6 +409,7 @@ impl GameSession {
                 main_deck: deck.main_deck.clone(),
                 sideboard: deck.sideboard.clone(),
                 commander: deck.commander.clone(),
+                companion: deck.companion.clone(),
                 planar_deck: deck.planar_deck.clone(),
                 scheme_deck: deck.scheme_deck.clone(),
                 attraction_deck: deck.attraction_deck.clone(),
@@ -594,7 +596,7 @@ impl GameSession {
 
         PersistedSession {
             game_code: self.game_code.clone(),
-            state: self.state.clone(),
+            state: PersistedGameState::capture(self.state.clone()),
             player_tokens: self.player_tokens.clone(),
             display_names: self.display_names.clone(),
             timer_seconds: self.timer_seconds,
@@ -616,7 +618,7 @@ impl GameSession {
     /// - `log_player_names` from the persisted display names
     /// - `rng` re-seeded with fresh randomness
     pub fn from_persisted(ps: PersistedSession, db: &CardDatabase) -> Self {
-        let mut state = ps.state;
+        let mut state = ps.state.into_game_state();
 
         // Restore #[serde(skip)] fields
         state.all_card_names = db.card_names().into();
@@ -986,6 +988,26 @@ impl SessionManager {
         (game_code, player_token)
     }
 
+    /// Returns the exact mana sources automatic payment would use without
+    /// changing the authenticated game session.
+    pub fn preview_mana_payment(
+        &self,
+        game_code: &str,
+        player_token: &str,
+        action: &GameAction,
+    ) -> Result<Vec<ObjectId>, String> {
+        let session = self
+            .sessions
+            .get(game_code)
+            .ok_or_else(|| format!("Game not found: {game_code}"))?;
+        let player = session
+            .player_for_token(player_token)
+            .ok_or_else(|| "Invalid player token".to_string())?;
+
+        preview_auto_payment_sources(&session.state, player, action)
+            .map_err(|error| format!("Engine error: {error}"))
+    }
+
     /// Handle a game action from a player.
     /// Returns (filtered_states_per_player, events, legal_actions_for_next_actor) on success.
     #[allow(clippy::type_complexity)]
@@ -1072,25 +1094,101 @@ impl SessionManager {
             ));
         }
 
-        // SetPhaseStops: preference propagation keyed to the authenticated player,
-        // not whoever currently holds priority. Mirrors CancelAutoPass — the engine's
-        // own handler would key by `authorized_submitter`, which is the priority
-        // holder in multiplayer, so we must intercept here to write to the correct
-        // player's entry.
-        if let GameAction::SetPhaseStops { stops } = &action {
-            if stops.is_empty() {
-                session.state.phase_stops.remove(&player);
-            } else {
-                session.state.phase_stops.insert(player, stops.clone());
-            }
+        // SetPhaseStops: per-player preference keyed to the authenticated player,
+        // not the priority holder. Bypasses the turn/legal-action prechecks (any
+        // player may adjust their own stops at any time) and delegates the
+        // mutation to the engine (single authority — the write handler keys by
+        // `actor`, i.e. the authenticated player). Not an undo point → no
+        // takeback snapshot. CR 102.1 (scope resolves against the active player).
+        if matches!(action, GameAction::SetPhaseStops { .. }) {
+            let result = apply(&mut session.state, player, action).map_err(|e| {
+                warn!(game = %game_code, player = ?player, error = %e, reason = "engine_error", "action rejected");
+                format!("Engine error: {}", e)
+            })?;
             let (new_legal_actions, spell_costs, by_object) =
                 engine_legal_actions_full(&session.state);
             let auto_pass = auto_pass_recommended(&session.state, &new_legal_actions);
             return Ok((
                 session.state.clone(),
-                vec![],
+                result.events,
                 new_legal_actions,
-                vec![],
+                result.log_entries,
+                auto_pass,
+                spell_costs,
+                by_object,
+            ));
+        }
+
+        // SetPriorityYield: per-player standing priority-yield preference keyed
+        // to the authenticated player, not the priority holder. Bypasses the
+        // turn/legal-action prechecks (any player may adjust their own yields at
+        // any time) and delegates the mutation to the engine (single authority).
+        // A preference toggle is not an undo point, so — unlike ReorderHand — it
+        // takes NO takeback snapshot. CR 117.3d.
+        if matches!(action, GameAction::SetPriorityYield { .. }) {
+            let result = apply(&mut session.state, player, action).map_err(|e| {
+                warn!(game = %game_code, player = ?player, error = %e, reason = "engine_error", "action rejected");
+                format!("Engine error: {}", e)
+            })?;
+            let (new_legal_actions, spell_costs, by_object) =
+                engine_legal_actions_full(&session.state);
+            let auto_pass = auto_pass_recommended(&session.state, &new_legal_actions);
+            return Ok((
+                session.state.clone(),
+                result.events,
+                new_legal_actions,
+                result.log_entries,
+                auto_pass,
+                spell_costs,
+                by_object,
+            ));
+        }
+
+        // SetMayTriggerAutoChoice: per-player "don't ask again" auto-choice
+        // preference for optional ("may") triggers, keyed to the authenticated
+        // player, not the priority holder. Bypasses the turn/legal-action
+        // prechecks (any player may adjust their own auto-choices at any time)
+        // and delegates the mutation to the engine (single authority — the write
+        // handler enforces actor scoping). Not an undo point → no takeback
+        // snapshot, mirroring SetPriorityYield. CR 603.5.
+        if matches!(action, GameAction::SetMayTriggerAutoChoice { .. }) {
+            let result = apply(&mut session.state, player, action).map_err(|e| {
+                warn!(game = %game_code, player = ?player, error = %e, reason = "engine_error", "action rejected");
+                format!("Engine error: {}", e)
+            })?;
+            let (new_legal_actions, spell_costs, by_object) =
+                engine_legal_actions_full(&session.state);
+            let auto_pass = auto_pass_recommended(&session.state, &new_legal_actions);
+            return Ok((
+                session.state.clone(),
+                result.events,
+                new_legal_actions,
+                result.log_entries,
+                auto_pass,
+                spell_costs,
+                by_object,
+            ));
+        }
+
+        // SetTriggerOrderTemplate: per-player saved trigger-ordering preference, keyed
+        // to the authenticated player, not the priority holder. Bypasses the turn/legal
+        // prechecks (any player may adjust their own templates at any time) and delegates
+        // the mutation to the engine (single authority — the write handler enforces actor
+        // scoping). Not an undo point → no takeback snapshot, mirroring
+        // SetMayTriggerAutoChoice. CR 603.3b.
+        if matches!(action, GameAction::SetTriggerOrderTemplate { .. }) {
+            let result = apply(&mut session.state, player, action).map_err(|e| {
+                warn!(game = %game_code, player = ?player, error = %e, reason = "engine_error", "action rejected");
+                format!("Engine error: {}", e)
+            })?;
+            let (new_legal_actions, spell_costs, by_object) =
+                engine_legal_actions_full(&session.state);
+            let auto_pass = auto_pass_recommended(&session.state, &new_legal_actions);
+            return Ok((
+                session.state.clone(),
+                result.events,
+                new_legal_actions,
+                result.log_entries,
                 auto_pass,
                 spell_costs,
                 by_object,
@@ -1204,7 +1302,16 @@ impl SessionManager {
                 && session
                     .state
                     .waiting_for
-                    .accepts_freeform_blocker_damage_assignment());
+                    .accepts_freeform_blocker_damage_assignment())
+            // CR 107.1c: "remove any number of counters" has a combinatorial legal
+            // space the coarse AI candidates cannot enumerate; the engine handler
+            // (validate_counter_selection) is the real validation boundary, so the
+            // server bypasses its candidate gate for a human's intermediate submit.
+            || (matches!(action, GameAction::ChooseCountersToRemove { .. })
+                && session
+                    .state
+                    .waiting_for
+                    .accepts_freeform_counter_removal());
         if !skip_legality {
             let (legal_actions, _, _) = engine_legal_actions_full(&session.state);
             if !legal_actions.contains(&action) {
@@ -1379,11 +1486,19 @@ pub fn generate_player_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::database::card_db::CardDatabase;
     use engine::game::deck_loading::DeckEntry;
+    use engine::game::engine::apply;
+    use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+    use engine::game::scenario_db::GameScenarioDbExt;
+    use engine::types::ability::TargetRef;
+    use engine::types::actions::PrecastCopyShortcutResponse;
     use engine::types::card::CardFace;
     use engine::types::card_type::CardType;
-    use engine::types::game_state::WaitingFor;
+    use engine::types::game_state::{CastPaymentMode, PersistedGameState, WaitingFor};
     use engine::types::mana::ManaCost;
+    use engine::types::phase::{Phase, PhaseStop, PhaseStopScope};
+    use engine::types::zones::Zone;
     use seat_reducer::types::SeatMutation;
 
     fn make_deck() -> PlayerDeckPayload {
@@ -1786,6 +1901,54 @@ mod tests {
         (mgr, code, token0, token1)
     }
 
+    /// `SetPhaseStops` is keyed to the authenticated player and delegated to the
+    /// engine write-handler (keyed by `actor`), so a non-priority player's stops
+    /// land on their OWN entry — not the priority holder's. Mirrors the
+    /// `SetPriorityYield` delegate precedent.
+    #[test]
+    fn set_phase_stops_lands_on_authenticated_players_entry() {
+        let (mut mgr, code, token0, token1) = setup_two_player_game();
+
+        let priority_player = match &mgr.sessions.get(&code).unwrap().state.waiting_for {
+            WaitingFor::Priority { player } => *player,
+            other => panic!("expected Priority, got {:?}", other),
+        };
+        // Dispatch from the player who does NOT hold priority.
+        let (non_priority_player, non_priority_token) = if priority_player == PlayerId(0) {
+            (PlayerId(1), token1)
+        } else {
+            (PlayerId(0), token0)
+        };
+
+        let stops = vec![PhaseStop {
+            phase: Phase::DeclareBlockers,
+            scope: PhaseStopScope::OpponentsTurns,
+        }];
+        let result = mgr.handle_action(
+            &code,
+            &non_priority_token,
+            GameAction::SetPhaseStops {
+                stops: stops.clone(),
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "SetPhaseStops from a non-priority player should succeed: {:?}",
+            result.err()
+        );
+
+        let state = &mgr.sessions.get(&code).unwrap().state;
+        assert_eq!(
+            state.phase_stops.get(&non_priority_player),
+            Some(&stops),
+            "the write must land on the authenticated (non-priority) player's entry"
+        );
+        assert!(
+            !state.phase_stops.contains_key(&priority_player),
+            "the priority holder's entry must remain untouched"
+        );
+    }
+
     /// `ReorderHand` succeeds even when the sender is not the priority holder.
     /// The hand is reordered to the requested permutation.
     #[test]
@@ -1887,6 +2050,41 @@ mod tests {
 
     use crate::takeback::TakebackOutcome;
 
+    fn precast_offer_runner() -> (GameRunner, u64) {
+        const CHAIN_OF_SMOG: &str = "Target player discards two cards. That player may copy this spell and may choose a new target for that copy.";
+        let db = CardDatabase::from_mtgjson(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../data/mtgjson/test_fixture.json"),
+        )
+        .expect("parser fixture must contain Witherbloom Apprentice");
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.add_real_card(P0, "Witherbloom Apprentice", Zone::Battlefield, &db);
+        let chain = scenario
+            .add_spell_to_hand_from_oracle(P0, "Chain of Smog", false, CHAIN_OF_SMOG)
+            .id();
+        let mut runner = scenario.build();
+        let card_id = runner.state().objects[&chain].card_id;
+        runner
+            .act(GameAction::CastSpell {
+                object_id: chain,
+                card_id,
+                targets: Vec::new(),
+                payment_mode: CastPaymentMode::Auto,
+            })
+            .expect("cast Chain through the engine reducer");
+        runner
+            .act(GameAction::ChooseTarget {
+                target: Some(TargetRef::Player(P0)),
+            })
+            .expect("target Chain at P0");
+        let epoch = match &runner.state().waiting_for {
+            WaitingFor::PrecastCopyShortcutOffer { epoch, .. } => *epoch,
+            ref other => panic!("expected live pre-cast offer, got {other:?}"),
+        };
+        (runner, epoch)
+    }
+
     /// Two human players: a request stays `Pending` until the other player
     /// approves, then the rolled-back state matches the pre-action snapshot.
     #[test]
@@ -1930,6 +2128,90 @@ mod tests {
             "approved takeback should restore the pre-action waiting_for"
         );
         assert!(session.pending_takeback.is_none());
+    }
+
+    /// A takeback restores a live shortcut offer through the same rekeying
+    /// boundary as persisted sessions. The old offer capability must not be
+    /// usable after the approved rollback.
+    #[test]
+    fn approved_takeback_rekeys_precast_shortcut_capabilities() {
+        let (mut mgr, code, _token0, _token1) = setup_two_player_game();
+        let (runner, stale_epoch) = precast_offer_runner();
+        let session = mgr.sessions.get_mut(&code).unwrap();
+        session.state = runner.state().clone();
+        session.push_takeback_snapshot(P0);
+        apply(
+            &mut session.state,
+            P0,
+            GameAction::PrecastCopyShortcut {
+                epoch: stale_epoch,
+                response: PrecastCopyShortcutResponse::Decline,
+            },
+        )
+        .expect("mutate away from the offer before requesting takeback");
+
+        assert_eq!(session.request_takeback(P0), Ok(TakebackOutcome::Pending));
+        assert_eq!(
+            session.respond_takeback(P1, true),
+            Ok(TakebackOutcome::Approved)
+        );
+        let fresh_epoch = match &session.state.waiting_for {
+            WaitingFor::PrecastCopyShortcutOffer { epoch, .. } => *epoch,
+            ref other => panic!("approved takeback must reissue the offer, got {other:?}"),
+        };
+        assert_ne!(fresh_epoch, stale_epoch);
+        assert!(apply(
+            &mut session.state,
+            P0,
+            GameAction::PrecastCopyShortcut {
+                epoch: stale_epoch,
+                response: PrecastCopyShortcutResponse::Decline,
+            },
+        )
+        .is_err());
+    }
+
+    /// Existing server snapshots wrote a raw `GameState` at `state`. That
+    /// untrusted representation has no private shortcut transcript, so it
+    /// must deserialize and resume at ordinary priority rather than preserving
+    /// a protocol wait it cannot validate.
+    #[test]
+    fn persisted_session_restores_legacy_raw_state_and_current_trusted_envelope() {
+        let (mgr, code, _token0, _token1) = setup_two_player_game();
+        let (runner, stale_epoch) = precast_offer_runner();
+        let mut persisted = mgr.sessions[&code].to_persisted();
+
+        let mut legacy_json = serde_json::to_value(&persisted)
+            .expect("current persisted session serializes before compatibility rewrite");
+        legacy_json["state"] = serde_json::to_value(runner.state())
+            .expect("historical raw GameState representation serializes");
+        let legacy: PersistedSession = serde_json::from_value(legacy_json)
+            .expect("legacy raw persisted session remains decodable");
+        assert!(matches!(&legacy.state, PersistedGameState::Raw(_)));
+
+        let db = CardDatabase::from_mtgjson(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../data/mtgjson/test_fixture.json"),
+        )
+        .expect("parser fixture must contain Witherbloom Apprentice");
+        let legacy_restored = GameSession::from_persisted(legacy, &db);
+        assert!(matches!(
+            legacy_restored.state.waiting_for,
+            WaitingFor::Priority { player } if player == P0
+        ));
+
+        persisted.state = PersistedGameState::capture(runner.state().clone());
+        let trusted: PersistedSession = serde_json::from_value(
+            serde_json::to_value(persisted).expect("trusted session serializes"),
+        )
+        .expect("trusted persisted session remains decodable");
+        assert!(matches!(&trusted.state, PersistedGameState::Trusted(_)));
+        let trusted_restored = GameSession::from_persisted(trusted, &db);
+        let fresh_epoch = match trusted_restored.state.waiting_for {
+            WaitingFor::PrecastCopyShortcutOffer { epoch, .. } => epoch,
+            ref other => panic!("trusted restore must reissue its offer, got {other:?}"),
+        };
+        assert_ne!(fresh_epoch, stale_epoch);
     }
 
     /// Player A acts, then player B acts. A's takeback request must restore
@@ -2217,6 +2499,7 @@ mod tests {
             pending: vec![engine::types::game_state::MulliganDecisionEntry {
                 player: ai_pid,
                 mulligan_count: 0,
+                phase: engine::types::game_state::MulliganDecisionPhase::Declare,
             }],
             free_first_mulligan: true,
         };
@@ -2311,6 +2594,84 @@ mod tests {
             err.contains("not permitted") || err.contains("permission"),
             "{err}"
         );
+    }
+
+    // CR 107.1c: "remove any number of counters" — a human's intermediate submit
+    // ("remove 2 of 3") is not one of the coarse AI candidates (remove-none /
+    // remove-all), so the session must bypass its candidate legality gate via
+    // accepts_freeform_counter_removal + the skip_legality arm. Reverting either
+    // (#9 / #10) makes the intermediate submission fail as "Illegal action".
+    #[test]
+    fn remove_counters_intermediate_submit_bypasses_candidate_gate() {
+        use engine::types::ability::{
+            Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef,
+        };
+        use engine::types::counter::CounterType;
+        use engine::types::game_state::{CounterRemoveChoice, GameState, WaitingFor};
+        use engine::types::identifiers::CardId;
+        use engine::types::zones::Zone;
+
+        let mut mgr = SessionManager::new();
+        let (code, token) = mgr.create_game(make_deck());
+
+        let mut state = GameState::new_two_player(7);
+        let bearer = engine::game::zones::create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Bearer".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&bearer)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 3);
+        let pending = ResolvedAbility::new(
+            Effect::RemoveCounter {
+                counter_type: None,
+                count: QuantityExpr::up_to(QuantityExpr::Fixed { value: -1 }),
+                target: TargetFilter::SelfRef,
+            },
+            vec![TargetRef::Object(bearer)],
+            bearer,
+            PlayerId(0),
+        );
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::RemoveCountersChoice {
+            player: PlayerId(0),
+            source_id: bearer,
+            counter_type: None,
+            available: vec![(CounterType::Plus1Plus1, 3)],
+            pending_effect: Box::new(pending),
+        };
+        mgr.sessions.get_mut(&code).unwrap().state = state;
+
+        // Discriminating: this "remove 2 of 3" submit is absent from the coarse
+        // candidate set ({[], remove-all}); only the accepts_freeform bypass makes
+        // it legal (revert accepts_freeform_counter_removal -> false => rejected).
+        let result = mgr.handle_action(
+            &code,
+            &token,
+            GameAction::ChooseCountersToRemove {
+                selections: vec![CounterRemoveChoice {
+                    counter_type: CounterType::Plus1Plus1,
+                    count: 2,
+                }],
+            },
+        );
+
+        assert!(
+            result.is_ok(),
+            "intermediate removal must be accepted, not rejected as illegal: {result:?}"
+        );
+        let removed_to = mgr.sessions.get(&code).unwrap().state.objects[&bearer]
+            .counters
+            .get(&CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(removed_to, 1, "exactly 2 of 3 +1/+1 counters removed");
     }
 
     #[test]

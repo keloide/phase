@@ -59,6 +59,7 @@ pub fn resolve(
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::Seek,
             source_id: ability.source_id,
+            subject: None,
         });
         return Ok(());
     }
@@ -107,6 +108,7 @@ pub fn resolve(
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::Seek,
         source_id: ability.source_id,
+        subject: None,
     });
 
     Ok(())
@@ -117,7 +119,8 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        ChoiceValue, FilterProp, QuantityExpr, TargetFilter, TypeFilter, TypedFilter,
+        CardPredicateChoice, ChoiceValue, FilterProp, QuantityExpr, TargetFilter, TypeFilter,
+        TypedFilter,
     };
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::{CardId, ObjectId};
@@ -374,10 +377,10 @@ mod tests {
         let mut state = GameState::new_two_player(42);
         let land = add_library_land(&mut state, 1, PlayerId(0), "Forest");
         let creature = add_library_creature(&mut state, 2, PlayerId(0), "Bear");
-        state.last_named_choice = Some(ChoiceValue::Label("Land".to_string()));
+        state.last_named_choice = Some(ChoiceValue::CardPredicate(CardPredicateChoice::Land));
 
         let filter = TargetFilter::Typed(
-            TypedFilter::default().properties(vec![FilterProp::IsChosenLandOrNonlandKind]),
+            TypedFilter::default().properties(vec![FilterProp::MatchesLastChosenCardPredicate]),
         );
         let ability = make_seek_ability(filter, 1);
         let mut events = Vec::new();
@@ -393,10 +396,10 @@ mod tests {
         let mut state = GameState::new_two_player(42);
         let land = add_library_land(&mut state, 1, PlayerId(0), "Forest");
         let creature = add_library_creature(&mut state, 2, PlayerId(0), "Bear");
-        state.last_named_choice = Some(ChoiceValue::Label("Nonland".to_string()));
+        state.last_named_choice = Some(ChoiceValue::CardPredicate(CardPredicateChoice::Nonland));
 
         let filter = TargetFilter::Typed(
-            TypedFilter::default().properties(vec![FilterProp::IsChosenLandOrNonlandKind]),
+            TypedFilter::default().properties(vec![FilterProp::MatchesLastChosenCardPredicate]),
         );
         let ability = make_seek_ability(filter, 1);
         let mut events = Vec::new();

@@ -3,13 +3,19 @@ use std::collections::HashSet;
 
 use engine::game::combat::{AttackTarget, AttackerInfo, CombatState};
 use engine::game::engine::apply_as_current;
-use engine::game::scenario::{GameScenario, P0, P1};
-use engine::types::ability::{Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef};
+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+use engine::types::ability::{
+    ChoiceType, Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef,
+};
+use engine::types::actions::GameAction;
+use engine::types::card_type::CoreType;
+use engine::types::events::GameEvent;
 use engine::types::game_state::CastPaymentMode;
 use engine::types::game_state::{
     StackEntry, StackEntryKind, TargetSelectionProgress, TargetSelectionSlot, WaitingFor,
 };
 use engine::types::identifiers::{CardId, ObjectId};
+use engine::types::log::{LogCategory, LogSegment};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use phase_ai::auto_play::run_ai_actions;
@@ -29,6 +35,7 @@ fn scenario_prefers_opponent_target_over_self() {
         target_slots: vec![TargetSelectionSlot {
             legal_targets: vec![TargetRef::Player(P0), TargetRef::Player(P1)],
             optional: false,
+            chooser: None,
         }],
         mode_labels: Vec::new(),
         target_constraints: Vec::new(),
@@ -64,6 +71,7 @@ fn scenario_skips_optional_target_with_no_legal_choices() {
         target_slots: vec![TargetSelectionSlot {
             legal_targets: Vec::new(),
             optional: true,
+            chooser: None,
         }],
         mode_labels: Vec::new(),
         target_constraints: Vec::new(),
@@ -103,6 +111,7 @@ fn scenario_blocks_lethal_attack_when_a_block_exists() {
             valid_blocker_ids: vec![blocker],
             valid_block_targets: HashMap::from([(blocker, vec![attacker])]),
             block_requirements: HashMap::new(),
+            blocker_constraints: Default::default(),
         };
     }
 
@@ -136,6 +145,8 @@ fn scenario_multiplayer_attacks_to_finish_exposed_player() {
             player: P0,
             valid_attacker_ids: vec![attacker_a, attacker_b],
             valid_attack_targets: vec![AttackTarget::Player(P1), AttackTarget::Player(PlayerId(2))],
+            valid_attack_targets_by_attacker: None,
+            attacker_constraints: Default::default(),
         };
     }
 
@@ -221,6 +232,7 @@ fn scenario_bounded_ai_sequence_progresses_without_panicking() {
             valid_blocker_ids: vec![blocker],
             valid_block_targets: HashMap::from([(blocker, vec![attacker])]),
             block_requirements: HashMap::new(),
+            blocker_constraints: Default::default(),
         };
     }
 
@@ -243,6 +255,283 @@ fn scenario_bounded_ai_sequence_progresses_without_panicking() {
     assert!(
         results.len() <= 200,
         "AI loop should stay within its hard safety cap"
+    );
+}
+
+const GOLLUM_SCHEMING_GUIDE_ORACLE: &str = "Whenever Gollum attacks, look at the top two cards of your library, put them back in any order, then choose land or nonland. An opponent guesses whether the top card of your library is the chosen kind. Reveal that card. If they guessed right, remove Gollum from combat. Otherwise, you draw a card and Gollum can't be blocked this turn.";
+
+fn gollum_waiting_for_ai_guess() -> (GameRunner, ObjectId, ObjectId) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let gollum = scenario
+        .add_creature_from_oracle(
+            P0,
+            "Gollum, Scheming Guide",
+            2,
+            2,
+            GOLLUM_SCHEMING_GUIDE_ORACLE,
+        )
+        .id();
+    let second = scenario.add_card_to_library_top(P0, "Coppercoat Vanguard");
+    let top = scenario.add_card_to_library_top(P0, "Forest");
+    for _ in 0..5 {
+        scenario.add_card_to_library_top(P1, "Plains");
+    }
+
+    let mut runner = scenario.build();
+    mark_core_type(&mut runner, top, CoreType::Land);
+    mark_core_type(&mut runner, second, CoreType::Creature);
+    attack_with_gollum(&mut runner, gollum);
+    drive_to_named_choice(&mut runner, top);
+    choose_card_predicate(&mut runner, P0, "Land");
+    drive_to_named_choice(&mut runner, top);
+    choose_opponent(&mut runner, P0, P1);
+    drive_to_named_choice(&mut runner, top);
+
+    let WaitingFor::NamedChoice {
+        player,
+        choice_type,
+        ..
+    } = &runner.state().waiting_for
+    else {
+        panic!(
+            "Gollum should be waiting for the chosen opponent's guess, got {:?}",
+            runner.state().waiting_for
+        );
+    };
+    assert_eq!(*player, P1);
+    assert!(matches!(choice_type, ChoiceType::CardPredicateGuess { .. }));
+
+    (runner, gollum, top)
+}
+
+fn mark_core_type(runner: &mut GameRunner, card: ObjectId, core_type: CoreType) {
+    let object = runner
+        .state_mut()
+        .objects
+        .get_mut(&card)
+        .expect("scenario card exists");
+    object.card_types.core_types = vec![core_type];
+    object.base_card_types = object.card_types.clone();
+}
+
+fn attack_with_gollum(runner: &mut GameRunner, gollum: ObjectId) {
+    pass_priority_round(runner);
+    runner
+        .act(GameAction::DeclareAttackers {
+            attacks: vec![(gollum, AttackTarget::Player(P1))],
+            bands: vec![],
+        })
+        .expect("Gollum should be able to attack");
+}
+
+fn drive_to_named_choice(runner: &mut GameRunner, preferred_top: ObjectId) {
+    for _ in 0..24 {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::NamedChoice { .. } => return,
+            WaitingFor::Priority { .. } => pass_priority_round(runner),
+            WaitingFor::ScryChoice { cards, .. } | WaitingFor::DigChoice { cards, .. } => {
+                runner
+                    .act(GameAction::SelectCards {
+                        cards: keep_card_on_top(cards, preferred_top),
+                    })
+                    .expect("Gollum should keep the expected top card");
+            }
+            other => panic!("expected progress toward Gollum's NamedChoice, got {other:?}"),
+        }
+    }
+    panic!(
+        "never reached Gollum's NamedChoice; last state = {:?}",
+        runner.state().waiting_for
+    );
+}
+
+fn keep_card_on_top(cards: Vec<ObjectId>, preferred_top: ObjectId) -> Vec<ObjectId> {
+    let mut ordered = Vec::with_capacity(cards.len());
+    if cards.contains(&preferred_top) {
+        ordered.push(preferred_top);
+    }
+    ordered.extend(cards.into_iter().filter(|card| *card != preferred_top));
+    ordered
+}
+
+fn choose_card_predicate(runner: &mut GameRunner, expected_player: PlayerId, choice: &str) {
+    let WaitingFor::NamedChoice {
+        player,
+        choice_type,
+        options,
+        ..
+    } = runner.state().waiting_for.clone()
+    else {
+        panic!(
+            "expected Gollum NamedChoice, got {:?}",
+            runner.state().waiting_for
+        );
+    };
+    assert_eq!(player, expected_player);
+    assert!(matches!(choice_type, ChoiceType::CardPredicate { .. }));
+    assert!(options.iter().any(|option| option == choice));
+    runner
+        .act(GameAction::ChooseOption {
+            choice: choice.to_string(),
+        })
+        .expect("card-predicate choice should resolve");
+}
+
+fn choose_opponent(runner: &mut GameRunner, expected_player: PlayerId, opponent: PlayerId) {
+    let WaitingFor::NamedChoice {
+        player,
+        choice_type,
+        options,
+        ..
+    } = runner.state().waiting_for.clone()
+    else {
+        panic!(
+            "expected opponent NamedChoice, got {:?}",
+            runner.state().waiting_for
+        );
+    };
+    assert_eq!(player, expected_player);
+    assert!(matches!(choice_type, ChoiceType::Opponent { .. }));
+    let choice = opponent.0.to_string();
+    assert!(options.iter().any(|option| option == &choice));
+    runner
+        .act(GameAction::ChooseOption { choice })
+        .expect("opponent choice should resolve");
+}
+
+fn pass_priority_round(runner: &mut GameRunner) {
+    let seats = runner.state().seat_order.len();
+    for _ in 0..seats {
+        let _ = runner.act(GameAction::PassPriority);
+    }
+}
+
+fn gollum_is_attacking(runner: &GameRunner, gollum: ObjectId) -> bool {
+    runner.state().combat.as_ref().is_some_and(|combat| {
+        combat
+            .attackers
+            .iter()
+            .any(|attacker| attacker.object_id == gollum)
+    })
+}
+
+fn drive_gollum_combat_damage(runner: &mut GameRunner) -> Vec<GameEvent> {
+    if matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
+        pass_priority_round(runner);
+    }
+    if matches!(
+        runner.state().waiting_for,
+        WaitingFor::DeclareBlockers { .. }
+    ) {
+        runner
+            .act(GameAction::DeclareBlockers {
+                assignments: vec![],
+            })
+            .expect("declaring no blockers should succeed");
+    }
+    runner.combat_damage().events().to_vec()
+}
+
+#[test]
+fn gollum_opponent_guess_runs_in_ai_loop_and_wrong_guess_deals_damage() {
+    let mut nonland_run = None;
+
+    for seed in 0..64 {
+        let (mut runner, gollum, top) = gollum_waiting_for_ai_guess();
+        let ai_players = HashSet::from([P1]);
+        let ai_configs =
+            HashMap::from([(P1, create_config(AiDifficulty::VeryHard, Platform::Native))]);
+        let mut ai_rng = SmallRng::seed_from_u64(seed);
+        let ai_session = phase_ai::session::AiSession::arc_from_game(runner.state());
+        let results = run_ai_actions(
+            runner.state_mut(),
+            &ai_players,
+            &ai_configs,
+            &mut ai_rng,
+            &ai_session,
+        );
+
+        if matches!(
+            results.first().map(|result| &result.action),
+            Some(GameAction::ChooseOption { choice }) if choice == "Nonland"
+        ) {
+            nonland_run = Some((runner, results, gollum, top));
+            break;
+        }
+    }
+
+    let (mut runner, results, gollum, top) =
+        nonland_run.expect("seeded AI guesses should include the wrong Nonland branch");
+    let guess_result = results
+        .first()
+        .expect("AI should submit the opponent guess");
+    assert!(
+        guess_result.events.iter().any(|event| matches!(
+            event,
+            GameEvent::CardPredicateGuessMade {
+                player_id,
+                source_id: Some(source_id),
+                choice,
+            } if *player_id == P1 && *source_id == gollum && choice == "Nonland"
+        )),
+        "AI guess should emit the generic predicate guess event, got {:?}",
+        guess_result.events
+    );
+    let guess_log = guess_result
+        .log_entries
+        .iter()
+        .find(|entry| entry.category == LogCategory::Debug)
+        .expect("AI guess should return a visible debug log entry");
+    assert!(
+        matches!(
+            guess_log.segments.as_slice(),
+            [
+                LogSegment::PlayerName { player_id, .. },
+                LogSegment::Text(guesses),
+                LogSegment::Text(choice),
+                LogSegment::Text(for_text),
+                LogSegment::CardName { name, object_id },
+            ] if *player_id == P1
+                && guesses == " guesses "
+                && choice == "Nonland"
+                && for_text == " for "
+                && name == "Gollum, Scheming Guide"
+                && *object_id == gollum
+        ),
+        "AI guess log should name the actual random guess, got {:?}",
+        guess_log.segments
+    );
+
+    runner.advance_until_stack_empty();
+    assert!(
+        runner.state().players[0].hand.contains(&top),
+        "wrong AI guess should draw the revealed top card"
+    );
+    assert!(
+        gollum_is_attacking(&runner, gollum),
+        "wrong AI guess should leave Gollum attacking"
+    );
+
+    let defender_life_before = runner.state().players[P1.0 as usize].life;
+    let combat_events = drive_gollum_combat_damage(&mut runner);
+    assert_eq!(
+        runner.state().players[P1.0 as usize].life,
+        defender_life_before - 2,
+        "Gollum should deal combat damage after the AI guesses wrong"
+    );
+    assert!(
+        combat_events.iter().any(|event| matches!(
+            event,
+            GameEvent::DamageDealt {
+                source_id,
+                target: TargetRef::Player(P1),
+                amount: 2,
+                is_combat: true,
+                ..
+            } if *source_id == gollum
+        )),
+        "wrong AI guess should preserve Gollum's combat damage event, got {combat_events:?}"
     );
 }
 
@@ -981,5 +1270,90 @@ fn scenario_master_transmuter_witness_board_is_legal() {
     assert!(
         activation_legal_for(runner.state(), transmuter),
         "the Island keeps {{U}} available after the return → activation must be legal"
+    );
+}
+
+/// AI-route reach-guard (Decision 3): the engine-owned completion seam that ALL AI
+/// declare-attackers routes funnel through (`complete_attacker_proposal[s]`) returns
+/// an `apply`-accepted, hard-legal declaration that obeys the CR 508.1d maximum
+/// requirement bar. Exercised through the direct-choice route (`choose_action`) and
+/// the host loop (`run_ai_actions`); routes 1/3/4 (candidate generation, fallback,
+/// scoring) are internal to `choose_action` and reached transitively, and route 7
+/// (Resolve All) shares the `run_ai_actions` seam. A lured attacker forces a
+/// non-empty completion, so the returned action is not the vacuous empty declaration.
+///
+/// Revert guard: if the AI route bypassed engine completion and fell back to the
+/// first generic legal action (an empty/illegal declaration), `runner.act(action)`
+/// would either reject it or fail to commit combat obeying the lure.
+#[test]
+fn ai_declare_attackers_completion_returns_apply_accepted_legal_action() {
+    use engine::types::ability::StaticDefinition;
+    use engine::types::statics::StaticMode;
+
+    fn parked_lured() -> (GameRunner, ObjectId) {
+        let mut scenario = GameScenario::new();
+        let attacker = {
+            let mut b = scenario.add_creature(P0, "Lured Bear", 2, 2);
+            b.with_static_definition(StaticDefinition::new(StaticMode::MustAttackPlayer {
+                player: P1,
+            }));
+            b.id()
+        };
+        let mut runner = scenario.build();
+        let state = runner.state_mut();
+        state.active_player = P0;
+        state.priority_player = P0;
+        state.phase = Phase::DeclareAttackers;
+        state.turn_number = 2;
+        state.waiting_for = WaitingFor::DeclareAttackers {
+            player: P0,
+            valid_attacker_ids: vec![attacker],
+            valid_attack_targets: vec![AttackTarget::Player(P1)],
+            valid_attack_targets_by_attacker: None,
+            attacker_constraints: Default::default(),
+        };
+        (runner, attacker)
+    }
+
+    // Route 2 (direct choice): `choose_action` returns a DeclareAttackers the real
+    // reducer accepts, obeying the lure (CR 508.1d max requirement = 1).
+    let (mut runner, attacker) = parked_lured();
+    let config = create_config(AiDifficulty::VeryHard, Platform::Native);
+    let mut rng = SmallRng::seed_from_u64(7);
+    let action = choose_action(runner.state(), P0, &config, &mut rng)
+        .expect("AI must choose a declare-attackers action");
+    assert!(
+        matches!(action, GameAction::DeclareAttackers { .. }),
+        "expected DeclareAttackers, got {action:?}"
+    );
+    runner
+        .act(action)
+        .expect("the AI's declaration must be reducer-legal (apply-accepted)");
+    assert!(
+        runner
+            .state()
+            .combat
+            .as_ref()
+            .is_some_and(|c| c.attackers.iter().any(|a| a.object_id == attacker)),
+        "the completed declaration obeys the lure and commits combat"
+    );
+
+    // Route 8 (host loop): `run_ai_actions` drives the same seam to a terminal state
+    // without panicking or looping on the declare step.
+    let (mut host, _attacker) = parked_lured();
+    let ai_players = HashSet::from([P0]);
+    let ai_configs = HashMap::from([(P0, create_config(AiDifficulty::VeryHard, Platform::Native))]);
+    let mut host_rng = SmallRng::seed_from_u64(7);
+    let session = phase_ai::session::AiSession::arc_from_game(host.state());
+    let results = run_ai_actions(
+        host.state_mut(),
+        &ai_players,
+        &ai_configs,
+        &mut host_rng,
+        &session,
+    );
+    assert!(
+        !results.is_empty(),
+        "the host AI loop must take at least one action for the declare step"
     );
 }

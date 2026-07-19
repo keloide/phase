@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { ChosenAttribute, GameObject, Keyword, ManaCost, Zone } from "../../adapter/types.ts";
+import type { AbilityBlockKind, ChosenAttribute, GameObject, Keyword, ManaCost, Zone } from "../../adapter/types.ts";
 import { collectObjectActions } from "../../viewmodel/cardActionChoice.ts";
-import { abilityLabel } from "../../viewmodel/costLabel.ts";
+import { abilityLabel, loyaltyBadge, stripLoyaltyCostPrefix } from "../../viewmodel/costLabel.ts";
 import { useCardImage } from "../../hooks/useCardImage.ts";
 import type { SourcePrinting } from "../../hooks/useCardImage.ts";
 import { useIsMobile } from "../../hooks/useIsMobile.ts";
@@ -16,6 +16,8 @@ import { ManaCostPips } from "../mana/ManaCostPips.tsx";
 import { RichLabel } from "../mana/RichLabel.tsx";
 import { ReportCardButton, type CardReportContext } from "./ReportCardButton.tsx";
 import { GameplayTooltip } from "../ui/GameplayTooltip.tsx";
+import { LoyaltyBadge } from "../ui/LoyaltyBadge.tsx";
+import { CounterTooltip } from "../ui/CounterTooltip.tsx";
 import { computePTDisplay, formatCounterType, formatTypeLine, toRoman } from "../../viewmodel/cardProps.ts";
 import {
   getKeywordDisplayText,
@@ -29,6 +31,17 @@ import {
   buildPTSources,
   formatPTDelta,
 } from "../../viewmodel/attribution.ts";
+
+/**
+ * CR 602.5: Maps an engine `AbilityBlockKind` to its i18n reason key. Pure
+ * display formatting — no game logic. Kept exhaustive so a new kind is a
+ * compile error until a key is added.
+ */
+const ABILITY_BLOCK_REASON_KEY: Record<AbilityBlockKind, string> = {
+  CantBeActivated: "abilityBlock.cantBeActivated",
+  CantActivateDuring: "abilityBlock.cantActivateDuring",
+  Prohibited: "abilityBlock.prohibited",
+};
 
 let lastPointerPosition: { x: number; y: number } | null = null;
 
@@ -128,10 +141,12 @@ function CardPreviewInner({
   const obj = useGameStore((s) =>
     inspectedObjectId != null ? s.gameState?.objects[inspectedObjectId] ?? null : null,
   );
-  // `card_report` context needs a live game: `obj == null` (deck builder) has no
-  // zone and a possibly-stale `gameMode`, and `gameId == null` means no game at
-  // all — a report in either case would pollute `game_mode`, so skip the button.
+  // `card_report` context needs a live, participating game: `obj == null` (deck
+  // builder) has no zone and a possibly-stale `gameMode`, `gameId == null` means
+  // no game at all, and spectators don't report — building no context in these
+  // cases keeps both the event and the button's wrapper elements out entirely.
   const gameId = useGameStore((s) => s.gameId);
+  const gameMode = useGameStore((s) => s.gameMode);
 
   // Auto-derive back face name from " // " separator when not explicitly provided
   // (e.g., deck builder passes "Delver of Secrets // Insectile Aberration" as cardName)
@@ -328,9 +343,12 @@ function CardPreviewInner({
   // sees. Undefined outside a live game (`obj == null` or `gameId == null`), so
   // the button never renders in the deck builder. On mobile `showOtherFace` is
   // always false, so this resolves to the front face there.
-  const reportItems = showOtherFace && backParseDetails ? backParseDetails : frontParseDetails;
+  // No front-face fallback for the counts: if the back face's parse details
+  // haven't loaded, 0/0 ("no parse data") is honest — front-face counts under a
+  // back-face identity would corrupt the misparse-vs-known-gap triage columns.
+  const reportItems = showOtherFace ? backParseDetails : frontParseDetails;
   const reportContext: CardReportContext | undefined =
-    obj != null && gameId !== null
+    obj != null && gameId !== null && gameMode !== "spectate"
       ? {
           oracleId:
             (showOtherFace ? obj.back_face?.printed_ref?.oracle_id : obj.printed_ref?.oracle_id) ?? "",
@@ -542,7 +560,7 @@ function MobilePreviewOverlay({
             </button>
           )}
           {report && (
-            <div className="absolute right-3 top-3 rounded-full border border-white/20 bg-black/70 px-3 py-1.5 shadow-lg backdrop-blur">
+            <div className="absolute bottom-3 left-3 rounded-full border border-white/20 bg-black/70 px-3 py-1.5 shadow-lg backdrop-blur">
               <ReportCardButton key={report.oracleId || report.name} {...report} />
             </div>
           )}
@@ -622,15 +640,27 @@ function CardImagePreview({
   // {1}{G}{G}). See cardImageLookup / back_face wiring.
   const effectiveCost = useGameStore((s) => obj ? s.spellCosts[String(obj.id)] : undefined);
   const legalActionsByObject = useGameStore((s) => s.legalActionsByObject);
-  const activateLabels = useMemo(() => {
+  const activateLabels = useMemo<ActivateLabel[]>(() => {
     if (!obj || obj.zone !== "Battlefield") return [];
-    return collectObjectActions(legalActionsByObject, obj.id)
-      .flatMap((action) => {
-        if (action.type !== "ActivateAbility") return [];
-        const ability = obj.abilities[action.data.ability_index];
-        return ability ? [abilityLabel(ability)] : [];
-      })
-      .filter((label, index, labels) => label && labels.indexOf(label) === index);
+    const seen = new Set<string>();
+    const result: ActivateLabel[] = [];
+    for (const action of collectObjectActions(legalActionsByObject, obj.id)) {
+      if (action.type !== "ActivateAbility") continue;
+      const ability = obj.abilities[action.data.ability_index];
+      if (!ability) continue;
+      const rawLabel = abilityLabel(ability);
+      if (!rawLabel || seen.has(rawLabel)) continue;
+      seen.add(rawLabel);
+      // CR 606.1: a Loyalty ability cost renders as a mana-font badge; strip
+      // the "[+2]"-style prefix so the cost isn't shown twice.
+      const loyalty = loyaltyBadge(ability.cost);
+      result.push({
+        rawLabel,
+        label: loyalty ? stripLoyaltyCostPrefix(rawLabel) : rawLabel,
+        loyalty,
+      });
+    }
+    return result;
   }, [legalActionsByObject, obj]);
   const castManaZones: Zone[] = ["Hand", "Command", "Exile", "Graveyard", "Library"];
   const showCastManaCost =
@@ -858,6 +888,14 @@ function ParsedAbilitiesPanel({ name, cardTypes, keywords, localizedTypeLine, pa
   );
 }
 
+/** A battlefield-activatable ability's cost summary for the preview panel.
+ * `loyalty` is set only for planeswalker Loyalty costs (rendered as a badge). */
+type ActivateLabel = {
+  rawLabel: string;
+  label: string;
+  loyalty: { amount: number; iconClasses: string | null; text: string } | null;
+};
+
 function CardInfoPanel({
   obj,
   altAvailable,
@@ -865,11 +903,13 @@ function CardInfoPanel({
 }: {
   obj: GameObject;
   altAvailable: boolean;
-  activateLabels: string[];
+  activateLabels: ActivateLabel[];
 }) {
   const { t } = useTranslation("game");
   const ptDisplay = computePTDisplay(obj);
-  const counters = Object.entries(obj.counters).filter(([type]) => type !== "loyalty");
+  const counters = Object.entries(obj.counters).flatMap(([type, count]) =>
+    type === "loyalty" || count == null ? [] : [[type, count] as const],
+  );
   const keywords = sortKeywords(obj.keywords);
   const colorsChanged =
     obj.color.length !== obj.base_color.length ||
@@ -955,14 +995,60 @@ function CardInfoPanel({
 
       {activateLabels.length > 0 && (
         <div className="mt-1 text-cyan-300/90">
-          {activateLabels.map((label) => (
-            <RichLabel
-              key={label}
-              text={t("preview.activateCost", { cost: label })}
-              size="xs"
-              className="block"
-            />
-          ))}
+          {activateLabels.map((entry) =>
+            entry.loyalty ? (
+              <div key={entry.rawLabel} className="flex items-center gap-1">
+                <LoyaltyBadge amount={entry.loyalty.amount} kind="cost" />
+                <RichLabel
+                  text={t("preview.activateCost", { cost: entry.label })}
+                  size="xs"
+                />
+              </div>
+            ) : (
+              <RichLabel
+                key={entry.rawLabel}
+                text={t("preview.activateCost", { cost: entry.label })}
+                size="xs"
+                className="block"
+              />
+            ),
+          )}
+        </div>
+      )}
+
+      {/* CR 602.5: blocked activated abilities (display-only read-out from the
+          engine). One row per blocked ability; the ability's description labels
+          printed abilities, runtime-granted ones (index past the printed list)
+          show the reason alone. Each prohibiting source name(s) is shown only
+          when that object is still present in the state. */}
+      {(obj.blocked_abilities?.length ?? 0) > 0 && (
+        <div className="mt-1 space-y-0.5 text-amber-300/90">
+          {(obj.blocked_abilities ?? []).map((entry, i) => {
+            const abilityName =
+              entry.ability_index < obj.abilities.length
+                ? obj.abilities[entry.ability_index]?.description
+                : undefined;
+            const names = (entry.sources ?? [])
+              .map((id) => objects?.[String(id)]?.name)
+              .filter((n): n is string => !!n);
+            const reason = t(ABILITY_BLOCK_REASON_KEY[entry.type]);
+            return (
+              <div key={i} className="flex items-start gap-1">
+                <span aria-hidden>⊘</span>
+                <span>
+                  {abilityName && (
+                    <span className="text-gray-300">{abilityName}: </span>
+                  )}
+                  {reason}
+                  {names.length > 0 && (
+                    <span className="ml-1 text-amber-400/70">
+                      {t("preview.fromSource", { source: names.join(", ") })}
+                    </span>
+                  )}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1002,9 +1088,11 @@ function CardInfoPanel({
       {counters.length > 0 && (
         <div className="mt-1 flex flex-wrap gap-x-3 text-gray-400">
           {counters.map(([type, count]) => (
-            <span key={type}>
-              {formatCounterType(type)}: {count}
-            </span>
+            <CounterTooltip key={type} type={type} count={count}>
+              <span>
+                {formatCounterType(type)}: {count}
+              </span>
+            </CounterTooltip>
           ))}
         </div>
       )}
