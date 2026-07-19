@@ -1222,6 +1222,7 @@ fn record_one_spell_cast_this_turn(state: &mut GameState, player: PlayerId) {
             from_zone: Zone::Hand,
             cast_variant: CastingVariant::Normal,
             was_kicked: false,
+            spell_object_id: None,
         }]),
     );
 }
@@ -8221,6 +8222,7 @@ fn self_cost_reduction_applies_from_graveyard() {
                 from_zone: Zone::Hand,
                 cast_variant: CastingVariant::Normal,
                 was_kicked: false,
+                spell_object_id: None,
             },
             crate::types::SpellCastRecord {
                 name: "Opt".to_string(),
@@ -8234,6 +8236,7 @@ fn self_cost_reduction_applies_from_graveyard() {
                 from_zone: Zone::Hand,
                 cast_variant: CastingVariant::Normal,
                 was_kicked: false,
+                spell_object_id: None,
             },
         ]),
     );
@@ -22923,6 +22926,7 @@ fn first_qualified_spell_reducer_only_applies_to_first_matching_spell() {
             from_zone: Zone::Hand,
             cast_variant: crate::types::game_state::CastingVariant::Normal,
             was_kicked: false,
+            spell_object_id: None,
         }]),
     );
 
@@ -23040,6 +23044,7 @@ fn first_x_spell_reducer_uses_x_filter_dynamic_counter_count_and_first_gate() {
             from_zone: Zone::Hand,
             cast_variant: crate::types::game_state::CastingVariant::Normal,
             was_kicked: false,
+            spell_object_id: None,
         }]),
     );
 
@@ -23117,6 +23122,7 @@ fn opponent_first_noncreature_tax_uses_caster_history() {
             from_zone: Zone::Hand,
             cast_variant: crate::types::game_state::CastingVariant::Normal,
             was_kicked: false,
+            spell_object_id: None,
         }]),
     );
 
@@ -38013,6 +38019,7 @@ fn convoke_query_before_record_unaffected_by_snapshot() {
             from_zone: Zone::Hand,
             cast_variant: crate::types::game_state::CastingVariant::Normal,
             was_kicked: false,
+            spell_object_id: None,
         }]
         .into(),
     );

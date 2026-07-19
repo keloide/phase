@@ -242,6 +242,10 @@ pub fn record_spell_cast_from_zone(
         cast_variant,
         // CR 702.33d: Kicker-paid state captured at cast time.
         was_kicked: !obj.kickers_paid.is_empty(),
+        // CR 400.7: stable storage id of the cast object — the canonical
+        // history record carries provenance so own-cast exclusion (CR 601.2i)
+        // can identify a permanent's own pending cast positionally.
+        spell_object_id: Some(obj.id),
     };
     state
         .spells_cast_this_turn_by_player
@@ -2916,6 +2920,7 @@ mod tests {
                 from_zone: Zone::Hand,
                 cast_variant: crate::types::game_state::CastingVariant::Normal,
                 was_kicked: false,
+                spell_object_id: None,
             }]),
         );
 
@@ -2951,6 +2956,7 @@ mod tests {
                     from_zone: Zone::Hand,
                     cast_variant: crate::types::game_state::CastingVariant::Normal,
                     was_kicked: false,
+                    spell_object_id: None,
                 },
                 crate::types::game_state::SpellCastRecord {
                     name: String::new(),
@@ -2964,6 +2970,7 @@ mod tests {
                     from_zone: Zone::Hand,
                     cast_variant: crate::types::game_state::CastingVariant::Normal,
                     was_kicked: false,
+                    spell_object_id: None,
                 },
                 crate::types::game_state::SpellCastRecord {
                     name: String::new(),
@@ -2977,6 +2984,7 @@ mod tests {
                     from_zone: Zone::Hand,
                     cast_variant: crate::types::game_state::CastingVariant::Normal,
                     was_kicked: false,
+                    spell_object_id: None,
                 },
             ]),
         );

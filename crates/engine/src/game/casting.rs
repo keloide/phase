@@ -532,6 +532,8 @@ fn spell_record_for_restrictions(spell_obj: &super::game_object::GameObject) -> 
         from_zone: spell_obj.zone,
         cast_variant: crate::types::game_state::CastingVariant::Normal,
         was_kicked: !spell_obj.kickers_paid.is_empty(),
+        // CR 400.7: stable storage id of the cast object.
+        spell_object_id: Some(spell_obj.id),
     }
 }
 
@@ -15200,6 +15202,8 @@ fn is_blocked_by_per_turn_cast_limit(
                     from_zone: spell_obj.zone,
                     cast_variant: crate::types::game_state::CastingVariant::Normal,
                     was_kicked: !spell_obj.kickers_paid.is_empty(),
+                    // CR 400.7: stable storage id of the cast object.
+                    spell_object_id: Some(spell_obj.id),
                 };
                 if !super::filter::spell_record_matches_filter(
                     &current_record,
