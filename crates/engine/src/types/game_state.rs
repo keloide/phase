@@ -316,6 +316,16 @@ pub struct LKISnapshot {
     /// `#[serde(default)]` ⇒ pre-existing saved states deserialize to `false`.
     #[serde(default)]
     pub is_suspected: bool,
+    /// CR 702.171b + CR 608.2h: Saddled designation as it last existed on the
+    /// battlefield. Saddled clears on battlefield exit
+    /// (`reset_for_battlefield_exit`), so a "while saddled" attack gate or a
+    /// subject-ful "if ~ is saddled" intervening-if re-checked at resolution
+    /// (CR 603.4) after the Mount has left must read LAST KNOWN INFORMATION —
+    /// mirroring `is_suspected` and `attachments`. `#[serde(default)]` ⇒
+    /// pre-existing saved states deserialize to `false` (the prior fail-closed
+    /// behavior).
+    #[serde(default)]
+    pub is_saddled: bool,
     /// CR 608.2h + CR 400.7: Attachments (Auras/Equipment) as they last existed on
     /// the battlefield. Attachment is a battlefield-only relationship — SBA unattaches
     /// everything the instant the host leaves (CR 704.5m/n) — so a source-referential
@@ -652,6 +662,11 @@ pub struct ZoneChangeRecord {
     /// `#[serde(default)]` ⇒ pre-existing saved states deserialize to `false`.
     #[serde(default)]
     pub is_suspected: bool,
+    /// CR 702.171b: Saddled designation as of the zone change (see
+    /// `LKISnapshot::is_saddled`). Read by `FilterProp::IsSaddled` on the
+    /// zone-change/LKI evaluator path.
+    #[serde(default)]
+    pub is_saddled: bool,
 }
 
 /// CR 506.4 / CR 508.1k / CR 509.1g / CR 509.1h: Combat role snapshot for an
@@ -755,6 +770,7 @@ impl ZoneChangeRecord {
             entered_incarnation: None,
             turn_zone_change_index: 0,
             is_suspected: false,
+            is_saddled: false,
         }
     }
 }
@@ -14297,6 +14313,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                is_saddled: false,
                 attachments: Vec::new(),
             }
         }

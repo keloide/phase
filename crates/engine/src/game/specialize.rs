@@ -188,6 +188,7 @@ mod tests {
             counters: Default::default(),
             tapped: false,
             is_suspected: false,
+            is_saddled: false,
             attachments: Vec::new(),
         }
     }

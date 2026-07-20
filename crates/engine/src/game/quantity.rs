@@ -5807,6 +5807,7 @@ mod tests {
             counters: HashMap::new(),
             tapped: false,
             is_suspected: false,
+            is_saddled: false,
             attachments: Vec::new(),
         };
 
@@ -11787,6 +11788,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                is_saddled: false,
                 attachments: Vec::new(),
             },
         );
@@ -11851,6 +11853,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                is_saddled: false,
                 attachments: Vec::new(),
             },
         });
@@ -12000,6 +12003,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                is_saddled: false,
                 attachments: Vec::new(),
             },
         });
@@ -12080,6 +12084,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                is_saddled: false,
                 attachments: Vec::new(),
             },
         });
@@ -12159,6 +12164,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                is_saddled: false,
                 attachments: Vec::new(),
             },
         });
@@ -12224,6 +12230,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                is_saddled: false,
                 attachments: Vec::new(),
             },
         };
@@ -12286,6 +12293,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                is_saddled: false,
                 attachments: Vec::new(),
             },
         });
@@ -12341,6 +12349,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                is_saddled: false,
                 attachments: Vec::new(),
             },
         };
@@ -12409,6 +12418,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                is_saddled: false,
                 attachments: Vec::new(),
             },
         };
@@ -12470,6 +12480,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                is_saddled: false,
                 attachments: Vec::new(),
             },
         );
@@ -13108,6 +13119,7 @@ mod tests {
                     chosen_attributes: vec![],
                     tapped: false,
                     is_suspected: false,
+                    is_saddled: false,
                     attachments: Vec::new(),
                 },
             );

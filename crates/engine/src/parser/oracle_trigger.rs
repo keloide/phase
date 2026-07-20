@@ -7,6 +7,7 @@ use nom::multi::{many1, separated_list1};
 use nom::sequence::{delimited, pair, preceded, terminated};
 use nom::Parser;
 
+use super::oracle_effect::conditions::source_saddled_filter;
 use super::oracle_effect::{
     condition_text_is_rehomeable, lower_effect_chain_ir, parse_effect_chain_ir,
     try_parse_reanimator_aura_etb_effect_ir, try_parse_reanimator_aura_grant_etb_effect_ir,
@@ -19,6 +20,7 @@ use super::oracle_ir::trigger::{
     FirstTimeLimit, ReflexivePaymentIr, TriggerBody, TriggerIr, TriggerModifiers,
 };
 use super::oracle_modal::try_parse_inline_modal_ir;
+use super::oracle_nom::condition::parse_elided_subject_state_condition;
 use super::oracle_nom::condition::parse_inner_condition;
 use super::oracle_nom::condition::{parse_source_counters_exist, parse_source_has_counters};
 use super::oracle_nom::error::{oracle_err, OracleResult};
@@ -4256,6 +4258,19 @@ pub(crate) fn static_condition_to_trigger_condition(
                 },
             ])),
         }),
+        // CR 702.171b + CR 603.4: "while saddled" attack gates and subject-ful
+        // "if ~ is saddled" intervening-ifs lower to the shared saddled filter.
+        // Official ruling (2025-02-07): the gate binds when the creature is
+        // declared as an attacker — the fire-time check runs per expanded
+        // single-attack event (CR 508.1, game/triggers.rs). The CR 603.4-machinery
+        // resolution recheck is truth-preserving: the designation is immutable for
+        // the turn while the permanent remains on the battlefield (CR 702.171b —
+        // saddle activates only as a sorcery, CR 702.171a), and a source that left
+        // the battlefield resolves via LKISnapshot::is_saddled (CR 608.2h + CR
+        // 113.7a, game/trigger_matchers.rs subject_filter_matches_with_lki).
+        StaticCondition::SourceIsSaddled => Some(TriggerCondition::SourceMatchesFilter {
+            filter: source_saddled_filter(),
+        }),
 
         // Not combinator — handle common negation patterns.
         StaticCondition::Not { condition } => match condition.as_ref() {
@@ -4418,9 +4433,6 @@ pub(crate) fn static_condition_to_trigger_condition(
         // is never produced as an intervening-if, so there is no
         // `TriggerCondition` equivalent — lowering returns `None`.
         | StaticCondition::IsTapped { .. }
-        // CR 702.171b: the saddled designation has no intervening-if
-        // (`TriggerCondition`) equivalent.
-        | StaticCondition::SourceIsSaddled
         | StaticCondition::SourceAttachedToCreature
         | StaticCondition::OpponentPoisonAtLeast { .. }
         | StaticCondition::UnlessPay { .. }
@@ -8130,6 +8142,19 @@ fn and_trigger_conditions(
 /// clause intact rather than dropping the gate silently. Returns the event
 /// clause with the `"while ..."` suffix removed plus the extracted condition, or
 /// `None` when no representable `"while ..."` gate is present.
+///
+/// CR 603.2 + CR 702.171b: The while-gate grammar also admits an ELIDED-SUBJECT
+/// participle ("Whenever this creature attacks **while saddled**" — Alacrian
+/// Jaguar and its 27-card class). Unlike an intervening-if, which always prints
+/// an explicit subject, the printed while-gate drops it; the subject is
+/// inherited from the trigger event's subject (the attacking creature = the
+/// source). `parse_inner_condition` requires an explicit subject, so the bare
+/// participle is composed here as a second `alt()` arm
+/// (`parse_elided_subject_state_condition`) tried after the subject-ful
+/// authority. Official ruling (2025-02-07): "attacks while saddled" fires only
+/// if the creature is saddled when it's declared as an attacker (CR 508.1), and
+/// the gate is rechecked at resolution per the intervening-if machinery
+/// (CR 603.4).
 fn strip_while_state_clause(condition: &str) -> Option<(String, TriggerCondition)> {
     let lower = condition.to_lowercase();
     // The gate is introduced by " while " and runs to the end of the event
@@ -8145,7 +8170,17 @@ fn strip_while_state_clause(condition: &str) -> Option<(String, TriggerCondition
     .parse(lower.as_str())
     .ok()?;
     let pos = before.len();
-    let (rest, sc) = parse_inner_condition(fragment.trim()).ok()?;
+    // CR 603.2 + CR 702.171b: subject-ful conditions parse first
+    // (`parse_inner_condition`); the elided-subject participle leaf handles the
+    // bare "saddled" gate (Alacrian Jaguar) whose subject is inherited from the
+    // trigger event's subject. `parse_source_is_saddled` requires an explicit
+    // subject, so no `parse_inner_condition` branch matches bare "saddled" today
+    // — the subject-ful authority still runs first, and
+    // `attacks_while_saddled_gates_trigger_on_saddled_filter`
+    // (oracle_trigger_tests.rs) guards this ordering.
+    let (rest, sc) = alt((parse_inner_condition, parse_elided_subject_state_condition))
+        .parse(fragment.trim())
+        .ok()?;
     // CR 603.4: only accept when the whole "while ..." tail is the condition —
     // a dangling remainder means this isn't a clean state gate.
     if !rest.trim().is_empty() {

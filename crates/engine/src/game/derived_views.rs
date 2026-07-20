@@ -1831,6 +1831,7 @@ mod tests {
                 entered_incarnation: None,
                 turn_zone_change_index: 0,
                 is_suspected: false,
+                is_saddled: false,
             }),
         };
         let ability = ResolvedAbility::new(

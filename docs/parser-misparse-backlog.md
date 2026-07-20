@@ -3,8 +3,8 @@
 Consolidated from 50 per-batch clustering passes over the whole card database. Synonymous per-batch clusters were merged into canonical root causes, their card lists unioned and deduped, and ranked by total card appearances (largest first).
 
 - **Canonical root causes:** 30
-- **Distinct cards implicated:** 4758
-- **Total card appearances across root causes:** 4792 (a card may appear under more than one root cause when it exhibits multiple distinct misparses)
+- **Distinct cards implicated:** 4739
+- **Total card appearances across root causes:** 4773 (a card may appear under more than one root cause when it exhibits multiple distinct misparses)
 
 This is the prioritized "fix N root causes → unlock M cards" backlog: the top handful of root causes account for the majority of broken cards.
 
@@ -13,7 +13,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 | # | Root cause | # cards | Fix hint (where it likely lives) |
 |---|------------|--------:|----------------------------------|
 | 1 | Relative-clause / filter restriction on target dropped | 746 | oracle_target.rs / game/filter.rs — extend TargetFilter property extraction for trailing relative clauses |
-| 2 | Dropped intervening-if / gating condition (condition: null) | 606 | oracle_nom/condition.rs parse_inner_condition — trigger/static parsers must delegate condition extraction here |
+| 2 | Dropped intervening-if / gating condition (condition: null) | 595 | oracle_nom/condition.rs parse_inner_condition — trigger/static parsers must delegate condition extraction here |
 | 3 | Anaphor bound to wrong referent | 404 | oracle_quantity.rs context-ref resolution + game/ability_utils.rs forward_result wiring |
 | 4 | Conjoined / chained second effect clause dropped | 387 | oracle.rs effect-chain composition — split on 'and'/'then'/sentence boundaries and build sub_ability chain |
 | 5 | Dropped 'for each' / dynamic count collapsed to Fixed | 330 | oracle_quantity.rs parse_for_each_clause / parse_quantity_ref — thread ForEach/ObjectCount into the effect count field |
@@ -33,7 +33,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 | 19 | Perpetual (Alchemy) duration mis-mapped to UntilEndOfTurn | 67 | oracle_nom/duration.rs — add Perpetual duration combinator branch |
 | 20 | Damage subject/recipient set incomplete | 70 | Effect::DealDamage handling — capture all damage subjects/recipients per CR 120 |
 | 21 | Token entry flags / keyword / attachment clause dropped | 52 | oracle parser token-description handling — preserve attacking/tapped flags, keyword grants, attach target |
-| 22 | Attacks-alone / while-saddled combat constraint dropped | 51 | oracle_trigger.rs scan_for_phase / attacks-trigger constraint parsing; add SourceAttackingAlone/MinCoAttackers + TriggerCondition::SourceIsSaddled |
+| 22 | Attacks-alone / while-saddled combat constraint dropped | 43 | oracle_trigger.rs scan_for_phase / attacks-trigger constraint parsing; add SourceAttackingAlone/MinCoAttackers (attacks-alone remainder); "while saddled" lowers via strip_while_state_clause → SourceMatchesFilter + FilterProp::IsSaddled (done) |
 | 23 | Effect modeled with structurally wrong variant / ability class | 51 | add-engine-effect: select the correct Effect/ability variant for the clause class |
 | 24 | Variable X / where-X count unbound (sentinel or unresolved Variable) | 37 | oracle_cost.rs / oracle_quantity.rs — allow QuantityExpr in count fields and bind trailing 'where X is' clauses |
 | 25 | Wrong / dropped effect duration | 29 | oracle_nom/duration.rs — add until-event / two-turn / permanent duration variants |
@@ -805,7 +805,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 
 </details>
 
-### 2. Dropped intervening-if / gating condition (condition: null)  (605 cards)
+### 2. Dropped intervening-if / gating condition (condition: null)  (594 cards)
 
 **Signature.** Trigger/static/replacement/spell condition left null though Oracle has an 'if/while/as long as/unless' game-state gate; the effect resolves unconditionally (CR 603.4 / 608.2c).
 
@@ -823,7 +823,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Aggressive Detective
 - Ajani, Nacatl Avenger
 - Akuta, Born of Ash
-- Alacrian Jaguar
 - Alex Wilder, Runaway
 - Amalia Benavides Aguirre
 - Anax, Hardened in the Forge
@@ -842,7 +841,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Atemsis, All-Seeing
 - Aurelia, the Law Above
 - Aurora Champion
-- Autarch Mammoth
 - Avacynian Missionaries
 - Avalanche of Sector 7
 - Avatar of Fury
@@ -884,7 +882,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Brimstone Vandal
 - Bronze Horse
 - Bull-Rush Bruiser
-- Bulwark Ox
 - Burning-Eye Zubera
 - Cache Grab
 - Calamity of the Titans
@@ -909,7 +906,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Command Power Plant
 - Concord with the Kami
 - Confounding Conundrum
-- Congregation Gryff
 - Consuming Ashes
 - Contaminant Grafter
 - Counterbalance
@@ -941,7 +937,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Diamond Knight
 - Dimir Strandcatcher
 - Dire Tactics
-- District Mascot
 - Diviner's Lockbox
 - Domri, Chaos Bringer
 - Doom Foretold
@@ -1037,7 +1032,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Gríma Wormtongue
 - Guardian Naga
 - Guardian Project
-- Guardian Sunmare
 - Guiding Spirit
 - Hagra Mauling
 - Hall of the Bandit Lord
@@ -1184,7 +1178,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Octavia, Living Thesis
 - Orator of Ojutai
 - Orbital Plunge
-- Ornery Tumblewagg
 - Otterball Antics
 - Overgrowth Elemental
 - Overpowering Attack
@@ -1222,7 +1215,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Qasali Ambusher
 - Quest for the Nihil Stone
 - Quicksilver Servitor
-- Quilled Charger
 - Rage Extractor
 - Raging Battle Mouse
 - Rakdos, Lord of Riots
@@ -1253,7 +1245,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Rith, Liberated Primeval
 - Rivalry
 - Roost of Drakes
-- Routeway Moose
 - Rowdy Crew
 - Rubblebelt Braggart
 - Runaway Steam-Kin
@@ -1272,7 +1263,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Scaleguard Sentinels
 - Second Stage of Magic Design
 - Septic Rats
-- Seraphic Steed
 - Shadowborn Demon
 - Sharp-Eyed Rookie
 - Shatterskull Charger
@@ -1360,7 +1350,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Unified Strike
 - Unified Will
 - Unnatural Summons
-- Unswerving Sloth
 - Unyaro
 - Urborg Stalker
 - Urza's Miter
@@ -4803,11 +4792,11 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 
 </details>
 
-### 22. Attacks-alone / while-saddled combat constraint dropped  (51 cards)
+### 22. Attacks-alone / while-saddled combat constraint dropped  (43 cards)
 
 **Signature.** Attacks/while-saddled trigger emits constraint/condition null; the 'alone' sole-attacker or 'while saddled' qualifier is silently discarded.
 
-**Fix hint.** oracle_trigger.rs scan_for_phase / attacks-trigger constraint parsing; add SourceAttackingAlone/MinCoAttackers + TriggerCondition::SourceIsSaddled
+**Fix hint.** oracle_trigger.rs scan_for_phase / attacks-trigger constraint parsing; add SourceAttackingAlone/MinCoAttackers for the attacks-alone remainder. The "while saddled" subset is DONE: strip_while_state_clause composes the elided-subject participle leaf (parse_elided_subject_state_condition) and lowers it via static_condition_to_trigger_condition to TriggerCondition::SourceMatchesFilter { Typed([FilterProp::IsSaddled]) } — not a bespoke TriggerCondition::SourceIsSaddled variant.
 
 <details><summary>Cards</summary>
 
@@ -4821,14 +4810,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Black Panther, Claws of Bast
 - Black Widow, Double Agent
 - Bob, Reluctant HYDRA Agent
-- Bridled Bighorn
-- Brightfield Glider
-- Brightfield Mustang
-- Dracosaur Auxiliary
-- Drover Grizzly
-- Gila Courser
-- Gilded Ghoda
-- Gloryheath Lynx
 - HYDRA Infiltration
 - Heiko Yamazaki, the General
 - Imperial Blademaster

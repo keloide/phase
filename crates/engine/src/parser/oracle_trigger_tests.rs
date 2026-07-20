@@ -546,6 +546,65 @@ fn intervening_if_source_attacked_or_blocked_this_turn_populates_condition() {
 }
 
 #[test]
+fn attacks_while_saddled_gates_trigger_on_saddled_filter() {
+    // CR 702.171b + CR 603.4 + ruling 2025-02-07: "Whenever this creature attacks
+    // while saddled" — the bare, elided-subject "saddled" participle gate lowers to
+    // the shared saddled filter (`SourceMatchesFilter { Typed([IsSaddled]) }`), the
+    // same runtime property the live object and the LKI snapshot both answer.
+    // Alacrian Jaguar and its 27-card class. Also guards the
+    // `strip_while_state_clause` alt-arm ordering: the subject-ful authority
+    // (`parse_inner_condition`) runs first and matches nothing on bare "saddled",
+    // so the elided-subject leaf is what supplies the condition.
+    let def = parse_trigger_line(
+        "Whenever this creature attacks while saddled, it gets +2/+2 until end of turn.",
+        "Alacrian Jaguar",
+    );
+    assert_eq!(def.mode, TriggerMode::Attacks);
+    assert_eq!(def.valid_card, Some(TargetFilter::SelfRef));
+
+    // REVERT-FAILING: without the elided-subject leaf the while-gate is dropped
+    // and `condition` is `None`.
+    let Some(TriggerCondition::SourceMatchesFilter { filter }) = def.condition.as_ref() else {
+        panic!(
+            "expected SourceMatchesFilter condition, got {:?}",
+            def.condition
+        );
+    };
+    let TargetFilter::Typed(tf) = filter else {
+        panic!("expected Typed saddled filter, got {filter:?}");
+    };
+    assert!(
+        tf.properties.contains(&FilterProp::IsSaddled),
+        "filter must carry IsSaddled, got {:?}",
+        tf.properties
+    );
+
+    // Reach-guard: the "while saddled" clause is stripped and the effect body
+    // still parses as the +2/+2 pump — no Effect::Unimplemented anywhere.
+    let execute = def.execute.as_ref().expect("execute ability");
+    match &*execute.effect {
+        Effect::Pump {
+            power, toughness, ..
+        } => {
+            assert_eq!(power, &PtValue::Fixed(2));
+            assert_eq!(toughness, &PtValue::Fixed(2));
+        }
+        other => panic!("expected Pump +2/+2, got {other:?}"),
+    }
+    fn has_unimplemented(ability: &AbilityDefinition) -> bool {
+        matches!(*ability.effect, Effect::Unimplemented { .. })
+            || ability
+                .sub_ability
+                .as_ref()
+                .is_some_and(|s| has_unimplemented(s))
+    }
+    assert!(
+        !has_unimplemented(execute),
+        "effect chain leaked Unimplemented: {execute:?}"
+    );
+}
+
+#[test]
 fn intervening_if_source_has_counters_on_it_populates_condition() {
     // CR 603.4 + CR 122: source-scoped "if ~ has counters on it" gates the
     // trigger on the source permanent currently having at least one counter of
