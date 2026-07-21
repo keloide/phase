@@ -3158,7 +3158,8 @@ fn resolve_ref(
                 //     permanent-spell object, which DOES carry `cast_from_zone`.
                 // A reanimated / put-onto-battlefield permanent is neither on the
                 // stack nor carries `cast_from_zone` → nothing is excluded.
-                let own_is_cast = state.objects.get(&ctx.source).is_some_and(|o| {
+                let source_id = ctx.source;
+                let own_is_cast = state.objects.get(&source_id).is_some_and(|o| {
                     o.cast_from_zone.is_some() || o.zone == crate::types::zones::Zone::Stack
                 });
                 let matches =
@@ -3182,7 +3183,7 @@ fn resolve_ref(
                             if let Some(own) = list
                                 .iter()
                                 .rev()
-                                .find(|r| r.spell_object_id == Some(ctx.source))
+                                .find(|r| r.spell_object_id == Some(source_id))
                             {
                                 if matches(own) {
                                     return count.saturating_sub(1);
