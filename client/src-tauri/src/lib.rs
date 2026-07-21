@@ -1,12 +1,26 @@
-use tauri::WebviewWindowBuilder;
-// `Manager` is only needed for `app.path()` in the Windows-gated block below.
-#[cfg(target_os = "windows")]
-use tauri::Manager;
+use tauri::{Manager, WebviewWindowBuilder};
 
 mod migration;
+mod native_engine;
 
 pub fn run() {
-    tauri::Builder::default()
+    // WebKitGTK's dmabuf renderer renders blank frames when the GPU import
+    // path misbehaves (NVIDIA drivers); forcing shared-memory buffers avoids
+    // that while keeping the dmabuf renderer (and thus acceleration), unlike
+    // WEBKIT_DISABLE_DMABUF_RENDERER which tanks in-game performance. Must be
+    // set before the first webview is created. A value already present in the
+    // environment wins so users can override.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_none() {
+        std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+    }
+
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -15,7 +29,9 @@ pub fn run() {
             migration::set_channel_preference,
             migration::take_legacy_storage,
             migration::confirm_legacy_import,
-            migration::mark_remote_load_ok
+            migration::mark_remote_load_ok,
+            native_engine::ensure_native_engine,
+            native_engine::stop_native_engine
         ])
         .setup(|app| {
             // `create: false` on the "main" window in tauri.conf.json defers
@@ -44,8 +60,13 @@ pub fn run() {
             builder.build()?;
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("error while running phase.rs");
+    app.run(|app, event| {
+        if let tauri::RunEvent::Exit = event {
+            native_engine::stop_native_engine_on_exit(app);
+        }
+    });
 }
 
 #[cfg(test)]
