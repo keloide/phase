@@ -52,14 +52,23 @@ fn advance_p0_upkeep(scenario: GameScenario) -> GameRunner {
     }
     runner.advance_to_upkeep();
     for _ in 0..32 {
-        match &runner.state().waiting_for {
-            WaitingFor::EffectZoneChoice { .. } => break,
-            WaitingFor::Priority { .. } => {
-                runner.act(GameAction::PassPriority).ok();
-                runner.act(GameAction::PassPriority).ok();
-            }
-            _ => break,
+        if matches!(
+            runner.state().waiting_for,
+            WaitingFor::EffectZoneChoice { .. }
+        ) {
+            return runner;
         }
+        assert!(
+            matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+            "expected priority or the sacrifice choice while advancing upkeep, got {:?}",
+            runner.state().waiting_for
+        );
+        runner
+            .act(GameAction::PassPriority)
+            .expect("first priority pass while advancing upkeep");
+        runner
+            .act(GameAction::PassPriority)
+            .expect("second priority pass while advancing upkeep");
     }
     runner
 }
@@ -172,7 +181,9 @@ fn warring_triad_fewer_than_eight_removes_creature_type() {
     // P0 graveyard empty (0 < 8 → gate true).
 
     let mut runner = scenario.build();
-    runner.act(GameAction::PassPriority).ok();
+    runner
+        .act(GameAction::PassPriority)
+        .expect("pass priority to apply the static type-removal gate");
 
     let core_types = &runner.state().objects[&triad].card_types.core_types;
     assert!(
@@ -197,7 +208,9 @@ fn warring_triad_exactly_eight_retains_creature_type() {
     fill_graveyard_with_creatures(&mut scenario, P0, 8);
 
     let mut runner = scenario.build();
-    runner.act(GameAction::PassPriority).ok();
+    runner
+        .act(GameAction::PassPriority)
+        .expect("pass priority to evaluate the boundary static gate");
 
     let core_types = &runner.state().objects[&triad].card_types.core_types;
     assert!(
