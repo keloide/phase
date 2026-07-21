@@ -39,7 +39,7 @@ fn fill_graveyard_with_creatures(scenario: &mut GameScenario, player: PlayerId, 
 }
 
 /// Drive to P0's upkeep and pass priority until an `EffectZoneChoice` surfaces
-/// or the loop exhausts (no trigger). Returns the runner positioned there.
+/// or the upkeep stack empties (no trigger). Returns the runner positioned there.
 fn advance_p0_upkeep(scenario: GameScenario) -> GameRunner {
     let mut runner = scenario.build();
     {
@@ -51,11 +51,19 @@ fn advance_p0_upkeep(scenario: GameScenario) -> GameRunner {
         state.waiting_for = WaitingFor::Priority { player: P0 };
     }
     runner.advance_to_upkeep();
-    for _ in 0..32 {
+    for _ in 0..64 {
         if matches!(
             runner.state().waiting_for,
             WaitingFor::EffectZoneChoice { .. }
         ) {
+            return runner;
+        }
+        assert_eq!(
+            runner.state().phase,
+            Phase::Upkeep,
+            "upkeep trigger processing must not advance into a later phase"
+        );
+        if runner.state().stack.is_empty() {
             return runner;
         }
         assert!(
@@ -65,15 +73,12 @@ fn advance_p0_upkeep(scenario: GameScenario) -> GameRunner {
         );
         runner
             .act(GameAction::PassPriority)
-            .expect("first priority pass while advancing upkeep");
-        runner
-            .act(GameAction::PassPriority)
-            .expect("second priority pass while advancing upkeep");
+            .expect("priority pass while resolving the upkeep trigger");
     }
-    runner
+    panic!("upkeep trigger processing did not settle within 64 priority passes")
 }
 
-/// CR 603.4 + CR 107.1a: the gate is true (5 < 6), so the upkeep sacrifice
+/// CR 603.4 + CR 107.1: the gate is true (5 < 6), so the upkeep sacrifice
 /// fires. P1's graveyard holds six creature cards — multi-authority noise that
 /// proves the count binds to the demon's controller (P0), not the union of
 /// graveyards (which would total 11 and suppress the trigger). Positive reach:
@@ -123,7 +128,7 @@ fn shadowborn_demon_fewer_than_six_fires_and_sacrifices() {
     );
 }
 
-/// CR 603.4 + CR 107.1a: boundary-exact negative. Six creature cards is NOT
+/// CR 603.4 + CR 107.1: boundary-exact negative. Six creature cards is NOT
 /// fewer than six, so the intervening-"if" is false and no sacrifice occurs.
 /// This kills unconditional / GE / LE misparses; the paired positive above
 /// proves the trigger is reachable. Revert-failing: pre-fix the swallowed

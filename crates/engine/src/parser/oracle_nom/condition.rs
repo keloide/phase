@@ -3713,7 +3713,7 @@ fn parse_ge_threshold(input: &str) -> OracleResult<'_, u32> {
     .parse(input)
 }
 
-/// CR 107.1a: Magic uses integer comparisons; "fewer than N" / "more than N"
+/// CR 107.1: Magic numbers are integers; "fewer than N" / "more than N"
 /// are the strict-inequality prefix idioms (LT / GT), in contrast to the
 /// "N or more" (GE) / "N or fewer" (LE) suffix idioms. Single authority for
 /// the comparator-prefix family — shared by `parse_put_onto_battlefield_this_way`
@@ -7803,7 +7803,7 @@ fn parse_opponent_had_entered_this_turn(input: &str) -> OracleResult<'_, StaticC
 /// N", so the comparator is EQ. A prefix and an "or more" suffix together
 /// ("fewer than N or more") is not English and is refused rather than guessed.
 ///
-/// CR 107.1a: Magic uses integer comparisons; exact-value checks are distinct
+/// CR 107.1: Magic numbers are integers; exact-value checks are distinct
 /// from threshold checks. Consumers evaluate the resulting comparison under
 /// CR 603.4 (intervening-"if" triggered abilities) and CR 611.3a (static
 /// continuous "as long as" gates), both of which re-read the condition against
@@ -12569,7 +12569,7 @@ mod tests {
         }
     }
 
-    /// CR 107.1a + CR 603.4: "there are fewer than N ..." → strict-inequality
+    /// CR 107.1 + CR 603.4: "there are fewer than N ..." → strict-inequality
     /// prefix (LT). Shadowborn Demon's intervening-if clause counts creature
     /// cards in the controller's graveyard.
     #[test]
@@ -12599,7 +12599,7 @@ mod tests {
         }
     }
 
-    /// CR 107.1a + CR 611.3a: "there are fewer than N cards ..." with the plain
+    /// CR 107.1 + CR 611.3a: "there are fewer than N cards ..." with the plain
     /// graveyard-size canonicalization composing with the strict prefix. The
     /// Warring Triad's "as long as there are fewer than eight cards in your
     /// graveyard" gate.
@@ -12624,7 +12624,7 @@ mod tests {
         }
     }
 
-    /// CR 107.1a: "there are more than N ..." → strict-inequality prefix (GT),
+    /// CR 107.1: "there are more than N ..." → strict-inequality prefix (GT),
     /// the mirror of the "fewer than" LT arm.
     #[test]
     fn test_there_are_more_than_creature_cards_in_graveyard_gt() {
@@ -12645,7 +12645,7 @@ mod tests {
         }
     }
 
-    /// CR 107.1a: suffix regression — the "or more" (GE) suffix axis still parses
+    /// CR 107.1: suffix regression — the "or more" (GE) suffix axis still parses
     /// after the prefix axis was added. Impending Disaster shape.
     #[test]
     fn test_there_are_or_more_suffix_regression_ge() {
@@ -12665,7 +12665,7 @@ mod tests {
         }
     }
 
-    /// CR 107.1a: bare-EQ regression — with neither prefix nor "or more" suffix
+    /// CR 107.1: bare-EQ regression — with neither prefix nor "or more" suffix
     /// the comparator is EQ. A-Nael shape, re-asserted through the deduped
     /// comparator computation.
     #[test]
@@ -12684,7 +12684,7 @@ mod tests {
         }
     }
 
-    /// CR 107.1a: hostile negatives. "fewer than N or more" mixes both
+    /// CR 107.1: hostile negatives. "fewer than N or more" mixes both
     /// comparator axes and is not English — the combinator's reject arm refuses
     /// to guess. "there are fewer cards ... than each opponent" has no strict
     /// prefix ("fewer" without "than ") and is not a "there are N" count, so

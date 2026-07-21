@@ -7986,7 +7986,7 @@ fn static_erebos_god_of_the_dead_type_removal() {
 
 #[test]
 fn static_type_removal_with_nondevotion_condition() {
-    // CR 611.3a + CR 613.1d + CR 107.1a: The Warring Triad — the "as long as"
+    // CR 611.3a + CR 613.1d + CR 107.1: The Warring Triad — the "as long as"
     // gate is a strict-inequality graveyard-size comparison that now types
     // exactly (LT 8) via the shared comparator-prefix combinator in
     // parse_there_are_conditions. Pre-fix the "fewer than" prefix was

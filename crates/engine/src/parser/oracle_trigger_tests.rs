@@ -1833,7 +1833,7 @@ fn parse_wave_of_rats_dies_dealt_combat_damage_intervening_if() {
     );
 }
 
-/// CR 603.4 + CR 107.1a: Shadowborn Demon — the hoisted intervening-"if"
+/// CR 603.4 + CR 107.1: Shadowborn Demon — the hoisted intervening-"if"
 /// gate ("if there are fewer than six creature cards in your graveyard")
 /// must lift to a strict-inequality `QuantityComparison` on the controller's
 /// graveyard creature count (LT 6), the same seam Impending Disaster's
