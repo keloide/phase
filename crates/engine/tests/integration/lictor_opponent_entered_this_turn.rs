@@ -18,7 +18,8 @@ use engine::game::restrictions::record_battlefield_entry;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::parser::parse_oracle_text;
 use engine::types::ability::{
-    Comparator, PlayerScope, QuantityExpr, QuantityRef, TargetFilter, TriggerCondition, TypeFilter,
+    AggregateFunction, Comparator, PlayerScope, QuantityExpr, QuantityRef, TargetFilter,
+    TriggerCondition, TypeFilter,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::phase::Phase;
@@ -82,7 +83,10 @@ fn lictor_condition_is_opponent_scoped_entry_tally() {
                 QuantityExpr::Ref {
                     qty:
                         QuantityRef::BattlefieldEntriesThisTurn {
-                            player: PlayerScope::Opponent { .. },
+                            player:
+                                PlayerScope::Opponent {
+                                    aggregate: AggregateFunction::Max,
+                                },
                             filter: TargetFilter::Typed(f),
                         },
                 },

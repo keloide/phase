@@ -12570,7 +12570,10 @@ mod tests {
                     QuantityExpr::Ref {
                         qty:
                             QuantityRef::BattlefieldEntriesThisTurn {
-                                player: PlayerScope::Opponent { .. },
+                                player:
+                                    PlayerScope::Opponent {
+                                        aggregate: AggregateFunction::Max,
+                                    },
                                 filter: TargetFilter::Typed(filter),
                             },
                     },
@@ -12600,7 +12603,10 @@ mod tests {
                     QuantityExpr::Ref {
                         qty:
                             QuantityRef::BattlefieldEntriesThisTurn {
-                                player: PlayerScope::Opponent { .. },
+                                player:
+                                    PlayerScope::Opponent {
+                                        aggregate: AggregateFunction::Max,
+                                    },
                                 ..
                             },
                     },
