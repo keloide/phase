@@ -304,6 +304,8 @@ fn parse_event_history_conditions(input: &str) -> OracleResult<'_, StaticConditi
         parse_entered_this_turn,
         // CR 102.2 + CR 608.2h: opponent-scoped entry tally (Zendikar trap cycle).
         parse_opponent_had_entered_this_turn,
+        // CR 102.2 + CR 603.4: opponent-scoped past-tense entry gate (Lictor).
+        parse_entered_this_turn_under_opponent_control,
         parse_opponent_cast_spell_this_turn,
         parse_youve_this_turn,
         parse_first_spell_this_game_condition,
@@ -7811,6 +7813,38 @@ fn parse_opponent_had_entered_this_turn(input: &str) -> OracleResult<'_, StaticC
     parse_entered_this_turn_subject(rest, suffix, 1, player)
 }
 
+/// CR 102.2 + CR 102.3 + CR 603.4 + CR 608.2h + CR 608.2i: "[a | an | another | N
+/// or more] <type> entered the battlefield under an opponent's control this turn"
+/// — the opponent-scoped, PAST-tense mirror of `parse_entered_this_turn`'s "under
+/// your control" surface (Lictor's Pheromone Trail intervening-"if"). Distinct
+/// from `parse_opponent_had_entered_this_turn`, which reads the "an opponent had …
+/// enter … under their control" auxiliary/present-tense surface of the Zendikar
+/// trap cycle; this is the bare subject-first past-tense form that leads with the
+/// type rather than an "an opponent had" prefix.
+///
+/// The "under an opponent's control" scope is carried by
+/// `PlayerScope::Opponent { aggregate: Max }` — the existential "an opponent"
+/// reading documented on `parse_opponent_had_entered_this_turn` — NOT a
+/// `controller: Opponent` injected into the type filter: the runtime keys the
+/// `BattlefieldEntriesThisTurn` tally on `record.controller` per opponent and
+/// takes the largest, so in a multiplayer game the per-opponent count is compared
+/// to the threshold rather than the cross-opponent sum (two different opponents
+/// each having one creature enter must NOT satisfy "two or more … under an
+/// opponent's control"). CR 608.2i keeps a permanent that has since left the
+/// battlefield counted, because the snapshot survives departure.
+fn parse_entered_this_turn_under_opponent_control(
+    input: &str,
+) -> OracleResult<'_, StaticCondition> {
+    let suffix = "entered the battlefield under an opponent's control this turn";
+    let player = PlayerScope::Opponent {
+        aggregate: AggregateFunction::Max,
+    };
+    if let Ok(result) = parse_or_more_entered_count(input, suffix, player.clone()) {
+        return Ok(result);
+    }
+    parse_entered_this_turn_subject(input, suffix, 1, player)
+}
+
 /// Parse "there are [fewer than/more than] N [or more] [things] ..." conditions.
 ///
 /// Covers threshold ("seven or more cards"), delirium ("four or more card types"),
@@ -12515,6 +12549,66 @@ mod tests {
             }
             other => {
                 panic!("expected another Knight BattlefieldEntriesThisTurn GE 1, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn test_entered_this_turn_under_opponent_control_singular() {
+        // Lictor's Pheromone Trail intervening-"if". The "under an opponent's
+        // control" scope must land on PlayerScope::Opponent (existential Max),
+        // NOT a controller injected into the type filter, and the filter must
+        // still carry the creature type restriction.
+        let (rest, c) = parse_inner_condition(
+            "a creature entered the battlefield under an opponent's control this turn",
+        )
+        .unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::BattlefieldEntriesThisTurn {
+                                player: PlayerScope::Opponent { .. },
+                                filter: TargetFilter::Typed(filter),
+                            },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            } => {
+                assert_eq!(filter.controller, None);
+                assert!(filter.type_filters.contains(&TypeFilter::Creature));
+            }
+            other => {
+                panic!("expected opponent-scoped BattlefieldEntriesThisTurn GE 1, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn test_entered_this_turn_under_opponent_control_count() {
+        // The counted threshold surface routes through the same opponent scope.
+        let (rest, c) = parse_inner_condition(
+            "two or more creatures entered the battlefield under an opponent's control this turn",
+        )
+        .unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::BattlefieldEntriesThisTurn {
+                                player: PlayerScope::Opponent { .. },
+                                ..
+                            },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 2 },
+            } => {}
+            other => {
+                panic!("expected opponent-scoped BattlefieldEntriesThisTurn GE 2, got {other:?}")
             }
         }
     }

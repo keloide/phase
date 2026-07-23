@@ -645,6 +645,7 @@ mod landing_zone_this_way_quantity;
 mod lathiel_end_step_counters_repro;
 mod leeching_sliver;
 mod leyline_taps_for_mana_repro;
+mod lictor_opponent_entered_this_turn;
 mod lightning_dart_disjunctive_color_instead;
 mod liliana_dreadhorde_multi_dies;
 mod liliana_waker_cross_scope_decline;
