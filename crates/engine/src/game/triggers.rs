@@ -10712,7 +10712,9 @@ fn quantity_ref_refs_cost_paid_object(qty: &QuantityRef) -> bool {
             CastManaSpentMetric::FromSource { source_filter } => {
                 source_filter.references_cost_paid_object()
             }
-            CastManaSpentMetric::Total | CastManaSpentMetric::DistinctColors => false,
+            CastManaSpentMetric::Total
+            | CastManaSpentMetric::DistinctColors
+            | CastManaSpentMetric::OfColor { .. } => false,
         },
 
         // Non-object, non-filter refs never read the cost-paid object. Listed

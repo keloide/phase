@@ -1640,6 +1640,9 @@ pub(crate) fn resolve_mana_spent_to_cast_metric(
         CastManaSpentMetric::DistinctColors => {
             usize_to_i32_saturating(spent_colors.distinct_colors())
         }
+        // CR 106.3 + CR 601.2h: how much mana of exactly this color paid the
+        // cost, read off the same per-color payment tally.
+        CastManaSpentMetric::OfColor { color } => u32_to_i32_saturating(spent_colors.get(*color)),
         CastManaSpentMetric::FromSource { source_filter } => usize_to_i32_saturating(
             source_snapshots
                 .iter()

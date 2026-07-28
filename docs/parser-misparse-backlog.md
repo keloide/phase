@@ -13,7 +13,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 | # | Root cause | # cards | Fix hint (where it likely lives) |
 |---|------------|--------:|----------------------------------|
 | 1 | Relative-clause / filter restriction on target dropped | 746 | oracle_target.rs / game/filter.rs — extend TargetFilter property extraction for trailing relative clauses |
-| 2 | Dropped intervening-if / gating condition (condition: null) | 590 | oracle_nom/condition.rs parse_inner_condition — trigger/static parsers must delegate condition extraction here |
+| 2 | Dropped intervening-if / gating condition (condition: null) | 586 | oracle_nom/condition.rs parse_inner_condition — trigger/static parsers must delegate condition extraction here |
 | 3 | Anaphor bound to wrong referent | 404 | oracle_quantity.rs context-ref resolution + game/ability_utils.rs forward_result wiring |
 | 4 | Conjoined / chained second effect clause dropped | 387 | oracle.rs effect-chain composition — split on 'and'/'then'/sentence boundaries and build sub_ability chain |
 | 5 | Dropped 'for each' / dynamic count collapsed to Fixed | 330 | oracle_quantity.rs parse_for_each_clause / parse_quantity_ref — thread ForEach/ObjectCount into the effect count field |
@@ -804,11 +804,30 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 
 </details>
 
-### 2. Dropped intervening-if / gating condition (condition: null)  (590 cards)
+### 2. Dropped intervening-if / gating condition (condition: null)  (586 cards)
 
 **Signature.** Trigger/static/replacement/spell condition left null though Oracle has an 'if/while/as long as/unless' game-state gate; the effect resolves unconditionally (CR 603.4 / 608.2c).
 
 **Fix hint.** oracle_nom/condition.rs parse_inner_condition — trigger/static parsers must delegate condition extraction here
+
+**Status note (sentence-initial "If &lt;condition&gt;, ~ enters with …" sub-class, CR 614.1c).**
+`parse_enters_with_counters` now peels an optional CR 207.2c ability-word label plus a
+sentence-initial `if <condition>, ` gate and attaches it as the replacement's condition,
+making the whole `parse_inner_condition` grammar reachable from that position (previously
+NO shape was). A new `CastManaSpentMetric::OfColor` leaf covers the Adamant per-color
+threshold. Removed from the list below: Ardenvale Paladin, Locthwain Paladin,
+Vantress Paladin (Adamant, now gated and `supported`), and Dust Animus (its
+"five or more untapped lands" gate was silently dropped; now attached). Embereth Paladin
+and Garenbrig Paladin are fixed by the same change but appear nowhere in this file, so no
+line was removed for them. **Deliberately KEPT:** Henge Walker — its
+"at least three mana of the same color" is a max-over-colors metric with no grammar and
+still fails closed; and Necromantic Summons (listed under §11, not here) — §11's root cause
+remains true because its replacement carries `valid_card: SelfRef` on a sorcery, so
+`object_replacement_candidate_applies` can never match it; the condition now parses but the
+replacement stays dead code.
+Observed, not introduced: this section's committed header count (590 before this edit) did
+not match its own bullet list (597 entries). The counts here were decremented by the four
+removals; the pre-existing 7-entry drift is untouched.
 
 <details><summary>Cards</summary>
 
@@ -833,7 +852,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Antiquities on the Loose
 - Arcbound Tracker
 - Arcum's Sleigh
-- Ardenvale Paladin
 - Arid Archway
 - Ascendant Packleader
 - Ashen Ghoul
@@ -953,7 +971,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Drop of Honey
 - Drowner of Truth
 - Drownyard Behemoth
-- Dust Animus
 - Dúnedain Rangers
 - Earwig Squad
 - Ego Drain
@@ -1117,7 +1134,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Lighthouse Chronologist
 - Lightning Dart
 - Liliana's Defeat
-- Locthwain Paladin
 - Lord Skitter's Blessing
 - Loxodon Surveyor
 - Ludevic, Necro-Alchemist
@@ -1363,7 +1379,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Valiant Emberkin
 - Vampire Scrivener
 - Vampire Socialite
-- Vantress Paladin
 - Venom's Hunger
 - Venom, Eddie Brock
 - Verity Circle
