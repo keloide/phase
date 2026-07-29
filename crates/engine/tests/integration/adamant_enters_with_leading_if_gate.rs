@@ -23,7 +23,7 @@ use engine::game::scenario::{CastOutcome, GameRunner, GameScenario, P0, P1};
 use engine::types::ability::Effect;
 use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
-use engine::types::keywords::KeywordKind;
+use engine::types::keywords::{Keyword, KeywordKind};
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
@@ -365,4 +365,102 @@ fn slaying_fire_three_red_deals_four() {
 fn slaying_fire_one_red_deals_three() {
     let outcome = cast_slaying_fire(&[(ManaType::Red, 1), (ManaType::Colorless, 2)]);
     outcome.assert_life_delta(P1, -3);
+}
+
+// ---------------------------------------------------------------------------
+// R9 — the Adamant rider whose payload is a CONTINUOUS STATIC GRANT, not an
+// ability-level effect. This subclass routes DIFFERENTLY from R8: the gate
+// lands on `StaticDefinition.condition` (CR 613 layer 6 keyword grant) rather
+// than on the ability's own `condition`, because the payload is a continuous
+// effect over a set of permanents.
+//
+// Why this test exists: the CI parse-diff bot reports Silverflame Ritual's
+// ABILITY-level `conditional` as `3+ White spent → ∅`, which reads like a
+// dropped gate — the exact bug class this file guards. It is NOT a drop; the
+// condition moved down one layer onto the static. The bot's signature reads the
+// ability level only, so a layer move renders as `∅`. R8 cannot catch this
+// because Slaying Fire's payload is ability-level. Nothing else pins it, so a
+// future refactor really COULD drop the static's condition and every existing
+// test here would stay green while "creatures you control gain vigilance"
+// became unconditional.
+// ---------------------------------------------------------------------------
+
+/// Silverflame Ritual {3}{W} — verbatim Oracle text (`data/card-data.json`).
+const SILVERFLAME_RITUAL: &str = "Put a +1/+1 counter on each creature you control.\nAdamant — If \
+                                  at least three white mana was spent to cast this spell, \
+                                  creatures you control gain vigilance until end of turn.";
+
+/// Casts Silverflame Ritual with `payment` and returns the runner plus the
+/// controller's creature, so the caller can read granted keywords off the board
+/// AFTER resolution (a continuous grant is not visible in `CastOutcome` deltas).
+fn cast_silverflame_ritual(payment: &[(ManaType, usize)]) -> (GameRunner, ObjectId) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let bear = scenario.add_vanilla(P0, 2, 2);
+    let ritual = scenario
+        .add_spell_to_hand_from_oracle(P0, "Silverflame Ritual", true, SILVERFLAME_RITUAL)
+        .with_mana_cost(ManaCost::Cost {
+            generic: 3,
+            shards: vec![ManaCostShard::White],
+        })
+        .id();
+    scenario.with_mana_pool(P0, pool(payment));
+    let mut runner = scenario.build();
+    assert!(
+        !runner.state().objects[&ritual]
+            .abilities
+            .iter()
+            .any(|a| matches!(&*a.effect, Effect::Unimplemented { .. })),
+        "Silverflame Ritual must parse with zero Effect::Unimplemented, got {:?}",
+        runner.state().objects[&ritual].abilities
+    );
+    runner.cast(ritual).resolve();
+    (runner, bear)
+}
+
+/// R9 positive reach-guard: three white mana satisfies the rider → the creature
+/// gains vigilance. Also proves the UNGATED half of the card resolved (the
+/// +1/+1 counter), so a total failure to resolve cannot masquerade as a pass.
+#[test]
+fn silverflame_ritual_three_white_grants_vigilance() {
+    let (runner, bear) = cast_silverflame_ritual(&[(ManaType::White, 3), (ManaType::Colorless, 1)]);
+    let obj = &runner.state().objects[&bear];
+    assert_eq!(
+        obj.counters
+            .get(&CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0),
+        1,
+        "the ungated first line must always resolve — if this is 0 the spell never resolved \
+         and the vigilance assertion below would be vacuous"
+    );
+    assert!(
+        obj.has_keyword(&Keyword::Vigilance),
+        "three white mana satisfies the Adamant rider, so the static grant must apply"
+    );
+}
+
+/// R9 negative (paired with the reach-guard above): one white + three colorless
+/// is four TOTAL mana but only one WHITE, so the rider must NOT fire. The
+/// +1/+1 counter still lands, proving the spell resolved and the absence of
+/// vigilance is a real gate decision rather than a non-resolution.
+///
+/// This is the assertion that would fail if the static's condition were ever
+/// dropped — i.e. if the `∅` the CI bot displays ever became literally true.
+#[test]
+fn silverflame_ritual_one_white_does_not_grant_vigilance() {
+    let (runner, bear) = cast_silverflame_ritual(&[(ManaType::White, 1), (ManaType::Colorless, 3)]);
+    let obj = &runner.state().objects[&bear];
+    assert_eq!(
+        obj.counters
+            .get(&CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0),
+        1,
+        "the ungated first line must still resolve, so the vigilance check below is not vacuous"
+    );
+    assert!(
+        !obj.has_keyword(&Keyword::Vigilance),
+        "only one white mana was spent — the Adamant static grant must stay gated off"
+    );
 }
