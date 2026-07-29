@@ -5057,7 +5057,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 
 </details>
 
-### 28. Trigger/activation timing or ordinal restriction dropped  (14 cards)
+### 28. Trigger/activation timing or ordinal restriction dropped  (13 cards)
 
 **Signature.** A timing/scope restriction (OnlyDuringYourTurn / OncePerTurn / 'during an opponent's turn' / Nth-spell ordinal / cast-timing) is null; the constraint tail is not parsed.
 
@@ -5076,7 +5076,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Shadowheart, Sharran Cleric
 - Skarrgan Hellkite
 - Tomb Tyrant
-- Trade Caravan
 - Uthros Research Craft
 - Uthros, Titanic Godcore
 

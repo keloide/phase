@@ -7655,6 +7655,13 @@ fn parse_activation_during_role_gate(i: &str) -> OracleResult<'_, ActivationRest
         ),
         value(ActivationRestriction::AsInstant, tag("as an instant")),
         value(
+            opponents_upkeep_activation_restriction(),
+            alt((
+                tag("during an opponent's upkeep"),
+                tag("during an opponents upkeep"),
+            )),
+        ),
+        value(
             opponents_turn_activation_restriction(),
             alt((
                 tag("during an opponent's turn"),
@@ -7880,6 +7887,24 @@ fn opponents_turn_activation_restriction() -> ActivationRestriction {
 fn opponents_turn_activation_condition() -> ParsedCondition {
     ParsedCondition::Not {
         condition: Box::new(ParsedCondition::IsYourTurn),
+    }
+}
+
+/// CR 602.5b + CR 102.1 + CR 503.1: "Activate only during an opponent's upkeep"
+/// gates activation to the upkeep step of a turn where the activator is not the
+/// active player (Trade Caravan). Composed from the same `Not(IsYourTurn)`
+/// opponent-turn leaf as `opponents_turn_activation_condition` plus the
+/// `IsDuringUpkeep` step predicate, so the opponent scope reuses the existing
+/// composition idiom instead of a dedicated `DuringOpponents*` restriction
+/// sibling.
+fn opponents_upkeep_activation_restriction() -> ActivationRestriction {
+    ActivationRestriction::RequiresCondition {
+        condition: Some(ParsedCondition::And {
+            conditions: vec![
+                opponents_turn_activation_condition(),
+                ParsedCondition::IsDuringUpkeep,
+            ],
+        }),
     }
 }
 

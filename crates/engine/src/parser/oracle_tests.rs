@@ -628,6 +628,53 @@ fn activated_ability_opponent_turn_restriction_uses_not_your_turn_condition() {
     );
 }
 
+/// CR 602.5b + CR 102.1 + CR 503.1: "Activate only during an opponent's upkeep"
+/// (Trade Caravan) composes the opponent-turn scope (`Not(IsYourTurn)`) with the
+/// upkeep-step predicate (`IsDuringUpkeep`) inside a single `RequiresCondition`,
+/// reusing the same composition idiom as the bare opponent-turn gate above rather
+/// than a dedicated `DuringOpponents*` restriction sibling. Before the fix the
+/// tail dropped to `Effect::Unimplemented` and the ability was activatable at any
+/// time.
+#[test]
+fn activated_ability_opponents_upkeep_restriction_composes_scope_and_step() {
+    let r = parse(
+        "Remove two currency counters from ~: Untap target basic land. \
+         Activate only during an opponent's upkeep.",
+        "Trade Caravan",
+        &[],
+        &["Creature"],
+        &["Human", "Nomad"],
+    );
+
+    assert_eq!(r.abilities.len(), 1, "got {:#?}", r.abilities);
+    let ability = &r.abilities[0];
+    assert!(
+        !matches!(ability.effect.as_ref(), Effect::Unimplemented { .. })
+            && ability
+                .sub_ability
+                .as_ref()
+                .is_none_or(|sub| !matches!(sub.effect.as_ref(), Effect::Unimplemented { .. })),
+        "expected no unimplemented fallback, got {:#?}",
+        ability
+    );
+
+    let expected = ActivationRestriction::RequiresCondition {
+        condition: Some(ParsedCondition::And {
+            conditions: vec![
+                ParsedCondition::Not {
+                    condition: Box::new(ParsedCondition::IsYourTurn),
+                },
+                ParsedCondition::IsDuringUpkeep,
+            ],
+        }),
+    };
+    assert!(
+        ability.activation_restrictions.contains(&expected),
+        "expected composed opponent's-upkeep restriction, got {:?}",
+        ability.activation_restrictions
+    );
+}
+
 /// CR 508.1: a STANDALONE combat-window activation gate — "Activate only before
 /// attackers are declared" / "Activate only before combat" (Arcum's Whistle,
 /// Arcum's Sleigh) with no "during <role>" first half — must map to the enforced

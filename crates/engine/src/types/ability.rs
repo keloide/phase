@@ -7871,6 +7871,15 @@ pub enum ParsedCondition {
     /// ability-resolution layer), the same way `ParsedCondition::And` mirrors
     /// `AbilityCondition::And`.
     IsYourTurn,
+    /// CR 503.1: True when the game is currently in the upkeep step. A
+    /// turn-structure predicate with NO player scope — it asks only "is it an
+    /// upkeep step", not whose. Player scope composes at the restriction layer:
+    /// "during an opponent's upkeep" is `And([Not(IsYourTurn), IsDuringUpkeep])`
+    /// (CR 102.1 fixes the active player from the turn), mirroring how
+    /// opponent-turn activation timing reuses `Not(IsYourTurn)` (see
+    /// `opponents_turn_activation_condition`) rather than a dedicated
+    /// `DuringOpponents*` restriction sibling.
+    IsDuringUpkeep,
     /// CR 601.3d + CR 702.8a + CR 608.2c: The in-flight spell being cast targets at
     /// least one object that matches `filter`. Gates a target-dependent casting
     /// permission (Timely Ward — "you may cast this spell as though it had flash if

@@ -1629,6 +1629,9 @@ pub(crate) fn evaluate_condition(
         ParsedCondition::HasCityBlessing => state.city_blessing.contains(&player),
         // CR 102.1: "The active player is the player whose turn it is."
         ParsedCondition::IsYourTurn => state.active_player == player,
+        // CR 503.1: The game is currently in the upkeep step. Player scope, if
+        // any, is composed by the caller via `And([Not(IsYourTurn), ..])`.
+        ParsedCondition::IsDuringUpkeep => state.phase == Phase::Upkeep,
         // CR 601.3d + CR 608.2c: "if it targets a [filter]" — gates a casting
         // permission on the chosen targets of the in-flight spell. Read from
         // `state.pending_cast.ability.targets` when targets have been committed.
@@ -3436,6 +3439,54 @@ mod tests {
             PlayerId(0),
             ObjectId(1),
             &not_your_turn
+        ));
+    }
+
+    #[test]
+    fn opponents_upkeep_activation_condition_gates_on_step_and_scope() {
+        // CR 602.5b + CR 102.1 + CR 503.1: "Activate only during an opponent's
+        // upkeep" is the composed restriction the parser emits for Trade Caravan —
+        // `And([Not(IsYourTurn), IsDuringUpkeep])`. Drive the real
+        // `evaluate_condition` across the full turn-scope × step matrix so the gate
+        // holds only in an opponent's upkeep step.
+        let mut state = crate::types::game_state::GameState::new_two_player(42);
+        let condition = ParsedCondition::And {
+            conditions: vec![
+                ParsedCondition::Not {
+                    condition: Box::new(ParsedCondition::IsYourTurn),
+                },
+                ParsedCondition::IsDuringUpkeep,
+            ],
+        };
+        let activator = PlayerId(0);
+
+        // Opponent's turn, upkeep step -> allowed.
+        state.active_player = PlayerId(1);
+        state.phase = Phase::Upkeep;
+        assert!(evaluate_condition(
+            &state,
+            activator,
+            ObjectId(1),
+            &condition
+        ));
+
+        // Opponent's turn, non-upkeep step -> denied (IsDuringUpkeep false).
+        state.phase = Phase::PreCombatMain;
+        assert!(!evaluate_condition(
+            &state,
+            activator,
+            ObjectId(1),
+            &condition
+        ));
+
+        // Your turn, upkeep step -> denied (Not(IsYourTurn) false).
+        state.active_player = PlayerId(0);
+        state.phase = Phase::Upkeep;
+        assert!(!evaluate_condition(
+            &state,
+            activator,
+            ObjectId(1),
+            &condition
         ));
     }
 
