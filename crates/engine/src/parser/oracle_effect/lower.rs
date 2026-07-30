@@ -9,6 +9,9 @@ use super::super::oracle_nom::bridge::{nom_on_lower, nom_parse_lower, split_once
 use super::super::oracle_nom::duration::{
     parse_duration, parse_for_as_long_as_condition, parse_until_source_exiles_another_card_body,
 };
+use super::super::oracle_nom::enters_under::{
+    parse_leading_control_clause, ControlClausePossessor,
+};
 use super::super::oracle_nom::error::{oracle_err, OracleError, OracleResult};
 use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_nom::quantity as nom_quantity;
@@ -6188,11 +6191,14 @@ pub(super) fn strip_any_number_quantifier(text: &str) -> (String, Option<MultiTa
 pub(super) struct ReturnDestination {
     pub(super) zone: Zone,
     pub(super) transformed: bool,
-    // CR 110.2a: Controller override on ETB. `Some(ref)` routes the object to
-    // the player resolved from `ref`; `None` leaves the object under its
-    // owner's control. Downstream IR/Effect construction passes it through
-    // unchanged into `Effect::ChangeZone.enters_under`.
-    pub(super) enters_under: Option<ControllerRef>,
+    // CR 110.2a (docs/MagicCompRules.txt:618): the battlefield-entry control
+    // clause AS WRITTEN — raw syntax, deliberately unbound. A destination
+    // stripper sees only the destination phrase, never the moved object's
+    // filter or the enclosing `ParseContext`, so it cannot resolve a
+    // third-person anaphor ("under their control") without guessing. Binding
+    // happens at the caller via `bind_control_clause`, where both are in scope.
+    // `None` means the effect stated nothing otherwise (CR 110.2's default).
+    pub(super) control: Option<ControlClausePossessor>,
     // CR 614.1: "tapped" — enters the battlefield tapped.
     pub(super) enter_tapped: bool,
     // CR 508.4: "tapped and attacking" — enters attacking.
@@ -6295,18 +6301,24 @@ pub(super) fn strip_return_destination_ext_with_remainder(
     let lower = text.to_lowercase();
     // Ordered longest-first to avoid partial matches.
     // "transformed" variants must come before their non-transformed counterparts.
-    // Tuples: (phrase, zone, transformed, enters_under_you, enter_tapped, enters_attacking)
-    // The `enters_under_you` bool is the parser-table carrier for the
-    // controller-override flag; it maps to `Some(ControllerRef::You)` / `None`
-    // at the `ReturnDestination` construction site below (CR 110.2a).
+    // Tuples: (phrase, zone, transformed, control, enter_tapped, enters_attacking)
+    // CR 110.2a (docs/MagicCompRules.txt:618): the `control` column is the
+    // parser-table carrier for whatever control clause the row's phrase already
+    // spells out — `Some(You)` for "under your control", `Some(Owner)` for every
+    // "under <its|their|his|her> owner('s|s') control" spelling (CR 110.2 @ :616,
+    // which restates the default rather than overriding it), `None` otherwise.
+    // Non-battlefield rows are always `None`: CR 110.1 (:614) gives a controller
+    // only to permanents. Rows whose phrase carries no clause fall through to the
+    // `parse_leading_control_clause` pass below, which picks up the third-person
+    // forms the table never enumerated.
     // Ordered longest-first; compound patterns must precede their shorter substrings.
-    let patterns: &[(&str, Zone, bool, bool, bool, bool)] = &[
+    let patterns: &[(&str, Zone, bool, Option<ControlClausePossessor>, bool, bool)] = &[
         // Tapped + transformed + owner's control (compound, longest)
         (
             " to the battlefield tapped and transformed under its owner's control",
             Zone::Battlefield,
             true,
-            false,
+            Some(ControlClausePossessor::Owner),
             true,
             false,
         ),
@@ -6315,7 +6327,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield transformed under your control",
             Zone::Battlefield,
             true,
-            true,
+            Some(ControlClausePossessor::You),
             false,
             false,
         ),
@@ -6324,7 +6336,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield transformed under their owners' control",
             Zone::Battlefield,
             true,
-            false,
+            Some(ControlClausePossessor::Owner),
             false,
             false,
         ),
@@ -6332,7 +6344,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield transformed under its owner's control",
             Zone::Battlefield,
             true,
-            false,
+            Some(ControlClausePossessor::Owner),
             false,
             false,
         ),
@@ -6340,7 +6352,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield transformed under his owner's control",
             Zone::Battlefield,
             true,
-            false,
+            Some(ControlClausePossessor::Owner),
             false,
             false,
         ),
@@ -6348,7 +6360,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield transformed under her owner's control",
             Zone::Battlefield,
             true,
-            false,
+            Some(ControlClausePossessor::Owner),
             false,
             false,
         ),
@@ -6356,7 +6368,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield transformed",
             Zone::Battlefield,
             true,
-            false,
+            None,
             false,
             false,
         ),
@@ -6365,7 +6377,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield tapped and attacking",
             Zone::Battlefield,
             false,
-            false,
+            None,
             true,
             true,
         ),
@@ -6373,7 +6385,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " onto the battlefield tapped and attacking",
             Zone::Battlefield,
             false,
-            false,
+            None,
             true,
             true,
         ),
@@ -6382,7 +6394,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " onto the battlefield attacking",
             Zone::Battlefield,
             false,
-            false,
+            None,
             false,
             true,
         ),
@@ -6390,7 +6402,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield attacking",
             Zone::Battlefield,
             false,
-            false,
+            None,
             false,
             true,
         ),
@@ -6399,7 +6411,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield tapped under their owners' control",
             Zone::Battlefield,
             false,
-            false,
+            Some(ControlClausePossessor::Owner),
             true,
             false,
         ),
@@ -6407,7 +6419,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield tapped under its owner's control",
             Zone::Battlefield,
             false,
-            false,
+            Some(ControlClausePossessor::Owner),
             true,
             false,
         ),
@@ -6415,7 +6427,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield tapped under your control",
             Zone::Battlefield,
             false,
-            true,
+            Some(ControlClausePossessor::You),
             true,
             false,
         ),
@@ -6424,7 +6436,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield under their owners' control",
             Zone::Battlefield,
             false,
-            false,
+            Some(ControlClausePossessor::Owner),
             false,
             false,
         ),
@@ -6432,7 +6444,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield under its owner's control",
             Zone::Battlefield,
             false,
-            false,
+            Some(ControlClausePossessor::Owner),
             false,
             false,
         ),
@@ -6441,7 +6453,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield under your control",
             Zone::Battlefield,
             false,
-            true,
+            Some(ControlClausePossessor::You),
             false,
             false,
         ),
@@ -6450,7 +6462,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield tapped",
             Zone::Battlefield,
             false,
-            false,
+            None,
             true,
             false,
         ),
@@ -6458,7 +6470,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the battlefield",
             Zone::Battlefield,
             false,
-            false,
+            None,
             false,
             false,
         ),
@@ -6467,7 +6479,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " onto the battlefield under your control",
             Zone::Battlefield,
             false,
-            true,
+            Some(ControlClausePossessor::You),
             false,
             false,
         ),
@@ -6475,7 +6487,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " onto the battlefield tapped",
             Zone::Battlefield,
             false,
-            false,
+            None,
             true,
             false,
         ),
@@ -6483,7 +6495,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " onto the battlefield",
             Zone::Battlefield,
             false,
-            false,
+            None,
             false,
             false,
         ),
@@ -6492,7 +6504,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to its owner's hand",
             Zone::Hand,
             false,
-            false,
+            None,
             false,
             false,
         ),
@@ -6500,7 +6512,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to their owner's hand",
             Zone::Hand,
             false,
-            false,
+            None,
             false,
             false,
         ),
@@ -6508,18 +6520,18 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to their owners' hands",
             Zone::Hand,
             false,
-            false,
+            None,
             false,
             false,
         ),
-        (" to their hand", Zone::Hand, false, false, false, false),
-        (" to your hand", Zone::Hand, false, false, false, false),
+        (" to their hand", Zone::Hand, false, None, false, false),
+        (" to your hand", Zone::Hand, false, None, false, false),
         // Graveyard destinations
         (
             " to its owner's graveyard",
             Zone::Graveyard,
             false,
-            false,
+            None,
             false,
             false,
         ),
@@ -6527,7 +6539,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to their owner's graveyard",
             Zone::Graveyard,
             false,
-            false,
+            None,
             false,
             false,
         ),
@@ -6535,7 +6547,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to their owners' graveyards",
             Zone::Graveyard,
             false,
-            false,
+            None,
             false,
             false,
         ),
@@ -6543,7 +6555,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to your graveyard",
             Zone::Graveyard,
             false,
-            false,
+            None,
             false,
             false,
         ),
@@ -6552,7 +6564,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             " to the command zone",
             Zone::Command,
             false,
-            false,
+            None,
             false,
             false,
         ),
@@ -6568,7 +6580,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
     // " face down" present and recording the rider. Rather than cross-product
     // every control/tapped row with a face-down twin, we try each row a second
     // time with " face down" spliced in right after "the battlefield".
-    for (phrase, zone, transformed, enters_under_you, enter_tapped, enters_attacking) in patterns {
+    for (phrase, zone, transformed, row_control, enter_tapped, enters_attacking) in patterns {
         // Prefer the face-down variant (" to the battlefield face down ...") when
         // the text carries it; otherwise fall back to the plain destination row.
         let face_down_phrase = phrase
@@ -6599,6 +6611,14 @@ pub(super) fn strip_return_destination_ext_with_remainder(
             // exactly as the pre-existing `pos + phrase_len` indexing already
             // assumes.
             let mut entry_offset = pos + phrase_len;
+            // CR 110.2a (docs/MagicCompRules.txt:618): one control-clause
+            // authority, two possible positions — inside the matched table
+            // phrase, or trailing it. Declared OUTSIDE the battlefield block
+            // because it is read at the `ReturnDestination` construction below,
+            // which EVERY row reaches (including the hand/graveyard/command
+            // rows, whose `control` is always `None` per CR 110.1 @ :614).
+            // `*row_control` is a `Copy` read out of the `&'static` table row.
+            let mut control: Option<ControlClausePossessor> = *row_control;
             if *zone == Zone::Battlefield {
                 let (rider_rest, riders) =
                     strip_trailing_battlefield_riders(&lower[entry_offset..]);
@@ -6607,6 +6627,30 @@ pub(super) fn strip_return_destination_ext_with_remainder(
                 enter_tapped |= riders.enter_tapped;
                 enters_attacking |= riders.enters_attacking;
                 entry_offset = lower.len() - rider_rest.len();
+                // CR 110.2a: the table enumerates only the first- and
+                // owner-person spellings, so a third-person clause ("under
+                // their control", "under that player's control") survives on
+                // the tail. Consume it HERE, BEFORE `after_destination`, the
+                // counters-suffix scan and `original_after_destination` all
+                // read `entry_offset` — otherwise the clause is both dropped
+                // from the destination AND re-emitted as a dangling remainder.
+                if control.is_none() {
+                    if let Ok((rest, p)) = parse_leading_control_clause(&lower[entry_offset..]) {
+                        control = Some(p);
+                        entry_offset = lower.len() - rest.len();
+                        // CR 614.1c (:3060) + CR 508.4 (:2309) + CR 708.3
+                        // (:5707): entry riders are order-independent and may
+                        // ALSO trail the control clause ("under your control
+                        // face down and tapped").
+                        let (rest2, riders2) =
+                            strip_trailing_battlefield_riders(&lower[entry_offset..]);
+                        face_down |= riders2.face_down;
+                        transformed |= riders2.transformed;
+                        enter_tapped |= riders2.enter_tapped;
+                        enters_attacking |= riders2.enters_attacking;
+                        entry_offset = lower.len() - rest2.len();
+                    }
+                }
             }
             let after_destination = &lower[entry_offset..];
             let (enter_with_counters, counters_offset) =
@@ -6638,7 +6682,7 @@ pub(super) fn strip_return_destination_ext_with_remainder(
                 Some(ReturnDestination {
                     zone: *zone,
                     transformed,
-                    enters_under: enters_under_you.then_some(ControllerRef::You),
+                    control,
                     enter_tapped,
                     enters_attacking,
                     enter_with_counters,
@@ -6698,27 +6742,21 @@ fn parse_leading_battlefield_return_destination(
         value((false, false, false), tag("")),
     ))
     .parse(input)?;
-    // CR 110.2a: parse the controller-override clause (or its absence) directly
-    // into `Option<ControllerRef>`. Only `"under your control"` produces a
-    // controller override; "owner's control" variants leave the object under
-    // its owner's control (no override).
-    let (input, enters_under) = alt((
-        value(
-            Some(ControllerRef::You),
-            tag::<_, _, OracleError<'_>>(" under your control"),
-        ),
-        value(None, tag(" under their owners' control")),
-        value(None, tag(" under its owner's control")),
-        value(None, tag("")),
-    ))
-    .parse(input)?;
+    // CR 110.2a (docs/MagicCompRules.txt:618): parse the control clause (or its
+    // absence) as raw syntax. The four hand-picked literal arms this replaces
+    // recognized only "under your control", "under their owners' control" and
+    // "under its owner's control"; the singular "under their/his/her owner's
+    // control" spellings fell through to the empty arm and their residue leaked
+    // into the TARGET text. The shared combinator recognizes every printed
+    // owner spelling plus the third-person forms.
+    let (input, control) = opt(parse_leading_control_clause).parse(input)?;
     let (input, _) = tag(" ").parse(input)?;
     Ok((
         input,
         ReturnDestination {
             zone: Zone::Battlefield,
             transformed: modifier.0,
-            enters_under,
+            control,
             enter_tapped: modifier.1,
             enters_attacking: modifier.2,
             enter_with_counters: vec![],
@@ -6741,7 +6779,7 @@ fn parse_leading_hand_return_destination(input: &str) -> OracleResult<'_, Return
         ReturnDestination {
             zone: Zone::Hand,
             transformed: false,
-            enters_under: None,
+            control: None,
             enter_tapped: false,
             enters_attacking: false,
             enter_with_counters: vec![],
@@ -6763,7 +6801,7 @@ fn parse_leading_graveyard_return_destination(input: &str) -> OracleResult<'_, R
         ReturnDestination {
             zone: Zone::Graveyard,
             transformed: false,
-            enters_under: None,
+            control: None,
             enter_tapped: false,
             enters_attacking: false,
             enter_with_counters: vec![],
@@ -6779,7 +6817,7 @@ fn parse_leading_command_return_destination(input: &str) -> OracleResult<'_, Ret
         ReturnDestination {
             zone: Zone::Command,
             transformed: false,
-            enters_under: None,
+            control: None,
             enter_tapped: false,
             enters_attacking: false,
             enter_with_counters: vec![],

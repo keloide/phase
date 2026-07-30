@@ -624,6 +624,7 @@ mod issue_654_stridehangar_automaton;
 mod issue_6566_granted_leave_exile;
 mod issue_6634_aven_courier;
 mod issue_6643_party_dude_opponents_attacked;
+mod issue_6691_enters_under_their_control;
 mod issue_680_shalai_and_hallar_forgotten_ancient;
 mod issue_680_shalai_upkeep_move;
 mod issue_688_mind_into_matter;
