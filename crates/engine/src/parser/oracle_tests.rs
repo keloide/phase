@@ -1,9 +1,151 @@
 use super::*;
 use crate::parser::oracle_effect::parse_effect_chain;
+use crate::parser::oracle_ir::doc::{UnsupportedAbilityCategory, UnsupportedAbilityIr};
 use crate::types::ability::{
     AdditionalCostOrigin, AdditionalCostPaymentSource, CountScope, CounterAdjustment, DoorLockOp,
 };
 use crate::types::counter::{CounterMatch, CounterType};
+
+#[test]
+fn unsupported_ability_ir_lowering_preserves_generic_and_structural_payloads() {
+    let generic = lower_unsupported_node(&UnsupportedAbilityIr::unknown("unknown line"), 1);
+    let Effect::Unimplemented { name, description } = generic.effect.as_ref() else {
+        panic!("expected unimplemented generic residual: {generic:?}");
+    };
+    assert_eq!(name, "unknown");
+    assert_eq!(description.as_deref(), Some("unknown line"));
+    assert_eq!(generic.description.as_deref(), Some("unknown line"));
+    assert_eq!(generic.min_x_value, 1);
+
+    let structural = lower_unsupported_node(
+        &UnsupportedAbilityIr::new(
+            UnsupportedAbilityCategory::EffectStructure,
+            "Effect sentence candidate but line failed effect parser: unsupported line",
+            "unsupported line",
+        ),
+        0,
+    );
+    let Effect::Unimplemented { name, description } = structural.effect.as_ref() else {
+        panic!("expected unimplemented structural residual: {structural:?}");
+    };
+    assert_eq!(name, "effect_structure");
+    assert_eq!(
+        description.as_deref(),
+        Some("Effect sentence candidate but line failed effect parser: unsupported line")
+    );
+    assert_eq!(structural.description.as_deref(), Some("unsupported line"));
+}
+
+#[test]
+fn ozai_document_ir_lowers_keyword_transform_and_unspent_mana_gate() {
+    const ORACLE: &str = "Trample, firebending 4, haste\nIf you would lose unspent mana, that mana becomes red instead.\nOzai has flying and indestructible as long as you have six or more unspent mana.";
+    let keyword_names = [
+        "trample".to_string(),
+        "firebending".to_string(),
+        "haste".to_string(),
+    ];
+    let types = ["Legendary".to_string(), "Creature".to_string()];
+    let subtypes = [
+        "Human".to_string(),
+        "Noble".to_string(),
+        "Wizard".to_string(),
+    ];
+
+    let mut ir = parse_oracle_ir(
+        ORACLE,
+        "Ozai, the Phoenix King",
+        &keyword_names,
+        &types,
+        &subtypes,
+    );
+    assert!(
+        ir.diagnostics.is_empty(),
+        "unexpected parse diagnostics: {ir:#?}"
+    );
+    assert!(
+        ir.items
+            .iter()
+            .all(|item| !matches!(item.node, OracleNodeIr::Unsupported { .. })),
+        "every printed Ozai line must have a typed IR node: {ir:#?}"
+    );
+    let parsed = lower_oracle_ir(&mut ir);
+    assert!(
+        parsed.parse_warnings.is_empty(),
+        "lowering must preserve a fully supported Ozai document: {:#?}",
+        parsed.parse_warnings
+    );
+    assert!(parsed.statics.iter().any(|definition| matches!(
+        definition.mode,
+        StaticMode::StepEndUnspentMana {
+            filter: None,
+            action: StepEndManaAction::Transform(ManaType::Red),
+        }
+    ) && definition.affected
+        == Some(TargetFilter::Controller)));
+
+    let gate = parsed
+        .statics
+        .iter()
+        .find(|definition| {
+            matches!(
+                definition.condition,
+                Some(StaticCondition::QuantityComparison {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::UnspentMana { color: None },
+                    },
+                    comparator: Comparator::GE,
+                    rhs: QuantityExpr::Fixed { value: 6 },
+                })
+            )
+        })
+        .expect("Ozai's six-unspent-mana conditional static");
+    assert_eq!(gate.affected, Some(TargetFilter::SelfRef));
+    assert!(gate
+        .modifications
+        .contains(&ContinuousModification::AddKeyword {
+            keyword: Keyword::Flying,
+        }));
+    assert!(gate
+        .modifications
+        .contains(&ContinuousModification::AddKeyword {
+            keyword: Keyword::Indestructible,
+        }));
+}
+
+#[test]
+fn nominal_dispatch_preserves_precomputed_x_floor_for_spells_and_residuals() {
+    let types = ["Creature".to_string()];
+    let spell = parse_oracle_text(
+        "~ deals 2 damage. X can't be 0.",
+        "X Damage",
+        &[],
+        &types,
+        &[],
+    );
+    assert_eq!(spell.abilities.len(), 1);
+    assert_eq!(spell.abilities[0].min_x_value, 1);
+    assert!(
+        !matches!(
+            spell.abilities[0].effect.as_ref(),
+            Effect::Unimplemented { .. }
+        ),
+        "nominal dispatch must retain a parsed spell"
+    );
+
+    let residual = parse_oracle_text(
+        "Frobnicate target creature. X can't be 0.",
+        "X Residual",
+        &[],
+        &types,
+        &[],
+    );
+    assert_eq!(residual.abilities.len(), 1);
+    assert_eq!(residual.abilities[0].min_x_value, 1);
+    assert!(matches!(
+        residual.abilities[0].effect.as_ref(),
+        Effect::Unimplemented { .. }
+    ));
+}
 
 /// CR 122.1 + CR 608.2d + CR 702.62b (Clockspinning): the whole card parses
 /// with zero `Unimplemented` — buyback consumed as a keyword line, sentence 1
@@ -1127,8 +1269,8 @@ use crate::types::ability::{
     SacrificeCost, SacrificeRequirement, SharedQuality, SharedQualityRelation, ShieldKind,
     StaticCondition, TapStateChange, TargetFilter, TriggerCondition, TypeFilter, TypedFilter,
 };
-use crate::types::keywords::{FlashbackCost, KeywordKind, WardCost};
-use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
+use crate::types::keywords::{FlashbackCost, Keyword, KeywordKind, WardCost};
+use crate::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, StepEndManaAction};
 use crate::types::replacements::ReplacementEvent;
 use crate::types::statics::{CostModifyMode, ProhibitionScope, StaticMode};
 use crate::types::triggers::{PlaneswalkRole, TriggerMode};
@@ -8148,6 +8290,50 @@ fn mox_pearl_mana_ability() {
     assert_eq!(r.abilities[0].kind, AbilityKind::Activated);
 }
 
+/// Issue #6507: Gemstone Mine's mana ability is targetless ("Add one mana of
+/// any color" chooses no target), so the trailing "If there are no mining
+/// counters on this land, sacrifice it" conditional has no parent target to
+/// inherit. The bare "it" pronoun must bind to the ability's own source
+/// (`TargetFilter::SelfRef`), not `ParentTarget` — `ParentTarget` resolves to
+/// nothing here and the land was never sacrificed. This is the
+/// depletion-land class, not a one-off: any targetless activated ability
+/// whose trailing conditional says "sacrifice it" shares the exposure.
+#[test]
+fn gemstone_mine_conditional_sacrifice_binds_to_self_ref() {
+    let r = parse(
+        "This land enters with three mining counters on it.\n\
+         {T}, Remove a mining counter from this land: Add one mana of any color. \
+         If there are no mining counters on this land, sacrifice it.",
+        "Gemstone Mine",
+        &[],
+        &["Land"],
+        &[],
+    );
+    assert_eq!(r.abilities.len(), 1);
+    let ability = &r.abilities[0];
+    assert!(
+        matches!(*ability.effect, Effect::Mana { .. }),
+        "expected Effect::Mana, got {:?}",
+        ability.effect
+    );
+    let sub_ability = ability
+        .sub_ability
+        .as_ref()
+        .expect("expected a conditional sub_ability for the trailing sacrifice sentence");
+    assert!(
+        sub_ability.condition.is_some(),
+        "expected the 'if there are no mining counters' gate to survive as a condition"
+    );
+    let Effect::Sacrifice { target, .. } = &*sub_ability.effect else {
+        panic!("expected Effect::Sacrifice, got {:?}", sub_ability.effect);
+    };
+    assert_eq!(
+        *target,
+        TargetFilter::SelfRef,
+        "sacrifice target must bind to the source land, not an unestablished ParentTarget"
+    );
+}
+
 #[test]
 fn parses_return_forest_cost_untap_activated_ability() {
     let r = parse(
@@ -8472,6 +8658,27 @@ fn parses_urza_tower_conditional_mana_as_delta() {
         AbilityCondition::And { conditions } => assert_eq!(conditions.len(), 2),
         other => panic!("expected conjunction condition, got {other:?}"),
     }
+}
+
+#[test]
+fn activated_mana_instead_delta_preserves_non_instead_condition() {
+    let mut ability = parse(
+        "{T}: Add {C}. If you control an Urza's Mine and an Urza's Power-Plant, add {C}{C}{C} instead.",
+        "Urza's Tower",
+        &[],
+        &["Land"],
+        &["Urza's", "Tower"],
+    )
+    .abilities
+    .remove(0);
+    let before = ability.clone();
+
+    normalize_activated_mana_instead_delta(&mut ability);
+
+    assert_eq!(
+        ability, before,
+        "the normalizer must leave an already-lowered non-replacement condition intact"
+    );
 }
 
 /// CR 205.3i + CR 614.1a + CR 605.1a: All three Urza lands share a single
@@ -20380,7 +20587,7 @@ fn restricted_equip_costs_use_embedded_mana_cost() {
         ("Equip legendary creature {3}", 3),
         ("Equip commander {3}", 3),
     ] {
-        let ability = super::try_parse_equip(line).expect("restricted equip should parse");
+        let ability = super::try_parse_equip_lowered(line).expect("restricted equip should parse");
         assert!(
             matches!(
                 ability.cost,
@@ -20395,7 +20602,7 @@ fn restricted_equip_costs_use_embedded_mana_cost() {
 
     // CR 118.12a: "Equip {2} or {B}" is a disjunctive cost — OneOf([Mana({2}), Mana({B})]).
     let ability =
-        super::try_parse_equip("Equip {2} or {B}").expect("disjunctive equip should parse");
+        super::try_parse_equip_lowered("Equip {2} or {B}").expect("disjunctive equip should parse");
     match ability.cost {
         Some(AbilityCost::OneOf { ref costs }) => {
             assert_eq!(costs.len(), 2, "expected 2 alternatives, got {:?}", costs);
@@ -20421,7 +20628,7 @@ fn restricted_equip_costs_use_embedded_mana_cost() {
 
 #[test]
 fn restricted_equip_costs_preserve_target_requirement() {
-    let legendary = super::try_parse_equip("Equip legendary creature {1}")
+    let legendary = super::try_parse_equip_lowered("Equip legendary creature {1}")
         .expect("legendary equip should parse");
     let Effect::Attach { target, .. } = *legendary.effect else {
         panic!("expected Attach, got {:?}", legendary.effect);
@@ -20435,8 +20642,8 @@ fn restricted_equip_costs_preserve_target_requirement() {
         value: crate::types::card_type::Supertype::Legendary,
     }));
 
-    let commander =
-        super::try_parse_equip("Equip commander {3}").expect("commander equip should parse");
+    let commander = super::try_parse_equip_lowered("Equip commander {3}")
+        .expect("commander equip should parse");
     let Effect::Attach { target, .. } = *commander.effect else {
         panic!("expected Attach, got {:?}", commander.effect);
     };
@@ -20460,7 +20667,7 @@ fn restricted_equip_costs_cover_observed_target_classes() {
         "Equip Pirate {1}",
         "Equip Soldier {W}",
     ] {
-        let ability = super::try_parse_equip(line).expect("subtype equip should parse");
+        let ability = super::try_parse_equip_lowered(line).expect("subtype equip should parse");
         let Effect::Attach { target, .. } = *ability.effect else {
             panic!("expected Attach, got {:?}", ability.effect);
         };
@@ -20477,7 +20684,7 @@ fn restricted_equip_costs_cover_observed_target_classes() {
         );
     }
 
-    let class_union = super::try_parse_equip("Equip Shaman, Warlock, or Wizard {1}")
+    let class_union = super::try_parse_equip_lowered("Equip Shaman, Warlock, or Wizard {1}")
         .expect("multi-subtype equip should parse");
     let Effect::Attach { target, .. } = *class_union.effect else {
         panic!("expected Attach, got {:?}", class_union.effect);
@@ -20498,7 +20705,7 @@ fn restricted_equip_costs_cover_observed_target_classes() {
         )));
     }
 
-    let token = super::try_parse_equip("Equip creature token {1}")
+    let token = super::try_parse_equip_lowered("Equip creature token {1}")
         .expect("creature-token equip should parse");
     let Effect::Attach { target, .. } = *token.effect else {
         panic!("expected Attach, got {:?}", token.effect);
@@ -20510,8 +20717,8 @@ fn restricted_equip_costs_cover_observed_target_classes() {
     assert!(tf.type_filters.contains(&TypeFilter::Creature));
     assert!(tf.properties.contains(&FilterProp::Token));
 
-    let planeswalker =
-        super::try_parse_equip("Equip planeswalker {1}").expect("planeswalker equip should parse");
+    let planeswalker = super::try_parse_equip_lowered("Equip planeswalker {1}")
+        .expect("planeswalker equip should parse");
     let Effect::Attach { target, .. } = *planeswalker.effect else {
         panic!("expected Attach, got {:?}", planeswalker.effect);
     };
@@ -20522,8 +20729,9 @@ fn restricted_equip_costs_cover_observed_target_classes() {
     assert!(tf.type_filters.contains(&TypeFilter::Planeswalker));
     assert!(!tf.type_filters.contains(&TypeFilter::Creature));
 
-    let creature_or_planeswalker = super::try_parse_equip("Equip creature or planeswalker {3}")
-        .expect("creature-or-planeswalker equip should parse");
+    let creature_or_planeswalker =
+        super::try_parse_equip_lowered("Equip creature or planeswalker {3}")
+            .expect("creature-or-planeswalker equip should parse");
     let Effect::Attach { target, .. } = *creature_or_planeswalker.effect else {
         panic!("expected Attach, got {:?}", creature_or_planeswalker.effect);
     };
@@ -20559,7 +20767,7 @@ fn equip_cost_modifier_lines_are_not_equip_abilities() {
 
 #[test]
 fn equip_once_per_turn_constraint_strips_from_cost() {
-    let ability = super::try_parse_equip("Equip {0}. Activate only once each turn.")
+    let ability = super::try_parse_equip_lowered("Equip {0}. Activate only once each turn.")
         .expect("equip should parse");
     assert_eq!(
         ability.cost,

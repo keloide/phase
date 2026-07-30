@@ -11131,6 +11131,26 @@ fn effect_tzaangor_copy_next_spell_when_cast() {
     );
 }
 
+/// CR 603.7: Tzaangor Shaman's copy-next clause is reachable from the
+/// effect-chain parser, but not from the spell trigger-prefix router. Its
+/// temporal helper must therefore construct native IR directly.
+#[test]
+fn temporal_copy_next_helper_emits_native_ir() {
+    // This is the first sentence of Tzaangor Shaman's AtomicCards Oracle text.
+    // `parse_effect_chain` splits the following retarget sentence before this
+    // helper sees its all-consuming copy-next grammar.
+    let text = "Copy the next instant or sorcery spell you cast this turn when you cast it";
+    let ir = try_parse_temporal_delayed_trigger_ability(text, AbilityKind::Spell)
+        .expect("Tzaangor Shaman copy-next grammar must parse");
+
+    assert_eq!(ir.source_text, text);
+    assert_eq!(ir.body.clauses.len(), 1);
+    assert!(matches!(
+        &ir.body.clauses[0].parsed.effect,
+        Effect::CreateDelayedTrigger { .. }
+    ));
+}
+
 #[test]
 fn effect_each_merfolk_creature_you_control_explores_uses_explore_all() {
     let e = parse_effect("Each Merfolk creature you control explores");
@@ -18719,6 +18739,81 @@ fn kicker_instead_chain_produces_correct_condition() {
     ));
 }
 
+/// Issue #6507 review follow-up: `Effect::Populate` has no `target` field
+/// (`target_filter()` is `None`, just like a mana ability's untargeted `Add`),
+/// but it DOES publish a created-token referent via
+/// `chain_prior_referent_is_created_token` — the same "populate anaphor
+/// chain" class documented at the sacrifice imperative's bare-"it" binding.
+/// A conditional "sacrifice it" tail after Populate must keep inheriting the
+/// populated token (`ParentTarget`, rewritten to `LastCreated` by
+/// `rewrite_parent_target_to_last_created`) — NOT get rebound to `SelfRef`,
+/// which would sacrifice the ability's source instead of the populated copy.
+#[test]
+fn populate_conditional_sacrifice_keeps_created_token_not_self_ref() {
+    let ability = parse_effect_chain(
+        "Populate. If it was kicked, sacrifice it.",
+        AbilityKind::Spell,
+    );
+    assert!(matches!(&*ability.effect, Effect::Populate));
+    let sub = ability.sub_ability.as_ref().expect("expected sub_ability");
+    assert!(
+        sub.condition.is_some(),
+        "expected the 'if it was kicked' gate to survive as a condition"
+    );
+    let Effect::Sacrifice { target, .. } = &*sub.effect else {
+        panic!("expected Effect::Sacrifice, got {:?}", sub.effect);
+    };
+    assert_eq!(
+        *target,
+        TargetFilter::LastCreated,
+        "sacrifice target must bind to the populated token (LastCreated), \
+         not fall back to SelfRef (the ability's own source)"
+    );
+}
+
+/// Issue #6507 review follow-up (HIGH): an `Otherwise` else-branch is parsed
+/// as its own recursive `parse_effect_chain_ir` call whose own `clauses` start
+/// empty (see `parse_effect_chain_ir`'s "Otherwise" handler) — so a naive
+/// "does the immediately-preceding INTERNAL clause expose a target?" check
+/// can never see an outer referent established BEFORE the paired conditional
+/// (Brilliance Unleashed's class). That outer referent is exactly what
+/// `ctx.parent_target_available` carries across the recursive call for. Drive
+/// the recursive parser directly with `parent_target_available: true` seeded
+/// (mirroring what the "Otherwise" handler seeds from a real outer typed
+/// target) to prove the no-antecedent Sacrifice fallback defers to it: a
+/// targetless inner clause (`create an emblem` has no `target` field, so it
+/// looks exactly like Gemstone Mine's untargeted mana ability in isolation)
+/// followed by a conditional "sacrifice it" must still resolve to
+/// `ParentTarget` — inheriting the outer referent — not get misrouted to
+/// `SelfRef` (the ability's own source).
+#[test]
+fn conditional_sacrifice_defers_to_seeded_parent_target_available() {
+    let mut ctx = ParseContext {
+        parent_target_available: true,
+        ..Default::default()
+    };
+    let ability = parse_effect_chain_with_context(
+        "create an emblem. If it wasn't kicked, sacrifice it.",
+        AbilityKind::Spell,
+        &mut ctx,
+    );
+    assert!(matches!(&*ability.effect, Effect::Unimplemented { .. }));
+    let sac = ability
+        .sub_ability
+        .as_ref()
+        .expect("expected the conditional sacrifice chained after the targetless clause");
+    let Effect::Sacrifice { target, .. } = &*sac.effect else {
+        panic!("expected Effect::Sacrifice, got {:?}", sac.effect);
+    };
+    assert_eq!(
+        *target,
+        TargetFilter::ParentTarget,
+        "with parent_target_available seeded (simulating an inherited outer \
+         referent from an enclosing Otherwise chain), sacrifice must keep \
+         ParentTarget, not fall back to SelfRef"
+    );
+}
+
 #[test]
 fn kicker_leading_instead_produces_correct_condition() {
     // CR 608.2c: "if kicked, instead [effect]" — leading "instead" variant.
@@ -24456,7 +24551,10 @@ fn gollum_scheming_guide_guess_sequence_has_no_unimplemented() {
                 && matches!(
                     node.effect.as_ref(),
                     Effect::Choose {
-                        choice_type: ChoiceType::Opponent { restriction: None },
+                        choice_type: ChoiceType::Opponent {
+                            restriction: None,
+                            ..
+                        },
                         persist: false,
                         ..
                     }
@@ -24669,7 +24767,10 @@ fn committed_choice_guess_chooses_single_opponent_before_guess() {
         matches!(
             choose_opponent.effect.as_ref(),
             Effect::Choose {
-                choice_type: ChoiceType::Opponent { restriction: None },
+                choice_type: ChoiceType::Opponent {
+                    restriction: None,
+                    ..
+                },
                 persist: false,
                 ..
             }
@@ -39331,6 +39432,7 @@ fn the_master_most_life_villainous_choice() {
             choice_type:
                 ChoiceType::Opponent {
                     restriction: Some(restriction),
+                    ..
                 },
             persist,
             ..
@@ -49675,6 +49777,151 @@ fn they_binds_producer_population_across_mass_effect_family() {
              population precedes it"
         );
     }
+}
+
+/// CR 611.2c + CR 615.11 (issue #6682): Mutational Advantage's second clause
+/// ("Prevent all damage that would be dealt to those permanents this turn")
+/// must NOT collapse to the `Any` fallback that silently protected every
+/// permanent in the game, including opponents'. "Those permanents" resolves
+/// to a `TrackedSet` sentinel — `parse_target`'s existing dispatch for the
+/// phrase (shared with Energy Arc's target-derived "those creatures") —
+/// which `prevent_damage::resolve` then resolves to a concrete, FROZEN set
+/// id at shield-creation time (see
+/// `mutational_advantage_shield_freezes_population_at_resolution` in
+/// `game::effects::prevent_damage::tests` for the runtime freeze semantics:
+/// verified against the official ruling that "the set of permanents
+/// affected by Mutational Advantage is determined at the time Mutational
+/// Advantage resolves"). Binding directly to a live copy of the grant's
+/// filter would re-check "has a counter" at every future damage event,
+/// which the ruling explicitly forbids.
+#[test]
+fn mutational_advantage_prevent_binds_to_countered_permanents_population() {
+    let def = parse_effect_chain(
+        "Permanents you control with counters on them gain hexproof and indestructible \
+         until end of turn. Prevent all damage that would be dealt to those permanents \
+         this turn.",
+        AbilityKind::Spell,
+    );
+
+    let Effect::GenericEffect {
+        static_abilities,
+        target: None,
+        ..
+    } = &*def.effect
+    else {
+        panic!(
+            "expected the hexproof/indestructible grant, got {:?}",
+            def.effect
+        );
+    };
+    static_abilities
+        .first()
+        .and_then(|sd| sd.affected.clone())
+        .expect("the grant clause must carry an affected population filter");
+
+    let prevent = def
+        .sub_ability
+        .as_deref()
+        .expect("the prevent clause must chain after the grant");
+    let Effect::PreventDamage { target, .. } = &*prevent.effect else {
+        panic!("expected PreventDamage, got {:?}", prevent.effect);
+    };
+    assert_eq!(
+        *target,
+        TargetFilter::TrackedSet {
+            id: crate::types::identifiers::TrackedSetId(0)
+        },
+        "\"those permanents\" must resolve to the TrackedSet sentinel, not a live copy \
+         of the grant's filter (which would re-check \"has a counter\" live) or Any"
+    );
+}
+
+/// CR 615.1 (issue #6682): Blinding Fog's bare "creatures" recipient (no
+/// anaphor, no antecedent clause — the prevent clause comes FIRST) must
+/// resolve to an unqualified `Typed(Creature)` mass filter via `parse_target`'s
+/// shared grammar, not the `Any` fallback that silently prevented damage to
+/// players too.
+#[test]
+fn blinding_fog_prevent_binds_to_bare_creatures_recipient() {
+    let def = parse_effect_chain(
+        "Prevent all damage that would be dealt to creatures this turn. Creatures you \
+         control gain hexproof until end of turn.",
+        AbilityKind::Spell,
+    );
+    let Effect::PreventDamage { target, .. } = &*def.effect else {
+        panic!("expected PreventDamage, got {:?}", def.effect);
+    };
+    assert!(
+        matches!(
+            target,
+            TargetFilter::Typed(tf)
+                if tf.type_filters.contains(&TypeFilter::Creature) && tf.controller.is_none()
+        ),
+        "bare \"creatures\" must resolve to an unqualified Typed(Creature) filter, got {target:?}"
+    );
+}
+
+/// CR 615.1 (issue #6682): Defend the Hearth's bare "players" recipient must
+/// resolve to `TargetFilter::Player`, not the `Any` fallback that silently
+/// prevented combat damage to creatures too.
+#[test]
+fn defend_the_hearth_prevent_binds_to_bare_players_recipient() {
+    let def = parse_effect_chain(
+        "Prevent all combat damage that would be dealt to players this turn.",
+        AbilityKind::Spell,
+    );
+    let Effect::PreventDamage { target, scope, .. } = &*def.effect else {
+        panic!("expected PreventDamage, got {:?}", def.effect);
+    };
+    assert_eq!(*target, TargetFilter::Player);
+    assert_eq!(*scope, PreventionScope::CombatDamage);
+}
+
+/// CR 608.2c + CR 615 (issue #6682): Energy Arc's bidirectional "dealt to and
+/// dealt by those creatures" must bind BOTH shields to the untapped creatures
+/// selected by the preceding clause — a target-derived tracked-set anaphor —
+/// not the `Any` fallback that silently protected/exposed every creature.
+#[test]
+fn energy_arc_bidirectional_prevent_binds_to_untapped_targets() {
+    let def = parse_effect_chain(
+        "Untap any number of target creatures. Prevent all combat damage that would be \
+         dealt to and dealt by those creatures this turn.",
+        AbilityKind::Spell,
+    );
+    let prevent = def
+        .sub_ability
+        .as_deref()
+        .expect("the prevent clause must chain after the untap");
+    let Effect::PreventDamage { target, .. } = &*prevent.effect else {
+        panic!(
+            "expected the recipient (\"to\") shield, got {:?}",
+            prevent.effect
+        );
+    };
+    assert!(
+        matches!(target, TargetFilter::TrackedSet { .. }),
+        "the recipient shield must bind to the untapped-creatures tracked set, got {target:?}"
+    );
+    assert_ne!(*target, TargetFilter::Any);
+
+    let by_ability = prevent
+        .sub_ability
+        .as_deref()
+        .expect("the source (\"by\") shield must chain as a sequential sibling");
+    let Effect::PreventDamage {
+        damage_source_filter,
+        ..
+    } = &*by_ability.effect
+    else {
+        panic!(
+            "expected the source (\"by\") shield, got {:?}",
+            by_ability.effect
+        );
+    };
+    assert!(
+        matches!(damage_source_filter, Some(TargetFilter::TrackedSet { .. })),
+        "the source shield must also bind to the same tracked set, got {damage_source_filter:?}"
+    );
 }
 
 /// CR 111.3 + CR 118.12: A token created "with" a quoted activated ability whose

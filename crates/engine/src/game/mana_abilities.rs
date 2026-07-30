@@ -67,6 +67,65 @@ pub fn is_mana_ability(ability_def: &AbilityDefinition) -> bool {
     true
 }
 
+/// CR 701.21a: Detects when this ability's cost sacrifices **the source itself**.
+///
+/// Also detects a self-`ReturnToHand` cost: either form removes the source from
+/// the battlefield. Restricted to [`TargetFilter::SelfRef`] on purpose: a
+/// sac-outlet mana ability that eats *other* permanents (Skirk Prospector,
+/// "Sacrifice a Goblin: Add {R}") keeps its source on the battlefield and stays
+/// renewable. Delegates to [`mana_sources::cost_has_component`] so a **bare**
+/// component and one nested in a `Composite` are both matched.
+///
+/// Deliberately private, but privacy is a signpost rather than a barrier: it
+/// removes the *convenient* route to the naive per-permanent form ("has a mana
+/// ability AND no mana ability self-sacs" — which wrongly drops a permanent
+/// carrying both a renewable and a self-sacrificing mana ability), and does not
+/// make that form inexpressible. `AbilityCost::Sacrifice` and
+/// `TargetFilter::SelfRef` are both public, so any downstream crate can rebuild
+/// this predicate, and one did: `phase-ai` carried a hand-rolled
+/// `ability_cost_requires_sacrifice` whose own doc said it "mirrors
+/// `mana_sources::cost_requires_sacrifice` which is private to the engine
+/// module". It matched only the `Composite` shape, so Gold's **bare**
+/// `Sacrifice` hit its `_ => false` arm and a Gold token counted as renewable.
+/// That miscount — a re-implementation drifting from the rule — is the argument
+/// for keeping the classification here, not any guarantee privacy provides. The
+/// only exported composition is `.any(is_renewable_mana_ability)`, which *is*
+/// the per-ability filter.
+fn cost_removes_self_from_battlefield(cost: &Option<AbilityCost>) -> bool {
+    mana_sources::cost_has_component(cost, |c| {
+        matches!(
+            c,
+            AbilityCost::Sacrifice(s) if s.target == TargetFilter::SelfRef
+        ) || matches!(
+            c,
+            AbilityCost::ReturnToHand {
+                filter: Some(TargetFilter::SelfRef),
+                ..
+            }
+        )
+    })
+}
+
+/// CR 605.1a + CR 701.21: a *renewable* mana ability — one that produces mana
+/// (per [`is_mana_ability`]) without consuming its own source to do it.
+///
+/// This is the **development** predicate: it answers "is this permanent part of a
+/// standing manabase," not "can this produce mana right now." A Treasure, Gold,
+/// Lotus Petal, Black Lotus, or Chromatic Star is a one-shot conversion of a
+/// permanent into mana and is deliberately **excluded**; Commander's Sphere,
+/// Powerstone, Springleaf Drum, and Skirk Prospector are **included**.
+///
+/// For live availability use [`is_mana_ability`] directly — an untapped Treasure
+/// genuinely is one mana available right now, which is why the two predicates must
+/// not be unified.
+///
+/// Takes a single ability so callers compose with `.any()`; a permanent counts if
+/// **at least one** of its mana abilities is renewable (Crystal Vein carries both
+/// a renewable `{T}: Add {C}` and a self-sac `{T}, Sac: Add {C}{C}`).
+pub fn is_renewable_mana_ability(ability_def: &AbilityDefinition) -> bool {
+    is_mana_ability(ability_def) && !cost_removes_self_from_battlefield(&ability_def.cost)
+}
+
 /// CR 605.1b: A triggered ability is a mana ability iff all three hold:
 ///   (a) it doesn't require a target (CR 115.6),
 ///   (b) it triggers from the activation/resolution of an activated mana ability
@@ -4294,6 +4353,115 @@ mod tests {
             ManaChoiceContext::ManaAbility(pending) => pending,
             other => panic!("expected mana ability context, got {other:?}"),
         }
+    }
+
+    /// Skirk Prospector: "Sacrifice a Goblin: Add {R}". The sacrifice target is a
+    /// *type* filter, not `SelfRef`, so the source survives and stays renewable.
+    fn skirk_prospector_mana_ability() -> AbilityDefinition {
+        make_mana_ability(ManaProduction::Fixed {
+            colors: vec![ManaColor::Red],
+            contribution: ManaContribution::Base,
+        })
+        .cost(AbilityCost::Sacrifice(SacrificeCost::count(
+            TargetFilter::Typed(TypedFilter::new(TypeFilter::Subtype("Goblin".to_string()))),
+            1,
+        )))
+    }
+
+    /// Row 4a — CR 701.21: one-shot self-sacrificing mana sources are NOT
+    /// renewable. Gold is the constraint discriminator: its cost is a **bare**
+    /// `Sacrifice` (not wrapped in a `Composite` like Treasure's), so a
+    /// `Composite`-only implementation passes the Treasure assertion and fails
+    /// this one. Driven through the production `predefined_token_abilities`
+    /// materialization path, which is what actually lands on a live `GameObject`.
+    #[test]
+    fn treasure_and_gold_are_not_renewable_mana_abilities() {
+        let treasure = crate::game::effects::token::predefined_token_abilities("Treasure");
+        let gold = crate::game::effects::token::predefined_token_abilities("Gold");
+        assert_eq!(treasure.len(), 1);
+        assert_eq!(gold.len(), 1);
+
+        // Positive control: both ARE mana abilities. This proves the exclusion
+        // comes from the sacrifice clause and not from a failure to classify as
+        // a mana ability at all.
+        assert!(is_mana_ability(&treasure[0]));
+        assert!(is_mana_ability(&gold[0]));
+
+        assert!(
+            !is_renewable_mana_ability(&treasure[0]),
+            "Treasure ({{T}}, Sacrifice) is a one-shot source, not development"
+        );
+        assert!(
+            !is_renewable_mana_ability(&gold[0]),
+            "Gold's cost is a BARE Sacrifice — a Composite-only match misses it"
+        );
+    }
+
+    /// Row 4b — CR 701.21a: sacrificing *another* permanent leaves the source on
+    /// the battlefield, so a sac-outlet mana ability stays renewable. A
+    /// filter-agnostic implementation (reusing `cost_includes_sacrifice` /
+    /// `ManaSourcePenalty::Sacrifices`) fails this row.
+    #[test]
+    fn non_self_sacrifice_mana_outlet_stays_renewable() {
+        assert!(
+            is_renewable_mana_ability(&skirk_prospector_mana_ability()),
+            "\"Sacrifice a Goblin: Add {{R}}\" keeps its source — still development"
+        );
+
+        // Paired negative: the identical shape with a SelfRef filter is excluded.
+        let self_sac = make_mana_ability(ManaProduction::Fixed {
+            colors: vec![ManaColor::Red],
+            contribution: ManaContribution::Base,
+        })
+        .cost(AbilityCost::Sacrifice(SacrificeCost::count(
+            TargetFilter::SelfRef,
+            1,
+        )));
+        assert!(!is_renewable_mana_ability(&self_sac));
+    }
+
+    /// A self-returning mana source (Grinning Ignus class) is a one-shot
+    /// conversion from the standing manabase, whether its return cost is bare
+    /// or composed with a tap cost.
+    #[test]
+    fn self_return_to_hand_mana_source_is_not_renewable() {
+        let bare_return = make_mana_ability(ManaProduction::Fixed {
+            colors: vec![ManaColor::Red],
+            contribution: ManaContribution::Base,
+        })
+        .cost(AbilityCost::ReturnToHand {
+            count: 1,
+            filter: Some(TargetFilter::SelfRef),
+            from_zone: None,
+        });
+        assert!(!is_renewable_mana_ability(&bare_return));
+
+        let composite_return = make_mana_ability(ManaProduction::Fixed {
+            colors: vec![ManaColor::Red],
+            contribution: ManaContribution::Base,
+        })
+        .cost(AbilityCost::Composite {
+            costs: vec![
+                AbilityCost::Tap,
+                AbilityCost::ReturnToHand {
+                    count: 1,
+                    filter: Some(TargetFilter::SelfRef),
+                    from_zone: None,
+                },
+            ],
+        });
+
+        assert!(!is_renewable_mana_ability(&composite_return));
+    }
+
+    /// Row 4c — Powerstone and Treasure are both artifact tokens differing only in
+    /// cost shape (bare `Tap` vs `Composite{Tap, Sacrifice}`), so this proves the
+    /// discriminator is the sacrifice clause rather than the token-ness.
+    #[test]
+    fn powerstone_is_a_renewable_mana_ability() {
+        let powerstone = crate::game::effects::token::predefined_token_abilities("Powerstone");
+        assert_eq!(powerstone.len(), 1);
+        assert!(is_renewable_mana_ability(&powerstone[0]));
     }
 
     #[test]
@@ -9776,6 +9944,170 @@ mod tests {
         assert!(
             !can_activate_mana_ability_now(&state, player, land, 0, &def),
             "Gemstone Mine must not be activatable when it has no mining counters"
+        );
+    }
+
+    // Issue #6507 integration follow-up: `make_gemstone_mine` above omits the
+    // trailing "If there are no mining counters on this land, sacrifice it."
+    // sub-ability entirely, so it never exercised the reported bug or its fix
+    // through the real activation pipeline — only the parser-level AST shape
+    // is covered by `oracle::tests::gemstone_mine_conditional_sacrifice_binds_to_self_ref`.
+    // This fixture mirrors the actual end-to-end parsed shape (mana effect +
+    // conditional `Sacrifice { target: SelfRef }` sub-ability gated on zero
+    // mining counters) so activation itself proves the fix: mana is produced
+    // regardless, and the land is sacrificed only on the activation that
+    // removes its LAST counter.
+    fn make_gemstone_mine_with_sacrifice_sub_ability(
+        state: &mut GameState,
+        player: PlayerId,
+        initial_mining_counters: u32,
+    ) -> ObjectId {
+        let land = create_object(
+            state,
+            CardId(8003),
+            player,
+            "Gemstone Mine".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&land).unwrap();
+        obj.card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Land);
+        let mining_key = crate::types::counter::parse_counter_type("MINING");
+        obj.counters.insert(mining_key, initial_mining_counters);
+
+        let sacrifice_if_depleted = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Sacrifice {
+                target: TargetFilter::SelfRef,
+                count: QuantityExpr::Fixed { value: 1 },
+                min_count: 0,
+            },
+        )
+        .condition(AbilityCondition::QuantityCheck {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::CountersOn {
+                    scope: ObjectScope::Source,
+                    counter_type: Some(CounterType::Generic("mining".to_string())),
+                },
+            },
+            comparator: Comparator::EQ,
+            rhs: QuantityExpr::Fixed { value: 0 },
+        });
+
+        let ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::AnyOneColor {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    color_options: vec![
+                        ManaColor::White,
+                        ManaColor::Blue,
+                        ManaColor::Black,
+                        ManaColor::Red,
+                        ManaColor::Green,
+                    ],
+                    contribution: ManaContribution::Base,
+                },
+                restrictions: Vec::new(),
+                grants: Vec::new(),
+                expiry: None,
+                target: None,
+            },
+        )
+        .cost(AbilityCost::Composite {
+            costs: vec![
+                AbilityCost::Tap,
+                AbilityCost::RemoveCounter {
+                    count: 1,
+                    counter_type: CounterMatch::OfType(CounterType::Generic("mining".to_string())),
+                    target: None,
+                    selection: crate::types::ability::CounterCostSelection::SingleObject,
+                },
+            ],
+        })
+        .sub_ability(sacrifice_if_depleted);
+        Arc::make_mut(&mut obj.abilities).push(ability);
+        land
+    }
+
+    #[test]
+    fn gemstone_mine_survives_activation_with_counters_remaining() {
+        let mut state = GameState::new_two_player(42);
+        let player = PlayerId(0);
+        let land = make_gemstone_mine_with_sacrifice_sub_ability(&mut state, player, 2);
+
+        let def = state
+            .objects
+            .get(&land)
+            .unwrap()
+            .abilities
+            .first()
+            .cloned()
+            .unwrap();
+        let mut events = Vec::new();
+        resolve_mana_ability(
+            &mut state,
+            land,
+            player,
+            &def,
+            &mut events,
+            Some(ProductionOverride::SingleColor(ManaType::Green)),
+        )
+        .expect("Gemstone Mine activation must not fail with counters present");
+
+        assert_eq!(
+            state.players[player.0 as usize]
+                .mana_pool
+                .count_color(ManaType::Green),
+            1,
+            "mana must be produced regardless of the trailing conditional sacrifice"
+        );
+        assert!(
+            state.battlefield.contains(&land),
+            "Gemstone Mine must remain on the battlefield while a mining counter remains after activation"
+        );
+    }
+
+    #[test]
+    fn gemstone_mine_sacrifices_itself_on_last_counter_removed() {
+        let mut state = GameState::new_two_player(42);
+        let player = PlayerId(0);
+        let land = make_gemstone_mine_with_sacrifice_sub_ability(&mut state, player, 1);
+
+        let def = state
+            .objects
+            .get(&land)
+            .unwrap()
+            .abilities
+            .first()
+            .cloned()
+            .unwrap();
+        let mut events = Vec::new();
+        resolve_mana_ability(
+            &mut state,
+            land,
+            player,
+            &def,
+            &mut events,
+            Some(ProductionOverride::SingleColor(ManaType::Green)),
+        )
+        .expect("Gemstone Mine activation must not fail on its last counter");
+
+        assert_eq!(
+            state.players[player.0 as usize]
+                .mana_pool
+                .count_color(ManaType::Green),
+            1,
+            "mana must still be produced on the activation that empties the last counter"
+        );
+        assert!(
+            !state.battlefield.contains(&land),
+            "Gemstone Mine must be sacrificed once its last mining counter is removed (issue #6507)"
+        );
+        assert!(
+            state.players[player.0 as usize].graveyard.contains(&land),
+            "the sacrificed Gemstone Mine must land in its controller's graveyard"
         );
     }
 
