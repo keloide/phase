@@ -1175,14 +1175,16 @@ fn casting_restriction_applies(
             state.active_player == player && state.phase == Phase::Upkeep
         }
         CastingRestriction::DuringOpponentsUpkeep => {
-            state.active_player != player && state.phase == Phase::Upkeep
+            super::players::is_opponent(state, player, state.active_player)
+                && state.phase == Phase::Upkeep
         }
         CastingRestriction::DuringAnyUpkeep => state.phase == Phase::Upkeep,
         CastingRestriction::DuringYourEndStep => {
             state.active_player == player && state.phase == Phase::End
         }
         CastingRestriction::DuringOpponentsEndStep => {
-            state.active_player != player && state.phase == Phase::End
+            super::players::is_opponent(state, player, state.active_player)
+                && state.phase == Phase::End
         }
         // CR 508.1: Declare attackers step.
         CastingRestriction::DeclareAttackersStep => state.phase == Phase::DeclareAttackers,
@@ -3543,6 +3545,42 @@ mod tests {
         // Activator holds `active_player` -> denied.
         state.active_player = PlayerId(0);
         assert!(!allowed(&state), "your own upkeep must deny activation");
+    }
+
+    /// CR 102.3 + CR 805.4a: every opponent-scoped casting restriction uses
+    /// the same team-aware relation as the parsed activation condition. A
+    /// teammate holding `active_player` is not an opponent, including in the
+    /// upkeep and end-step siblings of the whole-turn restriction.
+    #[test]
+    fn opponent_scoped_casting_restrictions_exclude_teammate_turns() {
+        use crate::types::format::FormatConfig;
+
+        let mut state =
+            crate::types::game_state::GameState::new(FormatConfig::two_headed_giant(), 4, 42);
+        let caster = PlayerId(0);
+        let source = ObjectId(10);
+
+        for (restriction, phase) in [
+            (
+                CastingRestriction::DuringOpponentsTurn,
+                Phase::PreCombatMain,
+            ),
+            (CastingRestriction::DuringOpponentsUpkeep, Phase::Upkeep),
+            (CastingRestriction::DuringOpponentsEndStep, Phase::End),
+        ] {
+            state.phase = phase;
+            state.active_player = PlayerId(1);
+            assert!(
+                check_casting_restrictions(&state, caster, source, &[restriction.clone()]).is_err(),
+                "a teammate's {phase:?} must not satisfy {restriction:?}"
+            );
+
+            state.active_player = PlayerId(2);
+            assert!(
+                check_casting_restrictions(&state, caster, source, &[restriction]).is_ok(),
+                "an opposing team's {phase:?} must satisfy the restriction"
+            );
+        }
     }
 
     #[test]
