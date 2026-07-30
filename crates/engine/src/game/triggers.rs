@@ -8681,7 +8681,14 @@ fn check_trigger_constraint_with_ref(
             definition_ref.is_none_or(|key| !state.triggers_fired_this_game.contains(key))
         }
         TriggerConstraint::OnlyDuringYourTurn => state.active_player == controller,
-        TriggerConstraint::OnlyDuringOpponentsTurn => state.active_player != controller,
+        // CR 102.3 / CR 805.4a: team-aware — under shared team turns a turn
+        // where a teammate holds `active_player` still belongs to the
+        // controller's own team, so the weaker `active_player != controller`
+        // test would over-fire. Same authority as
+        // `ParsedCondition::IsOpponentsTurn`.
+        TriggerConstraint::OnlyDuringOpponentsTurn => {
+            super::players::is_opponent(state, controller, state.active_player)
+        }
         TriggerConstraint::OncePerOpponentPerTurn => {
             // CR 603.2: The trigger event only matches the first life-loss event
             // during that opponent's own turn.
