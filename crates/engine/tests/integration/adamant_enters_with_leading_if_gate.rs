@@ -20,7 +20,8 @@
 //! unconditionally and R2's `assert_counters(.., 0)` fails.
 
 use engine::game::scenario::{CastOutcome, GameRunner, GameScenario, P0, P1};
-use engine::types::ability::Effect;
+use engine::parser::parse_oracle_text;
+use engine::types::ability::{AbilityDefinition, Effect};
 use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::{Keyword, KeywordKind};
@@ -35,6 +36,30 @@ const ARDENVALE_PALADIN: &str = "Adamant — If at least three white mana was sp
 /// Embereth Paladin {3}{R} 3/1 — verbatim Oracle text, Haste line included.
 const EMBERETH_PALADIN: &str = "Haste\nAdamant — If at least three red mana was spent to cast \
                                 this spell, this creature enters with a +1/+1 counter on it.";
+
+/// Vantress Paladin {3}{U} 2/2 — full verbatim Oracle text.
+const VANTRESS_PALADIN: &str = "Flying\nAdamant — If at least three blue mana was spent to cast \
+                                this spell, this creature enters with a +1/+1 counter on it.";
+
+/// Locthwain Paladin {3}{B} 3/2 — full verbatim Oracle text.
+const LOCTHWAIN_PALADIN: &str = "Menace (This creature can't be blocked except by two or more \
+                                 creatures.)\nAdamant — If at least three black mana was spent to \
+                                 cast this spell, this creature enters with a +1/+1 counter on it.";
+
+/// Garenbrig Paladin {4}{G} 4/4 — full verbatim Oracle text.
+const GARENBRIG_PALADIN: &str = "Adamant — If at least three green mana was spent to cast this \
+                                 spell, this creature enters with a +1/+1 counter on it.\nThis \
+                                 creature can't be blocked by creatures with power 2 or less.";
+
+const HENGE_WALKER: &str = "Adamant — If at least three mana of the same color was spent to cast \
+                            this spell, this creature enters with a +1/+1 counter on it.";
+
+const RED_AND_BLACK_LEGACY: &str = "If you spent black mana on this creature, it enters with a \
+                                    deathtouch counter. If you spent red mana on this creature, it \
+                                    enters with a first strike counter. If you spent both, you choose \
+                                    which one counter it enters with.\nAt the beginning of your upkeep, \
+                                    flip a coin. If it's heads and this creature has deathtouch, or \
+                                    it's tails and this creature has haste, create a treasure token.";
 
 /// Dust Animus {1}{W} 1/1 — verbatim Oracle text. The Plot line is dropped
 /// because plotting is irrelevant here and its reminder text would only add
@@ -62,16 +87,17 @@ fn pool(colored: &[(ManaType, usize)]) -> Vec<ManaUnit> {
         .collect()
 }
 
-/// Cast a 4-mana Paladin ({3}{<shard>}) out of an exactly-sized pool and return
-/// the outcome plus its object id.
+/// Cast a Paladin out of an exactly-sized pool and return the outcome plus its
+/// object id.
 ///
-/// The pool always holds EXACTLY the four mana the cost needs, so the auto-payer
+/// The pool always holds EXACTLY the mana the cost needs, so the auto-payer
 /// has no discretion: every unit in the pool is spent and `colors_spent_to_cast`
 /// (CR 601.2h) is fully determined by the pool contents. That removes payment
 /// nondeterminism from every assertion below.
 fn cast_paladin(
     name: &str,
     oracle: &str,
+    generic: u32,
     shard: ManaCostShard,
     power: i32,
     toughness: i32,
@@ -82,7 +108,7 @@ fn cast_paladin(
     let paladin = scenario
         .add_creature_to_hand_from_oracle(P0, name, power, toughness, oracle)
         .with_mana_cost(ManaCost::Cost {
-            generic: 3,
+            generic,
             shards: vec![shard],
         })
         .id();
@@ -125,6 +151,58 @@ fn assert_gate_is_attached(runner: &GameRunner, obj: ObjectId, name: &str) {
     );
 }
 
+fn ability_contains_unimplemented(definition: &AbilityDefinition) -> bool {
+    matches!(definition.effect.as_ref(), Effect::Unimplemented { .. })
+        || definition
+            .sub_ability
+            .as_deref()
+            .is_some_and(ability_contains_unimplemented)
+}
+
+/// Assert that an unsupported enters-with condition stays honest: it must not
+/// manufacture a replacement while leaving an explicit parser residual.
+fn assert_enters_with_condition_fails_closed(
+    name: &str,
+    oracle: &str,
+    types: &[&str],
+    power: i32,
+    toughness: i32,
+) {
+    let types: Vec<String> = types.iter().map(|ty| (*ty).to_owned()).collect();
+    let parsed = parse_oracle_text(oracle, name, &[], &types, &[]);
+    assert!(
+        parsed.replacements.is_empty(),
+        "{name} must not publish a replacement for an unsupported condition: {parsed:#?}"
+    );
+    assert!(
+        parsed.abilities.iter().any(ability_contains_unimplemented)
+            || parsed
+                .triggers
+                .iter()
+                .filter_map(|trigger| trigger.execute.as_deref())
+                .any(ability_contains_unimplemented),
+        "{name} must retain at least one Effect::Unimplemented residual: {parsed:#?}"
+    );
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let creature = scenario
+        .add_creature_to_hand_from_oracle(P0, name, power, toughness, oracle)
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner = scenario.build();
+    let outcome = runner.cast(creature).resolve();
+    assert_eq!(
+        outcome.zone_of(creature),
+        Zone::Battlefield,
+        "{name} must resolve onto the battlefield"
+    );
+    assert!(
+        outcome.state().objects[&creature].counters.is_empty(),
+        "{name} must not receive any counters from an unsupported enters-with condition"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // R1-R6 — the Adamant per-color threshold, CR 106.3 + CR 601.2h.
 // ---------------------------------------------------------------------------
@@ -137,6 +215,7 @@ fn ardenvale_paladin_four_white_applies_counter() {
     let (outcome, paladin) = cast_paladin(
         "Ardenvale Paladin",
         ARDENVALE_PALADIN,
+        3,
         ManaCostShard::White,
         2,
         3,
@@ -156,6 +235,7 @@ fn ardenvale_paladin_white_below_threshold_no_counter() {
     let (outcome, paladin) = cast_paladin(
         "Ardenvale Paladin",
         ARDENVALE_PALADIN,
+        3,
         ManaCostShard::White,
         2,
         3,
@@ -171,6 +251,7 @@ fn ardenvale_paladin_threshold_is_greater_or_equal_three() {
     let (at_threshold, paladin) = cast_paladin(
         "Ardenvale Paladin",
         ARDENVALE_PALADIN,
+        3,
         ManaCostShard::White,
         2,
         3,
@@ -181,6 +262,7 @@ fn ardenvale_paladin_threshold_is_greater_or_equal_three() {
     let (below, paladin) = cast_paladin(
         "Ardenvale Paladin",
         ARDENVALE_PALADIN,
+        3,
         ManaCostShard::White,
         2,
         3,
@@ -197,6 +279,7 @@ fn embereth_paladin_three_red_applies_counter() {
     let (outcome, paladin) = cast_paladin(
         "Embereth Paladin",
         EMBERETH_PALADIN,
+        3,
         ManaCostShard::Red,
         3,
         1,
@@ -214,6 +297,7 @@ fn embereth_paladin_reads_red_not_white() {
     let (outcome, paladin) = cast_paladin(
         "Embereth Paladin",
         EMBERETH_PALADIN,
+        3,
         ManaCostShard::Red,
         3,
         1,
@@ -231,6 +315,7 @@ fn embereth_paladin_four_distinct_colors_still_no_counter() {
     let (outcome, paladin) = cast_paladin(
         "Embereth Paladin",
         EMBERETH_PALADIN,
+        3,
         ManaCostShard::Red,
         3,
         1,
@@ -242,6 +327,114 @@ fn embereth_paladin_four_distinct_colors_still_no_counter() {
         ],
     );
     outcome.assert_counters(paladin, CounterType::Plus1Plus1, 0);
+}
+
+/// Three blue mana satisfies Vantress Paladin's Adamant gate; one blue mana
+/// does not. Both pools are exactly {3}{U}, so every staged unit is spent.
+#[test]
+fn vantress_paladin_blue_threshold() {
+    let (at_threshold, paladin) = cast_paladin(
+        "Vantress Paladin",
+        VANTRESS_PALADIN,
+        3,
+        ManaCostShard::Blue,
+        2,
+        2,
+        &[(ManaType::Blue, 3), (ManaType::Colorless, 1)],
+    );
+    at_threshold.assert_counters(paladin, CounterType::Plus1Plus1, 1);
+
+    let (below_threshold, paladin) = cast_paladin(
+        "Vantress Paladin",
+        VANTRESS_PALADIN,
+        3,
+        ManaCostShard::Blue,
+        2,
+        2,
+        &[(ManaType::Blue, 1), (ManaType::Colorless, 3)],
+    );
+    below_threshold.assert_counters(paladin, CounterType::Plus1Plus1, 0);
+}
+
+/// Three black mana satisfies Locthwain Paladin's Adamant gate; one black mana
+/// does not. Both pools are exactly {3}{B}, so every staged unit is spent.
+#[test]
+fn locthwain_paladin_black_threshold() {
+    let (at_threshold, paladin) = cast_paladin(
+        "Locthwain Paladin",
+        LOCTHWAIN_PALADIN,
+        3,
+        ManaCostShard::Black,
+        3,
+        2,
+        &[(ManaType::Black, 3), (ManaType::Colorless, 1)],
+    );
+    at_threshold.assert_counters(paladin, CounterType::Plus1Plus1, 1);
+
+    let (below_threshold, paladin) = cast_paladin(
+        "Locthwain Paladin",
+        LOCTHWAIN_PALADIN,
+        3,
+        ManaCostShard::Black,
+        3,
+        2,
+        &[(ManaType::Black, 1), (ManaType::Colorless, 3)],
+    );
+    below_threshold.assert_counters(paladin, CounterType::Plus1Plus1, 0);
+}
+
+/// Three green mana satisfies Garenbrig Paladin's Adamant gate; one green mana
+/// does not. Both pools are exactly {4}{G}, so every staged unit is spent.
+#[test]
+fn garenbrig_paladin_green_threshold() {
+    let (at_threshold, paladin) = cast_paladin(
+        "Garenbrig Paladin",
+        GARENBRIG_PALADIN,
+        4,
+        ManaCostShard::Green,
+        4,
+        4,
+        &[(ManaType::Green, 3), (ManaType::Colorless, 2)],
+    );
+    at_threshold.assert_counters(paladin, CounterType::Plus1Plus1, 1);
+
+    let (below_threshold, paladin) = cast_paladin(
+        "Garenbrig Paladin",
+        GARENBRIG_PALADIN,
+        4,
+        ManaCostShard::Green,
+        4,
+        4,
+        &[(ManaType::Green, 1), (ManaType::Colorless, 4)],
+    );
+    below_threshold.assert_counters(paladin, CounterType::Plus1Plus1, 0);
+}
+
+/// Henge Walker's "same color" condition is a distinct max-over-colors metric,
+/// not the supported Adamant per-color condition. It must fail closed.
+#[test]
+fn henge_walker_same_color_adamant_fails_closed() {
+    assert_enters_with_condition_fails_closed(
+        "Henge Walker",
+        HENGE_WALKER,
+        &["Artifact", "Creature"],
+        2,
+        2,
+    );
+}
+
+/// Red and Black Legacy combines spent-color predicates and a choice between
+/// counter payloads; unsupported text must remain visible rather than becoming
+/// an unconditional enters-with replacement.
+#[test]
+fn red_and_black_legacy_enters_with_conditions_fail_closed() {
+    assert_enters_with_condition_fails_closed(
+        "Red and Black Legacy",
+        RED_AND_BLACK_LEGACY,
+        &["Creature"],
+        2,
+        2,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -462,5 +655,26 @@ fn silverflame_ritual_one_white_does_not_grant_vigilance() {
     assert!(
         !obj.has_keyword(&Keyword::Vigilance),
         "only one white mana was spent — the Adamant static grant must stay gated off"
+    );
+}
+
+/// A mixed-color exact payment still resolves Silverflame Ritual's ungated
+/// counter line, but one white mana is insufficient for its white-Adamant
+/// vigilance rider.
+#[test]
+fn silverflame_ritual_one_white_three_blue_does_not_grant_vigilance() {
+    let (runner, bear) = cast_silverflame_ritual(&[(ManaType::White, 1), (ManaType::Blue, 3)]);
+    let obj = &runner.state().objects[&bear];
+    assert_eq!(
+        obj.counters
+            .get(&CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0),
+        1,
+        "the ungated first line must resolve when the generic cost is paid with blue mana"
+    );
+    assert!(
+        !obj.has_keyword(&Keyword::Vigilance),
+        "only one white mana was spent — blue mana cannot satisfy the white-Adamant rider"
     );
 }
