@@ -3474,8 +3474,8 @@ mod tests {
         parsed.abilities[0].activation_restrictions.clone()
     }
 
-    /// CR 602.5b + CR 102.1 + CR 503.1: "Activate only during an opponent's
-    /// upkeep" must gate real activation legality, so this drives the
+    /// CR 602.5b + CR 102.3 + CR 503.1 + CR 805.4a: "Activate only during an
+    /// opponent's upkeep" must gate real activation legality, so this drives the
     /// production entry point `check_activation_restrictions` (which reaches
     /// `activation_restriction_applies`) rather than `evaluate_condition`
     /// directly, across the full turn-scope × step matrix.
