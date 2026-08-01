@@ -41,10 +41,11 @@ const EMBERETH_PALADIN: &str = "Haste\nAdamant — If at least three red mana wa
 const VANTRESS_PALADIN: &str = "Flying\nAdamant — If at least three blue mana was spent to cast \
                                 this spell, this creature enters with a +1/+1 counter on it.";
 
-/// Locthwain Paladin {3}{B} 3/2 — full verbatim Oracle text.
-const LOCTHWAIN_PALADIN: &str = "Menace (This creature can't be blocked except by two or more \
-                                 creatures.)\nAdamant — If at least three black mana was spent to \
-                                 cast this spell, this creature enters with a +1/+1 counter on it.";
+/// Locthwain Paladin {3}{B} 3/2 — the Menace line is dropped because it is
+/// irrelevant to this Adamant test and would add an unrelated
+/// `Effect::Unimplemented`; the leading-if line under test is verbatim.
+const LOCTHWAIN_PALADIN: &str = "Adamant — If at least three black mana was spent to cast this \
+                                 spell, this creature enters with a +1/+1 counter on it.";
 
 /// Garenbrig Paladin {4}{G} 4/4 — full verbatim Oracle text.
 const GARENBRIG_PALADIN: &str = "Adamant — If at least three green mana was spent to cast this \
