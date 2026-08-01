@@ -3571,13 +3571,25 @@ mod tests {
             state.phase = phase;
             state.active_player = PlayerId(1);
             assert!(
-                check_casting_restrictions(&state, caster, source, &[restriction.clone()]).is_err(),
+                check_casting_restrictions(
+                    &state,
+                    caster,
+                    source,
+                    std::slice::from_ref(&restriction),
+                )
+                .is_err(),
                 "a teammate's {phase:?} must not satisfy {restriction:?}"
             );
 
             state.active_player = PlayerId(2);
             assert!(
-                check_casting_restrictions(&state, caster, source, &[restriction]).is_ok(),
+                check_casting_restrictions(
+                    &state,
+                    caster,
+                    source,
+                    std::slice::from_ref(&restriction),
+                )
+                .is_ok(),
                 "an opposing team's {phase:?} must satisfy the restriction"
             );
         }
