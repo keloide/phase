@@ -7710,8 +7710,9 @@ fn parse_activation_timing_restriction(phrase: &str) -> Option<Vec<ActivationRes
         // CR 602.5b + CR 102.1 + CR 509.1: compound
         // "during <turn-role> [and only | , ] before combat/attackers"
         // activation-timing gate — turn-role half reuses
-        // RequiresCondition{Not(IsYourTurn)} / DuringYourTurn, combat-window half
-        // reuses BeforeAttackersDeclared. Composed with a trailing
+        // RequiresCondition{IsOpponentsTurn} / DuringYourTurn (CR 102.3 +
+        // CR 805.4a), combat-window half reuses BeforeAttackersDeclared.
+        // Composed with a trailing
         // `opt(pair(separator, before-window))`, no permutation enumeration and no
         // `contains`/`split_once` dispatch. Preserves the single-gate behavior
         // above (a bare "during an opponent's turn" still returns one restriction).

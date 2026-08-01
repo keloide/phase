@@ -3506,7 +3506,7 @@ mod tests {
         assert!(!allowed(&state), "your own upkeep must deny activation");
     }
 
-    /// CR 102.3 + CR 805.4 + CR 810.1: under shared team turns the turn belongs
+    /// CR 102.3 + CR 805.4 + CR 810.2: under shared team turns the turn belongs
     /// to a TEAM, so an upkeep in which a teammate holds `active_player` is the
     /// activator's OWN team's upkeep and must not open the window. This is
     /// exactly what the weaker `Not(IsYourTurn)` encoding got wrong — the

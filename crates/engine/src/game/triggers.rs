@@ -12138,6 +12138,40 @@ pub mod tests {
         TriggerDefinition::new(mode)
     }
 
+    /// CR 102.3 + CR 805.4a: an opponent-turn trigger constraint must read the
+    /// active player's team relation, not merely whether that player is the
+    /// trigger controller. This drives the production constraint gate used by
+    /// trigger collection rather than the relation helper directly.
+    #[test]
+    fn opponents_turn_trigger_constraint_excludes_teammate_in_two_headed_giant() {
+        let mut state = GameState::new(
+            crate::types::format::FormatConfig::two_headed_giant(),
+            4,
+            42,
+        );
+        let mut trigger = make_trigger(TriggerMode::Drawn);
+        trigger.constraint = Some(TriggerConstraint::OnlyDuringOpponentsTurn);
+        let event = GameEvent::CardDrawn {
+            player_id: PlayerId(2),
+            object_id: ObjectId(99),
+            nth_in_turn: 1,
+            nth_in_step: 1,
+        };
+
+        // Seats 0/1 share a team: teammate 1 is not an opponent of controller 0.
+        state.active_player = PlayerId(1);
+        assert!(
+            !check_trigger_constraint(&state, &trigger, ObjectId(1), 0, PlayerId(0), &event),
+            "a teammate's turn must not satisfy OnlyDuringOpponentsTurn"
+        );
+
+        state.active_player = PlayerId(2);
+        assert!(
+            check_trigger_constraint(&state, &trigger, ObjectId(1), 0, PlayerId(0), &event),
+            "an opposing team's turn must satisfy OnlyDuringOpponentsTurn"
+        );
+    }
+
     /// Regression (issue #770 cluster — Sheoldred/Replicating Ring/Skyline
     /// Despot/Bitterbloom/Braids upkeep triggers silently not firing):
     /// `process_collected_triggers_with_delayed_phase_events` must not

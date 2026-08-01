@@ -7878,7 +7878,7 @@ pub enum ParsedCondition {
     /// Deliberately NOT `Not(IsYourTurn)`. `IsYourTurn` compares the scoped
     /// player against the single `active_player` SEAT, but under the shared
     /// team turns option (CR 805.4: "Each team takes turns rather than each
-    /// player" — always on in Two-Headed Giant, CR 810.1) a turn belongs to a
+    /// player" — always on in Two-Headed Giant, CR 810.2) a turn belongs to a
     /// TEAM. When a teammate holds `active_player` the active team is still the
     /// scoped player's own team, yet `Not(IsYourTurn)` reports it as an
     /// opponent's turn and wrongly opens an opponent-turn window.
