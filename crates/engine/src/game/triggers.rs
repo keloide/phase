@@ -9575,9 +9575,12 @@ fn evaluate_trigger_condition_with_source(
         TriggerCondition::DuringPlayersTurn { player } => match player {
             // CR 102.1: "your turn" — controller is active.
             PlayerFilter::Controller => state.active_player == controller,
-            // CR 102.1 + CR 102.2: "an opponent's turn" — active player is any
-            // non-controller (set-valued match: true whenever it isn't your turn).
-            PlayerFilter::Opponent => state.active_player != controller,
+            // CR 102.3 + CR 805.4a: "an opponent's turn" is team-aware. Under
+            // shared team turns, a teammate holding `active_player` remains on
+            // the controller's active team and is not an opponent.
+            PlayerFilter::Opponent => {
+                super::players::is_opponent(state, controller, state.active_player)
+            }
             // CR 603.4 + CR 102.1: "that player's turn" — the player named by
             // the trigger event (drawer / tapper / damaged player / etc.) is
             // currently the active player.
@@ -27463,12 +27466,16 @@ pub mod tests {
         ));
     }
 
-    /// CR 603.4 + CR 102.1 + CR 102.2 — `DuringPlayersTurn { Opponent }`
-    /// preserves the pre-refactor semantics of the retired `DuringOpponentsTurn`
-    /// variant: true iff the active player is NOT the trigger controller.
+    /// CR 603.4 + CR 102.3 + CR 805.4a — `DuringPlayersTurn { Opponent }`
+    /// is true only while the active player is on an opposing team, not merely
+    /// while a non-controller seat is active.
     #[test]
-    fn during_players_turn_opponent_tracks_active_not_controller() {
-        let mut state = setup();
+    fn during_players_turn_opponent_tracks_team_aware_active_relation() {
+        let mut state = GameState::new(
+            crate::types::format::FormatConfig::two_headed_giant(),
+            4,
+            42,
+        );
         let controller = PlayerId(0);
         let condition = TriggerCondition::DuringPlayersTurn {
             player: PlayerFilter::Opponent,
@@ -27479,7 +27486,14 @@ pub mod tests {
             &state, &condition, controller, None, None
         ));
 
+        // Seats 0/1 are teammates, so a teammate's shared-team turn is not an
+        // opponent's turn.
         state.active_player = PlayerId(1);
+        assert!(!check_trigger_condition(
+            &state, &condition, controller, None, None
+        ));
+
+        state.active_player = PlayerId(2);
         assert!(check_trigger_condition(
             &state, &condition, controller, None, None
         ));

@@ -8775,7 +8775,7 @@ fn any_player_may_activate_but_only_records_timing_restriction() {
     let restrictions = &activation.activation_restrictions;
     assert!(
         has_opponents_turn_activation_restriction(restrictions),
-        "expected Not(IsYourTurn), got {:?}",
+        "expected IsOpponentsTurn, got {:?}",
         restrictions
     );
 
@@ -8852,7 +8852,7 @@ fn opponents_may_activate_but_only_records_timing_restriction() {
     assert_eq!(opponent_turn.activator_filter, Some(PlayerFilter::Opponent));
     assert!(
         has_opponents_turn_activation_restriction(&opponent_turn.activation_restrictions),
-        "expected Not(IsYourTurn), got {:?}",
+        "expected IsOpponentsTurn, got {:?}",
         opponent_turn.activation_restrictions
     );
 }

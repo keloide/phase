@@ -7466,7 +7466,13 @@ pub enum StaticCondition {
     Unrecognized {
         text: String,
     },
+    /// CR 102.1: The active player is the controller of this static ability.
     DuringYourTurn,
+    /// CR 102.3 + CR 805.4a: The active player is an opponent of this static
+    /// ability's controller. This is deliberately distinct from
+    /// `Not(DuringYourTurn)`: in team games, a teammate may be the active
+    /// player while the controller's team still has the turn.
+    DuringOpponentsTurn,
     /// CR 105.2 + CR 611.3a: True when the source permanent shares a color with
     /// the most common color among all permanents on the battlefield (including
     /// any color tied for most common). Used by Heroic Defiance's "gets +3/+3
