@@ -49,7 +49,7 @@ fn setup() -> (GameRunner, ObjectId, ObjectId, ObjectId, ObjectId) {
     )
 }
 
-fn attack_until_optional_choice(runner: &mut GameRunner, wolfbear: ObjectId) {
+fn attack_until_target_selection(runner: &mut GameRunner, wolfbear: ObjectId) {
     runner.pass_both_players();
     runner
         .act(GameAction::DeclareAttackers {
@@ -60,6 +60,29 @@ fn attack_until_optional_choice(runner: &mut GameRunner, wolfbear: ObjectId) {
 
     for _ in 0..16 {
         match runner.state().waiting_for.clone() {
+            WaitingFor::TriggerTargetSelection { source_id, .. } => {
+                assert_eq!(
+                    source_id,
+                    Some(wolfbear),
+                    "Wolfbear must own the target prompt"
+                );
+                return;
+            }
+            WaitingFor::OrderTriggers { .. } => {
+                engine::game::triggers::drain_order_triggers_with_identity(runner.state_mut());
+            }
+            WaitingFor::Priority { .. } => runner.pass_both_players(),
+            other => {
+                panic!("expected Wolfbear's target selection, got waiting state {other:?}")
+            }
+        }
+    }
+    panic!("Wolfbear attack trigger did not reach target selection");
+}
+
+fn target_selected_until_optional_choice(runner: &mut GameRunner, wolfbear: ObjectId) {
+    for _ in 0..16 {
+        match runner.state().waiting_for.clone() {
             WaitingFor::OptionalEffectChoice { source_id, .. } => {
                 assert_eq!(source_id, wolfbear, "Wolfbear must own the may prompt");
                 return;
@@ -68,9 +91,7 @@ fn attack_until_optional_choice(runner: &mut GameRunner, wolfbear: ObjectId) {
                 engine::game::triggers::drain_order_triggers_with_identity(runner.state_mut());
             }
             WaitingFor::Priority { .. } => runner.pass_both_players(),
-            other => {
-                panic!("expected Wolfbear's optional attack trigger, got waiting state {other:?}")
-            }
+            other => panic!("expected Wolfbear's optional choice, got waiting state {other:?}"),
         }
     }
     panic!("Wolfbear attack trigger did not reach its optional choice");
@@ -104,10 +125,7 @@ fn exuberant_wolfbear_accepts_only_controlled_humans_and_expires_at_cleanup() {
     let (mut runner, wolfbear, chosen_human, other_human, opponent_human) = setup();
     let current_turn = runner.state().turn_number;
 
-    attack_until_optional_choice(&mut runner, wolfbear);
-    runner
-        .act(GameAction::DecideOptionalEffect { accept: true })
-        .expect("controller may accept Wolfbear's trigger");
+    attack_until_target_selection(&mut runner, wolfbear);
 
     let chosen_target = match runner.state().waiting_for.clone() {
         WaitingFor::TriggerTargetSelection {
@@ -146,6 +164,10 @@ fn exuberant_wolfbear_accepts_only_controlled_humans_and_expires_at_cleanup() {
             target: Some(chosen_target),
         })
         .expect("select the engine-offered controlled Human target");
+    target_selected_until_optional_choice(&mut runner, wolfbear);
+    runner
+        .act(GameAction::DecideOptionalEffect { accept: true })
+        .expect("controller may accept Wolfbear's trigger");
     runner.advance_until_stack_empty();
 
     assert_eq!(
@@ -176,7 +198,28 @@ fn exuberant_wolfbear_accepts_only_controlled_humans_and_expires_at_cleanup() {
 fn exuberant_wolfbear_decline_leaves_controlled_human_unchanged() {
     let (mut runner, wolfbear, chosen_human, _other_human, _opponent_human) = setup();
 
-    attack_until_optional_choice(&mut runner, wolfbear);
+    attack_until_target_selection(&mut runner, wolfbear);
+    let chosen_target = match runner.state().waiting_for.clone() {
+        WaitingFor::TriggerTargetSelection {
+            target_slots,
+            selection,
+            ..
+        } => target_slots[selection.current_slot]
+            .legal_targets
+            .iter()
+            .find(|target| {
+                matches!(target, engine::types::ability::TargetRef::Object(id) if *id == chosen_human)
+            })
+            .cloned()
+            .expect("chosen controlled Human must be offered by the engine"),
+        other => panic!("expected target selection before optional choice: {other:?}"),
+    };
+    runner
+        .act(GameAction::ChooseTarget {
+            target: Some(chosen_target),
+        })
+        .expect("select the engine-offered controlled Human target");
+    target_selected_until_optional_choice(&mut runner, wolfbear);
     runner
         .act(GameAction::DecideOptionalEffect { accept: false })
         .expect("controller may decline Wolfbear's trigger");
