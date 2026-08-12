@@ -5,7 +5,6 @@
 //! battlefield-entry, trigger-collection, and resolution pipeline.
 
 use engine::game::scenario::{GameRunner, GameScenario, P0};
-use engine::game::zones::move_to_zone;
 use engine::types::ability::{FilterProp, TargetFilter, TriggerCondition, TypeFilter};
 use engine::types::actions::GameAction;
 use engine::types::game_state::StackEntryKind;
@@ -16,6 +15,7 @@ use engine::types::ObjectId;
 
 const FAERIE_MISCREANT: &str =
     "Flying\nWhen this creature enters, if you control another creature named Faerie Miscreant, draw a card.";
+const DESTROY_TARGET_CREATURE: &str = "Destroy target creature.";
 
 fn has_named_companion_condition(runner: &GameRunner, source: ObjectId) -> bool {
     runner.state().objects[&source]
@@ -70,6 +70,7 @@ fn does_not_draw_without_another_faerie_miscreant() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_library_top(P0, &["Drawn card"]);
+    scenario.add_creature(P0, "Wrong Name Companion", 1, 1);
     let faerie = scenario
         .add_creature_to_hand_from_oracle(P0, "Faerie Miscreant", 1, 1, FAERIE_MISCREANT)
         .with_mana_cost(ManaCost::zero())
@@ -95,6 +96,10 @@ fn companion_removed_after_trigger_fires_prevents_resolution_draw() {
         .add_creature_to_hand_from_oracle(P0, "Faerie Miscreant", 1, 1, FAERIE_MISCREANT)
         .with_mana_cost(ManaCost::zero())
         .id();
+    let destroy_spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Destroy Companion", true, DESTROY_TARGET_CREATURE)
+        .with_mana_cost(ManaCost::zero())
+        .id();
 
     let mut runner = scenario.build();
     runner.cast(faerie).commit();
@@ -115,22 +120,14 @@ fn companion_removed_after_trigger_fires_prevents_resolution_draw() {
         "reach-guard: the condition held on entry and Faerie Miscreant's trigger reached the stack"
     );
 
-    let hand_after_entry = runner.state().players[P0.0 as usize].hand.len();
-    let mut events = Vec::new();
-    move_to_zone(runner.state_mut(), companion, Zone::Graveyard, &mut events);
-
-    for _ in 0..12 {
-        if runner.state().stack.is_empty() {
-            break;
-        }
-        runner
-            .act(GameAction::PassPriority)
-            .expect("resolve Faerie Miscreant's pending trigger");
-    }
-    assert!(runner.state().stack.is_empty(), "trigger must settle");
+    let outcome = runner
+        .cast(destroy_spell)
+        .target_object(companion)
+        .resolve();
     assert_eq!(
-        runner.state().players[P0.0 as usize].hand.len(),
-        hand_after_entry,
-        "the live intervening-if is false after the companion leaves, so the trigger must not draw"
+        outcome.zone_of(companion),
+        Zone::Graveyard,
+        "the production Destroy pipeline must move the companion before the trigger rechecks"
     );
+    outcome.assert_hand_drawn(P0, 0);
 }
