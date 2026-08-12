@@ -89,7 +89,8 @@ fn faerie_miscreant_single_named_intervening_if_parses_to_draw_trigger() {
         parsed.triggers
     );
     let trigger = &parsed.triggers[0];
-    assert_eq!(trigger.mode, TriggerMode::Enters);
+    assert_eq!(trigger.mode, TriggerMode::ChangesZone);
+    assert_eq!(trigger.destination, Some(Zone::Battlefield));
 
     let TriggerCondition::ControlsType {
         filter: TargetFilter::Typed(filter),

@@ -11287,7 +11287,7 @@ mod tests {
 
     #[test]
     fn you_control_named_rejects_empty_singleton_name() {
-        assert!(parse_inner_condition("you control a creature named , draw a card").is_err());
+        assert!(parse_control_named_pair("you control a creature named , draw a card").is_err());
     }
 
     #[test]
