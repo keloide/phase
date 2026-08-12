@@ -5757,15 +5757,15 @@ pub(crate) fn drain_pending_cost_move_resume(
                     | PendingCostMoveResume::ManaAbilityPayment { .. }
                     | PendingCostMoveResume::ActivationMillPayment { .. }
                     | PendingCostMoveResume::LoyaltyActivation { .. }
-                    | PendingCostMoveResume::GetPlayerCountersUnlessPayment { .. }
+                    | PendingCostMoveResume::CounterAdditionUnlessPayment { .. }
             )
         ),
         // CR 606.4 + CR 616.1: a fully-prevented loyalty counter add (e.g. an
         // opponent's Solemnity would prevent the counters) must still complete the
         // parked activation instead of wedging, so `LoyaltyActivation` is eligible
-        // at the Prevented boundary as well. `GetPlayerCountersUnlessPayment` is
-        // eligible here too: a prevented Ward player-counter payment is a FAILED
-        // cost (CR 702.21a) that must counter the guarded ability, not wedge.
+        // at the Prevented boundary as well. Counter-addition unless payments
+        // are eligible here too: a prevented counter placement fails the cost
+        // (CR 118.3) and must resolve the pending unless branch, not wedge.
         CostMoveDrainBoundary::ReplacementPrevented { .. } => matches!(
             state.pending_cost_move_resume,
             Some(
@@ -5780,7 +5780,7 @@ pub(crate) fn drain_pending_cost_move_resume(
                     | PendingCostMoveResume::ManaAbilityPayment { .. }
                     | PendingCostMoveResume::ActivationMillPayment { .. }
                     | PendingCostMoveResume::LoyaltyActivation { .. }
-                    | PendingCostMoveResume::GetPlayerCountersUnlessPayment { .. }
+                    | PendingCostMoveResume::CounterAdditionUnlessPayment { .. }
             )
         ),
         CostMoveDrainBoundary::PriorityBoundary => matches!(
@@ -5854,9 +5854,9 @@ pub(crate) fn drain_pending_cost_move_resume(
         super::planeswalker::resume_loyalty_activation(state, events)?
     } else if matches!(
         state.pending_cost_move_resume,
-        Some(PendingCostMoveResume::GetPlayerCountersUnlessPayment { .. })
+        Some(PendingCostMoveResume::CounterAdditionUnlessPayment { .. })
     ) {
-        engine_payment_choices::resume_get_player_counters_unless_payment(
+        engine_payment_choices::resume_counter_addition_unless_payment(
             state,
             events,
             matches!(boundary, CostMoveDrainBoundary::ReplacementDelivered { .. }),
@@ -15916,7 +15916,16 @@ mod stage2_injector_tests {
                 }
                 if test_file || spans.iter().any(|(a, b)| (*a..=*b).contains(&n)) {
                     in_test += 1;
-                } else if line.contains("waiting_for = ") || line.contains("Ok(Some(") {
+                } else if line.contains("waiting_for = ")
+                    || line.contains("Ok(Some(")
+                    // `install_direct_choice_frame` owns the actual
+                    // `state.waiting_for` write. Its typed prompt argument is
+                    // still a production mint, not a reader; the call sits
+                    // within this bounded argument expression.
+                    || lines[n.saturating_sub(32)..n]
+                        .iter()
+                        .any(|prior| prior.contains(".install_direct_choice_frame("))
+                {
                     producers.push(format!("{rel}:{}", n + 1));
                 } else {
                     readers.push(format!("{rel}:{}", n + 1));
@@ -16037,7 +16046,7 @@ mod stage2_injector_tests {
                 // `OptionalEffect` prompt. Re-pinned against the merged source.
                 "game/effects/mod.rs:6300".to_string(),
                 "game/effects/mod.rs:6377".to_string(),
-                "game/effects/mod.rs:9570".to_string(),
+                "game/effects/mod.rs:9576".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.
