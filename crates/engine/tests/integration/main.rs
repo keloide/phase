@@ -888,6 +888,7 @@ mod prepared_state_serde;
 mod primo_unbounded_fractal_counters;
 mod printed_ability_order;
 mod proliferate_zero_counter;
+mod pulse_of_the_forge;
 mod punishing_punch_twice_subject_power;
 mod purged_source_attachment_count_lki;
 mod purged_source_attacked_this_turn_lki;
