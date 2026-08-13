@@ -4463,6 +4463,57 @@ fn effect_lightning_bolt() {
 }
 
 #[test]
+fn crackle_with_power_full_oracle_parses_multiplier_and_up_to_x_targets() {
+    let parsed = parse_oracle_text(
+        "Crackle with Power deals five times X damage to each of up to X targets.",
+        "Crackle with Power",
+        &[],
+        &["Sorcery".to_string()],
+        &[],
+    );
+
+    assert_eq!(parsed.abilities.len(), 1, "expected one spell ability");
+    assert!(
+        parsed.parse_warnings.is_empty(),
+        "Crackle with Power must not leave parse warnings: {:?}",
+        parsed.parse_warnings
+    );
+    let ability = &parsed.abilities[0];
+    assert!(
+        !ability_chain_has_unimplemented(ability),
+        "Crackle with Power must not retain Unimplemented effects: {ability:#?}"
+    );
+    // CR 107.3i + CR 115.6: all X values share the announced value, and an
+    // optional target set may contain zero targets.
+    assert_eq!(
+        ability.multi_target,
+        Some(MultiTargetSpec::up_to(QuantityExpr::Ref {
+            qty: QuantityRef::Variable {
+                name: "X".to_string(),
+            },
+        })),
+        "each of up to X targets must expose an optional X-sized target set"
+    );
+    assert!(
+        matches!(
+            ability.effect.as_ref(),
+            Effect::DealDamage {
+                amount: QuantityExpr::Multiply { factor: 5, inner },
+                target: TargetFilter::Any,
+                ..
+            } if matches!(
+                inner.as_ref(),
+                QuantityExpr::Ref {
+                    qty: QuantityRef::Variable { name }
+                } if name == "X"
+            )
+        ),
+        "expected five times X damage to Any targets, got {:?}",
+        ability.effect
+    );
+}
+
+#[test]
 fn non_trigger_damage_to_that_permanent_or_player_does_not_use_event_target() {
     let e = parse_effect("Ghyrson Starn, Kelermorph deals 2 damage to that permanent or player");
     if let Effect::DealDamage { target, .. } = &e {

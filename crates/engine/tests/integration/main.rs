@@ -132,6 +132,7 @@ mod cr733_resolved_trigger_collection;
 mod cr733_resolved_trigger_removal;
 mod cr733_resolved_zone_change;
 mod cr_annotations;
+mod crackle_with_power;
 mod craft_tithing_blade_transform;
 mod crime_tracking;
 mod cross_line_instead_override_branch;
