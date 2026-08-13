@@ -85,7 +85,7 @@ fn stack_spell_casting_variant(
             _ => None,
         })
         .or_else(|| {
-            // CR 608.2c + CR 608.2n: resolving spells are popped from the live
+            // CR 608.2m + CR 608.2n: resolving spells are popped from the live
             // stack before their effect chain runs, but their casting variant stays
             // authoritative in the resolution carrier until the chain completes.
             state
