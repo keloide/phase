@@ -638,7 +638,11 @@ pub fn parse_count_expr(text: &str) -> Option<(QuantityExpr, &str)> {
 /// A multiplier must be greater than one: `one time` is not a multiplicative
 /// Oracle count phrase, and zero/negative factors cannot arise from the shared
 /// unsigned number grammar.
-fn parse_count_multiplier(input: &str) -> OracleResult<'_, i32> {
+// CR 107.3a + CR 107.3i: a spell's controller announces a cost X while
+// casting, and its X instances normally share that announced value. The
+// multiplier wraps the recursively parsed X so each quantity consumer reads
+// that same value.
+pub(crate) fn parse_count_multiplier(input: &str) -> OracleResult<'_, i32> {
     alt((
         value(2i32, terminated(tag("twice"), space1)),
         map_res(
