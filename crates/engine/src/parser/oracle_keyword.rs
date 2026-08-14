@@ -743,6 +743,17 @@ fn parse_ward_cost_single(lower: &str) -> Option<WardCost> {
         return Some(WardCost::PayLifeEqualToPower);
     }
 
+    // CR 702.21a: Unsupported "pay life equal to ..." Ward payloads must
+    // fail closed.  Without this guard they fall through to the historical
+    // lenient mana parser and become Ward(Mana(zero)), silently removing the
+    // Ward payment from the game.
+    if tag::<_, _, OracleError<'_>>("pay life equal to ")
+        .parse(lower)
+        .is_ok()
+    {
+        return None;
+    }
+
     // "pay N life"
     if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("pay ").parse(lower) {
         if let Some(life_str) = rest.strip_suffix(" life") {
@@ -802,8 +813,14 @@ fn parse_ward_cost_single(lower: &str) -> Option<WardCost> {
         };
     }
 
-    // Fall back to mana cost parsing
-    let cost = crate::database::mtgjson::parse_mtgjson_mana_cost(lower.trim());
+    // Fall back to a strict mana-cost parse.  `parse_mtgjson_mana_cost` is
+    // intentionally permissive for database ingestion, but a keyword payload
+    // parser must consume the entire payload or reject it; otherwise arbitrary
+    // Ward prose becomes a free Ward.
+    let upper = lower.trim().to_ascii_uppercase();
+    let (_, cost) = all_consuming(nom_primitives::parse_mana_cost)
+        .parse(upper.as_str())
+        .ok()?;
     Some(WardCost::Mana(cost))
 }
 
@@ -3472,6 +3489,35 @@ mod tests {
         assert_eq!(
             parse_granted_keyword_fragment("ward—pay life equal to ~'s power"),
             Some(Keyword::Ward(WardCost::PayLifeEqualToPower))
+        );
+    }
+
+    #[test]
+    fn ward_power_payload_rejects_unsupported_referents_and_trailing_text() {
+        for payload in [
+            "ward—pay life equal to its power",
+            "ward—pay life equal to its toughness",
+            "ward—pay life equal to target creature's power",
+            "ward—pay life equal to this creature's power unless you control an artifact",
+            "ward—tap a creature",
+        ] {
+            assert_eq!(
+                parse_granted_keyword_fragment(payload),
+                None,
+                "unsupported Ward payload must fail closed: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn ward_mana_payload_still_requires_a_complete_mana_cost() {
+        assert!(matches!(
+            parse_granted_keyword_fragment("ward—{2}{r}"),
+            Some(Keyword::Ward(WardCost::Mana(_)))
+        ));
+        assert_eq!(
+            parse_granted_keyword_fragment("ward—{2}{r} if you control an artifact"),
+            None
         );
     }
 

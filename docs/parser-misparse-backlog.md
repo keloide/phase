@@ -4289,7 +4289,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 
 </details>
 
-### 16. Keyword payload / multiplicity / mis-tokenization  (84 cards)
+### 16. Keyword payload / multiplicity / mis-tokenization  (83 cards)
 
 **Signature.** A keyword cost or discriminant is wrong (ward life cost as {0}, devour type hardcoded, multi-kicker merged, protection color stored on CardType axis), a keyword is deduped, or a flavor ability-word label is read as a keyword.
 
@@ -4363,7 +4363,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Nightscape Battlemage
 - Quilled Greatwurm
 - Rakavolver
-- Raubahn, Bull of Ala Mhigo
 - Really Epic Punch
 - Rebbec, Architect of Ascension
 - Samite Elder
