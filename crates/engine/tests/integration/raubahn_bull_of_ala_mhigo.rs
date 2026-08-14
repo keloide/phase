@@ -4,6 +4,7 @@
 //! power when the Ward trigger resolves.  Its attack trigger also has an
 //! optional Equipment target followed by a required attacking-creature target.
 
+use engine::game::combat::{AttackerInfo, CombatState};
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
@@ -122,20 +123,21 @@ fn raubahn_attack_trigger_builds_optional_equipment_then_required_attacker_slots
         .id();
     let attacker = scenario.add_creature(P0, "Attacker", 2, 2).id();
     let mut runner = scenario.build();
-    runner
-        .state_mut()
-        .objects
-        .get_mut(&attacker)
-        .expect("attacker exists")
-        .combat_status
-        .attacking = true;
+    runner.state_mut().combat = Some(CombatState {
+        attackers: vec![AttackerInfo::attacking_player(attacker, P1)],
+        ..Default::default()
+    });
 
     let trigger = runner.state().objects[&raubahn]
-        .triggers
-        .iter()
-        .find(|trigger| trigger.mode == TriggerMode::Attacks)
+        .trigger_definitions
+        .iter_unchecked()
+        .find(|trigger| trigger.definition.mode == TriggerMode::Attacks)
         .expect("Raubahn attack trigger");
-    let definition = trigger.execute.as_deref().expect("trigger execute");
+    let definition = trigger
+        .definition
+        .execute
+        .as_deref()
+        .expect("trigger execute");
     let resolved = build_resolved_from_def(definition, raubahn, P0);
     let slots = build_target_slots(runner.state(), &resolved).expect("target slots");
     assert_eq!(slots.len(), 2);
