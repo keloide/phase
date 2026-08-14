@@ -14,6 +14,7 @@ use engine::types::actions::GameAction;
 use engine::types::game_state::WaitingFor;
 use engine::types::keywords::{Keyword, WardCost};
 use engine::types::phase::Phase;
+use engine::types::triggers::TriggerMode;
 
 const RAUBAHN_ORACLE: &str = "Ward—Pay life equal to Raubahn's power.\nWhenever Raubahn attacks, attach up to one target Equipment you control to target attacking creature.";
 
@@ -45,6 +46,7 @@ fn raubahn_full_oracle_text_parses_ward_and_attack_attachment() {
     let attack_trigger = parsed
         .triggers
         .iter()
+        .filter(|trigger| trigger.mode == TriggerMode::Attacks)
         .find_map(|trigger| {
             trigger
                 .execute
@@ -52,6 +54,15 @@ fn raubahn_full_oracle_text_parses_ward_and_attack_attachment() {
                 .filter(|ability| matches!(ability.effect.as_ref(), Effect::Attach { .. }))
         })
         .expect("Raubahn's attack trigger must have an execute ability");
+    assert_eq!(
+        parsed
+            .triggers
+            .iter()
+            .filter(|trigger| trigger.mode == TriggerMode::Attacks)
+            .count(),
+        1,
+        "Raubahn must have exactly one attack trigger"
+    );
     assert_no_unimplemented(&attack_trigger.effect, "Raubahn's attack trigger");
     let Effect::Attach { attachment, target } = attack_trigger.effect.as_ref() else {
         panic!(
@@ -92,6 +103,57 @@ fn raubahn_full_oracle_text_parses_ward_and_attack_attachment() {
             .any(|property| matches!(property, FilterProp::Attacking { defender: None })),
         "host target must require an attacking creature: {attacker:?}"
     );
+    assert_eq!(attacker.controller, None);
+}
+
+#[test]
+fn raubahn_attack_trigger_builds_optional_equipment_then_required_attacker_slots() {
+    use engine::game::ability_utils::{build_resolved_from_def, build_target_slots};
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let raubahn = scenario
+        .add_creature_from_oracle(P0, "Raubahn, Bull of Ala Mhigo", 2, 2, RAUBAHN_ORACLE)
+        .id();
+    let equipment = scenario
+        .add_creature(P0, "Test Blade", 0, 1)
+        .as_artifact()
+        .with_subtypes(vec!["Equipment"])
+        .id();
+    let attacker = scenario.add_creature(P0, "Attacker", 2, 2).id();
+    let mut runner = scenario.build();
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&attacker)
+        .expect("attacker exists")
+        .combat_status
+        .attacking = true;
+
+    let trigger = runner.state().objects[&raubahn]
+        .triggers
+        .iter()
+        .find(|trigger| trigger.mode == TriggerMode::Attacks)
+        .expect("Raubahn attack trigger");
+    let definition = trigger.execute.as_deref().expect("trigger execute");
+    let resolved = build_resolved_from_def(definition, raubahn, P0);
+    let slots = build_target_slots(runner.state(), &resolved).expect("target slots");
+    assert_eq!(slots.len(), 2);
+    assert!(slots[0].optional, "Equipment selection must be optional");
+    assert!(
+        slots[0]
+            .legal_targets
+            .contains(&engine::types::ability::TargetRef::Object(equipment)),
+        "controlled Equipment must be legal in the optional first slot"
+    );
+    assert!(
+        !slots[1].optional,
+        "attacking-creature selection is required"
+    );
+    assert_eq!(
+        slots[1].legal_targets,
+        vec![engine::types::ability::TargetRef::Object(attacker)]
+    );
 }
 
 #[test]
@@ -115,7 +177,7 @@ fn raubahn_ward_uses_power_at_resolution_and_charges_the_opponent() {
 
     runner.cast(murder).target_objects(&[raubahn]).commit();
 
-    // CR 702.21b: A Ward cost that uses the source's power resolves that value
+    // CR 702.21a + CR 608.2h: A Ward cost that uses the source's power resolves that value
     // when the Ward trigger resolves, rather than when the target is chosen.
     {
         let object = runner
