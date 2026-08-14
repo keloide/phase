@@ -28,6 +28,7 @@ use engine::game::scenario::{GameScenario, P0};
 use engine::types::counter::CounterType;
 use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
+use engine::types::zones::Zone;
 
 const VINCENTS_ORACLE: &str = "Tiered (Choose one additional cost.)\n\
     Until end of turn, target creature you control gains \"When this creature dies, return it to the battlefield tapped under its owner's control\" and has the chosen base power and toughness.\n\
@@ -153,6 +154,55 @@ fn set_base_pt_applies_before_counter_layer() {
         outcome.power_toughness(creature),
         (4, 3),
         "base set 3/2 (7b) then +1/+1 counter (7c) = 4/3"
+    );
+}
+
+/// CR 603.6c + CR 603.10a + CR 400.7j: the temporary GrantTrigger supplied by
+/// Vincent's selected mode must use last-known information when the creature
+/// dies, then return that new object tapped under its owner's control. The
+/// lethal damage is dealt by a second spell through the normal cast pipeline,
+/// rather than moving the creature directly between zones.
+#[test]
+fn granted_dies_trigger_returns_selected_creature_tapped() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let creature = scenario.add_vanilla(P0, 2, 2);
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Vincent's Limit Break", true, VINCENTS_ORACLE)
+        .with_mana_cost(base_cost())
+        .id();
+    let lethal_damage = scenario
+        .add_spell_to_hand_from_oracle(P0, "Shock", true, "Shock deals 3 damage to any target.")
+        .with_mana_cost(ManaCost::zero())
+        .id();
+    scenario.with_mana_pool(P0, black_pool(4));
+
+    let mut runner = scenario.build();
+    runner
+        .cast(spell)
+        .modes(&[0])
+        .target_object(creature)
+        .resolve();
+
+    runner.cast(lethal_damage).target_object(creature).resolve();
+
+    let returned = &runner.state().objects[&creature];
+    assert_eq!(
+        returned.zone,
+        Zone::Battlefield,
+        "the granted trigger must return the dead creature to the battlefield"
+    );
+    assert_eq!(
+        returned.owner, P0,
+        "the returned creature must remain under its owner's identity"
+    );
+    assert_eq!(
+        returned.controller, P0,
+        "the granted trigger must return the creature under its owner's control"
+    );
+    assert!(
+        returned.tapped,
+        "the granted trigger must return the creature tapped"
     );
 }
 
