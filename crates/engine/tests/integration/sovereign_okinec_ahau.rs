@@ -69,6 +69,36 @@ fn attacks_put_difference_counters_on_each_pumped_creature() {
 }
 
 #[test]
+fn attacks_use_the_layer_7b_base_power_not_printed_power() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let sovereign = scenario
+        .add_creature(P0, "Sovereign Okinec Ahau", 3, 4)
+        .from_oracle_text(SOVEREIGN_ORACLE)
+        .id();
+
+    // The base-P/T setter applies before the separate current-power modifier.
+    // The printed 1 is deliberately neither value.
+    scenario.add_enchantment_from_oracle(
+        P0,
+        "Base-Form Anthem",
+        "Creatures you control have base power and toughness 4/4.",
+    );
+    scenario.add_enchantment_from_oracle(P0, "Power Anthem", "Creatures you control get +3/+0.");
+    let layered_creature = scenario.add_creature(P0, "Layered Creature", 1, 1).id();
+    let mut runner = scenario.build();
+
+    run_combat(&mut runner, vec![sovereign], vec![]);
+    runner.advance_until_stack_empty();
+
+    assert_eq!(
+        plus_one_counters(&runner, layered_creature),
+        3,
+        "current power 7 minus layer-7b base power 4 must add three counters, not six from printed power 1"
+    );
+}
+
+#[test]
 fn sovereign_attack_does_not_count_itself_without_a_power_modifier() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
