@@ -1396,6 +1396,20 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
             ObjectScope::AmassedArmy => "amassed Army's power".into(),
             ObjectScope::BatchSource => "batch source's power".into(),
         },
+        QuantityRef::BasePower { scope } => match scope {
+            ObjectScope::Source | ObjectScope::Anaphoric | ObjectScope::Demonstrative => {
+                "self base power".into()
+            }
+            ObjectScope::Target => "target's base power".into(),
+            ObjectScope::Recipient => "recipient's base power".into(),
+            ObjectScope::EventSource => "event source's base power".into(),
+            ObjectScope::EventTarget => "event target's base power".into(),
+            ObjectScope::CostPaidObject => "referenced object's base power".into(),
+            ObjectScope::OtherRevealedCard => "other revealed card's base power".into(),
+            ObjectScope::OwnedLinkedExileCard => "owned linked-exiled card's base power".into(),
+            ObjectScope::AmassedArmy => "amassed Army's base power".into(),
+            ObjectScope::BatchSource => "batch source's base power".into(),
+        },
         QuantityRef::Toughness { scope } => match scope {
             ObjectScope::Source | ObjectScope::Anaphoric | ObjectScope::Demonstrative => {
                 "self toughness".into()
@@ -8182,6 +8196,20 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
             ObjectScope::OwnedLinkedExileCard => ("OwnedLinkedExileCardPower", Handled),
             ObjectScope::AmassedArmy => ("AmassedArmyPower", Handled),
             ObjectScope::BatchSource => ("BatchSourcePower", Handled),
+        },
+        QuantityRef::BasePower { scope } => match scope {
+            ObjectScope::Source | ObjectScope::Anaphoric | ObjectScope::Demonstrative => {
+                ("SelfBasePower", Handled)
+            }
+            ObjectScope::Target => ("TargetBasePower", Handled),
+            ObjectScope::Recipient => ("RecipientBasePower", Handled),
+            ObjectScope::EventSource => ("EventSourceBasePower", Handled),
+            ObjectScope::EventTarget => ("EventTargetBasePower", Handled),
+            ObjectScope::CostPaidObject => ("CostPaidObjectBasePower", Handled),
+            ObjectScope::OtherRevealedCard => ("OtherRevealedCardBasePower", Handled),
+            ObjectScope::OwnedLinkedExileCard => ("OwnedLinkedExileCardBasePower", Handled),
+            ObjectScope::AmassedArmy => ("AmassedArmyBasePower", Handled),
+            ObjectScope::BatchSource => ("BatchSourceBasePower", Handled),
         },
         QuantityRef::Toughness { scope } => match scope {
             ObjectScope::Source | ObjectScope::Anaphoric | ObjectScope::Demonstrative => {

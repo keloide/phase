@@ -20459,13 +20459,16 @@ fn rebind_source_ref(qty: &mut QuantityRef, target: ObjectScope, rebind: SourceR
     if matches!(rebind, SourceRefRebind::PowerOrToughness)
         && !matches!(
             qty,
-            QuantityRef::Power { .. } | QuantityRef::Toughness { .. }
+            QuantityRef::Power { .. }
+                | QuantityRef::BasePower { .. }
+                | QuantityRef::Toughness { .. }
         )
     {
         return;
     }
     let scope = match qty {
         QuantityRef::Power { scope }
+        | QuantityRef::BasePower { scope }
         | QuantityRef::Toughness { scope }
         | QuantityRef::ObjectManaValue { scope }
         | QuantityRef::ObjectColorCount { scope }
@@ -22158,6 +22161,7 @@ pub(super) fn rebind_target_subject_object_scope(expr: &mut QuantityExpr) {
         QuantityExpr::Ref { qty } => {
             let scope = match qty {
                 QuantityRef::Power { scope }
+                | QuantityRef::BasePower { scope }
                 | QuantityRef::Toughness { scope }
                 | QuantityRef::ObjectManaValue { scope }
                 | QuantityRef::ObjectColorCount { scope }
@@ -22199,6 +22203,7 @@ pub(super) fn rebind_target_subject_object_scope(expr: &mut QuantityExpr) {
 fn rebind_anaphoric_ref(qty: &mut QuantityRef, target: ObjectScope) {
     let scope = match qty {
         QuantityRef::Power { scope }
+        | QuantityRef::BasePower { scope }
         | QuantityRef::Toughness { scope }
         | QuantityRef::ObjectManaValue { scope }
         | QuantityRef::ObjectColorCount { scope }
@@ -28469,6 +28474,50 @@ pub(crate) fn is_difference_anaphor_placeholder(expr: &QuantityExpr) -> bool {
     )
 }
 
+/// CR 208.4b + CR 608.2c: Bind "equal to the difference" inside a member-driven
+/// `repeat_for` whose population is selected by current power exceeding base
+/// power. The enclosing loop rebinds its `ParentTarget` to each member, so the
+/// two operands must use the same recipient-relative object scope. This keeps
+/// the binding general for every future "for each ... with power greater than
+/// that creature's base power ... equal to the difference" clause.
+fn difference_expr_for_repeat_for(repeat_for: &QuantityExpr) -> Option<QuantityExpr> {
+    let QuantityExpr::Ref {
+        qty: QuantityRef::ObjectCount { filter },
+    } = repeat_for
+    else {
+        return None;
+    };
+
+    fn filter_has_power_exceeds_base(filter: &TargetFilter) -> bool {
+        match filter {
+            TargetFilter::Typed(typed) => typed
+                .properties
+                .iter()
+                .any(|property| matches!(property, FilterProp::PowerExceedsBase)),
+            TargetFilter::Or { filters } | TargetFilter::And { filters } => {
+                filters.iter().any(filter_has_power_exceeds_base)
+            }
+            TargetFilter::Not { filter } | TargetFilter::TrackedSetFiltered { filter, .. } => {
+                filter_has_power_exceeds_base(filter)
+            }
+            _ => false,
+        }
+    }
+
+    filter_has_power_exceeds_base(filter).then(|| QuantityExpr::Difference {
+        left: Box::new(QuantityExpr::Ref {
+            qty: QuantityRef::Power {
+                scope: ObjectScope::Recipient,
+            },
+        }),
+        right: Box::new(QuantityExpr::Ref {
+            qty: QuantityRef::BasePower {
+                scope: ObjectScope::Recipient,
+            },
+        }),
+    })
+}
+
 /// CR 608.2c: Resolve every deferred "the difference" count-anaphor placeholder
 /// anywhere in an ability's effect tree — the single authority for both the
 /// trigger seam (`lower_trigger_ir`, Drizzt Do'Urden) and the spell clause
@@ -33350,7 +33399,12 @@ pub(crate) fn parse_effect_chain_ir(
             // before the trigger seam runs, breaking every difference-counter
             // trigger. A spell's difference operands always ride the same clause
             // (Hit the Mother Lode), so `Some(bound)` is the only case to handle.
-            if let Some(bound) = effective_condition.and_then(conditions::difference_expr) {
+            let repeat_for_difference =
+                repeat_for.as_ref().and_then(difference_expr_for_repeat_for);
+            if let Some(bound) = effective_condition
+                .and_then(conditions::difference_expr)
+                .or(repeat_for_difference)
+            {
                 resolve_difference_anaphor_in_effect(&mut clause.effect, Some(&bound));
                 if let Some(sub) = clause.sub_ability.as_deref_mut() {
                     resolve_difference_anaphor_in_ability(sub, Some(&bound));

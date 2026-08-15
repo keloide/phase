@@ -4616,6 +4616,14 @@ fn parse_for_each_clause_ref_with_they_controller(
         // unconsumed remainder (Armorcraft Judge, High Sentinels of Arashin,
         // Inspiring Call).
         parse_for_each_controlled_type_with_counter,
+        // CR 208.1 + CR 208.4b + CR 109.4: "[other] <type> you control with
+        // power greater than that creature's base power" — a controller-scoped
+        // count gated on the candidate's own current/base-power comparison.
+        // Delegate the predicate to `parse_with_property`, the same shared
+        // property combinator used by target filters and ordinary "with" clauses.
+        // This arm must precede the bare controller count, whose shorter
+        // "you control" prefix would strand the property suffix.
+        parse_for_each_controlled_type_with_property,
         // CR 109.4 + CR 702: "[other] <type> you control with <keyword>" — a
         // controller-scoped count gated on a keyword-presence predicate. Must
         // precede `parse_for_each_controlled_type`, whose bare " you control"
@@ -6081,6 +6089,38 @@ fn parse_for_each_controlled_type_with_keyword(input: &str) -> OracleResult<'_, 
     ))
 }
 
+/// CR 208.1 + CR 208.4b + CR 109.4: Parse a controller-scoped count with any
+/// shared property predicate after "with". This is intentionally broader than
+/// the card that first needs it: extending the existing property axis keeps P/T
+/// comparisons and future typed properties in the same for-each building block
+/// as keyword and counter predicates.
+fn parse_for_each_controlled_type_with_property(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, has_other) =
+        opt(alt((value((), tag("other ")), value((), tag("another "))))).parse(input)?;
+    let (rest, tf) = parse_type_filter_word(rest)?;
+    let (rest, _) = tag(" you").parse(rest)?;
+    let (rest, _) = opt(tag(" already")).parse(rest)?;
+    let (rest, _) = tag(" control").parse(rest)?;
+    let (rest, property) = super::filter::parse_with_property(rest)?;
+
+    let mut properties = Vec::new();
+    if has_other.is_some() {
+        properties.push(FilterProp::Another);
+    }
+    properties.push(property);
+
+    Ok((
+        rest,
+        QuantityRef::ObjectCount {
+            filter: TargetFilter::Typed(TypedFilter {
+                type_filters: vec![tf],
+                controller: Some(ControllerRef::You),
+                properties,
+            }),
+        },
+    ))
+}
+
 /// CR 115.1 + CR 707.10: "[other] <type> [you control] [on the battlefield] that
 /// [the] spell could target" — Zada ("other creature you control that the spell
 /// could target"), Ink-Treader Nephilim ("other creature that spell could target"),
@@ -7236,6 +7276,28 @@ mod tests {
                 }
                 other => panic!("{clause:?}: expected ObjectCount, got {other:?}"),
             }
+        }
+    }
+
+    /// CR 208.1 + CR 208.4b + CR 109.4: the shared property arm retains the
+    /// candidate-relative power/base-power predicate in a controller-scoped
+    /// for-each population.
+    #[test]
+    fn parse_for_each_controlled_type_with_base_power_property() {
+        let (rest, q) = parse_for_each_clause_ref(
+            "other creature you control with power greater than that creature's base power",
+        )
+        .unwrap();
+        assert_eq!(rest, "");
+        match q {
+            QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(tf),
+            } => {
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+                assert!(tf.properties.contains(&FilterProp::Another));
+                assert!(tf.properties.contains(&FilterProp::PowerExceedsBase));
+            }
+            other => panic!("expected ObjectCount(Typed), got {other:?}"),
         }
     }
 

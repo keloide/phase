@@ -2069,6 +2069,7 @@ fn legacy_quantity_ref(x: &QuantityRef) -> bool {
         QuantityRef::CountersOn { scope, .. }
         | QuantityRef::Intensity { scope, .. }
         | QuantityRef::Power { scope, .. }
+        | QuantityRef::BasePower { scope, .. }
         | QuantityRef::Toughness { scope, .. }
         | QuantityRef::ObjectManaValue { scope, .. }
         | QuantityRef::ObjectColorCount { scope, .. }
@@ -6054,6 +6055,7 @@ fn rw_quantity_ref(x: &QuantityRef) -> RwProfile {
             read_object_scope(scope, StateKind::ObjectCounters)
         }
         QuantityRef::Power { scope, .. }
+        | QuantityRef::BasePower { scope, .. }
         | QuantityRef::Toughness { scope, .. }
         | QuantityRef::ObjectManaValue { scope, .. }
         | QuantityRef::ObjectColorCount { scope, .. }

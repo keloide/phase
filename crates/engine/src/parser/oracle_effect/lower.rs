@@ -1537,6 +1537,7 @@ fn quantity_ref_reads_other_revealed_card(qty: &QuantityRef) -> bool {
     let scope = match qty {
         QuantityRef::ObjectManaValue { scope }
         | QuantityRef::Power { scope }
+        | QuantityRef::BasePower { scope }
         | QuantityRef::Toughness { scope }
         | QuantityRef::ObjectColorCount { scope }
         | QuantityRef::ObjectNameWordCount { scope }

@@ -6779,6 +6779,11 @@ pub enum QuantityRef {
     /// `EventContextSourcePower` (CR 608.2k: cost OR trigger-condition
     /// referent).
     Power { scope: ObjectScope },
+    /// CR 208.4b + CR 613.4b: Base power of an object, scoped via
+    /// `ObjectScope`. This reads the value after characteristic-defining and
+    /// set effects (layers 7a–7b), before counters and other modifiers (layer
+    /// 7c), rather than the current post-layer power read by `Power`.
+    BasePower { scope: ObjectScope },
     /// Digital-only Alchemy (no CR entry): the current `intensity` of an object,
     /// scoped via `ObjectScope`. Reads "X is [card]'s intensity" /
     /// "this spell's intensity" / "equal to its intensity".

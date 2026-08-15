@@ -1994,7 +1994,7 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
         // always safe — it only forces an extra re-scan, never a stale read).
         QuantityRef::TargetControllerCounter { kind: _ } => Axes::CONSERVATIVE,
         QuantityRef::Variable { name: _ } => Axes::NONE,
-        QuantityRef::Power { scope, .. } => {
+        QuantityRef::Power { scope, .. } | QuantityRef::BasePower { scope, .. } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
