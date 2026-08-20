@@ -7552,6 +7552,7 @@ impl QuantityRef {
             | QuantityRef::TargetControllerCounter { .. }
             | QuantityRef::Variable { .. }
             | QuantityRef::Power { .. }
+            | QuantityRef::BasePower { .. }
             | QuantityRef::Intensity { .. }
             | QuantityRef::Toughness { .. }
             | QuantityRef::ObjectManaValue { .. }
