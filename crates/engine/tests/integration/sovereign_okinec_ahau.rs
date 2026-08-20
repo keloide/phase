@@ -5,10 +5,11 @@
 //! a number of +1/+1 counters on that creature equal to the difference."
 //!
 //! The scenario exercises the real Oracle parser and combat/trigger pipeline.
-//! A pumped creature is the discriminating member: current power 4 versus base
-//! power 2 produces two counters. An unpumped creature remains at zero. The
-//! repeated body must rebind both the ParentTarget recipient and the difference
-//! operands independently for each member.
+//! A pumped creature is the discriminating member: a layer-7c +2/+0 effect
+//! makes current power 4 versus base power 2, producing two counters. An
+//! unpumped creature remains at zero. The repeated body must rebind both the
+//! ParentTarget recipient and the difference operands independently for each
+//! member.
 //!
 //! CR references (verified against docs/MagicCompRules.txt):
 //! - CR 508.1a: the active player chooses which creatures attack.
@@ -50,7 +51,7 @@ fn attacks_put_difference_counters_on_each_pumped_creature() {
 
     let pumped = {
         let mut creature = scenario.add_creature(P0, "Pumped Creature", 2, 2);
-        creature.with_plus_counters(2);
+        creature.with_continuous_static(vec![ContinuousModification::AddPower { value: 2 }]);
         creature.id()
     };
     let unpumped = scenario.add_creature(P0, "Unpumped Creature", 2, 2).id();
@@ -61,7 +62,7 @@ fn attacks_put_difference_counters_on_each_pumped_creature() {
 
     assert_eq!(
         plus_one_counters(&runner, pumped),
-        4,
+        2,
         "power 4 minus base power 2 must add two +1/+1 counters"
     );
     assert_eq!(
