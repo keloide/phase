@@ -10510,6 +10510,69 @@ fn draw_cards_equal_to_hand_difference_from_limit() {
     }
 }
 
+/// CR 608.2c: an `Otherwise` branch must inherit a comparison-derived
+/// "the difference" from the same conditional definition as its then branch.
+/// The else chain is parsed independently, so the assembly pass must replace
+/// its deferred `Variable("difference")` with the antecedent's typed operands.
+#[test]
+fn otherwise_branch_binds_difference_from_antecedent_condition() {
+    let def = parse_effect_chain(
+        "If you have fewer than seven cards in hand, draw a card. Otherwise, draw cards equal to the difference.",
+        AbilityKind::Spell,
+    );
+
+    assert_eq!(
+        def.condition,
+        Some(AbilityCondition::QuantityCheck {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::HandSize {
+                    player: PlayerScope::Controller,
+                },
+            },
+            comparator: Comparator::LT,
+            rhs: QuantityExpr::Fixed { value: 7 },
+        }),
+        "then branch must retain the comparison that establishes the difference"
+    );
+    assert!(matches!(*def.effect, Effect::Draw { .. }));
+
+    let else_branch = def
+        .else_ability
+        .as_deref()
+        .expect("Otherwise must attach to the comparison-gated draw");
+    match else_branch.effect.as_ref() {
+        Effect::Draw {
+            count: QuantityExpr::Difference { left, right },
+            target: TargetFilter::Controller,
+        } => {
+            assert_eq!(
+                **left,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::HandSize {
+                        player: PlayerScope::Controller,
+                    },
+                }
+            );
+            assert_eq!(**right, QuantityExpr::Fixed { value: 7 });
+        }
+        other => panic!(
+            "Otherwise draw must contain the typed comparison-derived Difference, got {other:?}"
+        ),
+    }
+    assert!(
+        !matches!(
+            else_branch.effect.as_ref(),
+            Effect::Draw {
+                count: QuantityExpr::Ref {
+                    qty: QuantityRef::Variable { name }
+                },
+                ..
+            } if name == "difference"
+        ),
+        "Otherwise must not retain an unresolved difference placeholder"
+    );
+}
+
 /// CR 121.1 + CR 402: "if that player has more cards in hand than you, draw cards
 /// equal to the difference" — cross-player difference. Anchor: Slithermuse.
 #[test]
