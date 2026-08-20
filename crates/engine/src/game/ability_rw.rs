@@ -3942,7 +3942,15 @@ fn share_quality_operand_read(f: &TargetFilter) -> RwProfile {
         | TargetFilter::SelfRef
         | TargetFilter::SourceOrPaired => RwProfile::empty(),
         // Fail-closed: any other reference is a live board characteristic read.
-        _ => reads_board_of(StateKind::ObjectPt),
+        _ => {
+            let mut p = reads_board_of(StateKind::ObjectPt);
+            // CR 613.4c: this live board characteristic carrier observes the
+            // post-counter value, so an ObjectCounters write remains a real
+            // dependency. Keep the scope on the board row; frozen and
+            // per-resolution operands above must stay independent.
+            p.current_pt_reads.add(PtReadScope::Board);
+            p
+        }
     }
 }
 
