@@ -6100,7 +6100,10 @@ fn parse_for_each_controlled_type_with_property(input: &str) -> OracleResult<'_,
     let (rest, tf) = parse_type_filter_word(rest)?;
     let (rest, _) = tag(" you").parse(rest)?;
     let (rest, _) = opt(tag(" already")).parse(rest)?;
-    let (rest, _) = tag(" control").parse(rest)?;
+    // Keep the separator after "control" so the shared property parser sees
+    // its own `with` dispatch token. Returning after the bare controller phrase
+    // would otherwise leave the comparison suffix unconsumed.
+    let (rest, _) = tag(" control ").parse(rest)?;
     let (rest, property) = super::filter::parse_with_property(rest)?;
 
     let mut properties = Vec::new();
