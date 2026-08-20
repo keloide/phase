@@ -7694,6 +7694,9 @@ mod tests {
             QuantityRef::Power {
                 scope: ObjectScope::Source,
             },
+            QuantityRef::BasePower {
+                scope: ObjectScope::Source,
+            },
             QuantityRef::CountersOn {
                 scope: ObjectScope::Source,
                 counter_type: None,
@@ -7741,6 +7744,11 @@ mod tests {
         // (1) ObjectScope::EventSource via QuantityRef::Power.
         assert!(ability_uses_event_context(&ability_with_amount(
             QuantityRef::Power {
+                scope: ObjectScope::EventSource,
+            }
+        )));
+        assert!(ability_uses_event_context(&ability_with_amount(
+            QuantityRef::BasePower {
                 scope: ObjectScope::EventSource,
             }
         )));
@@ -8039,6 +8047,11 @@ mod tests {
         // Source power (Orcish Siegemaster class) is a sibling-mutable read.
         assert!(ability_reads_sibling_mutable(&ability_with_amount(
             QuantityRef::Power {
+                scope: ObjectScope::Source
+            }
+        )));
+        assert!(ability_reads_sibling_mutable(&ability_with_amount(
+            QuantityRef::BasePower {
                 scope: ObjectScope::Source
             }
         )));

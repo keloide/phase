@@ -602,6 +602,10 @@ pub(crate) struct RwProfile {
     /// single-bit read fact (precedent: `legacy_batch_prompt`); `drop_writes` keeps
     /// it (a read).
     reads_member_bound: bool,
+    /// CR 613.4b-c: whether the profile reads live power/toughness after
+    /// layer 7c. A `BasePower` read shares the ObjectPt axis for ordinary
+    /// conflicts, but ObjectCounters feed only this live subset.
+    reads_current_pt: bool,
     /// Writes scoped to the member's own Source/Recipient object.
     writes_self: KindSet,
     /// Board-/player-/stack-scoped writes (INCLUDES creation, event-object, and
@@ -687,6 +691,7 @@ impl RwProfile {
             reads_event_live: false,
             legacy_batch_prompt: false,
             reads_member_bound: false,
+            reads_current_pt: false,
             writes_self: KindSet::EMPTY,
             writes_external: KindSet::EMPTY,
             writes_event_object: KindSet::EMPTY,
@@ -730,6 +735,7 @@ impl RwProfile {
         // CR 603.10a: an unclassified subtree may consult a per-member binding ⇒
         // fail-closed (refuses batch-T1).
         p.reads_member_bound = true;
+        p.reads_current_pt = true;
         p
     }
 
@@ -741,6 +747,7 @@ impl RwProfile {
         self.reads_event_live |= o.reads_event_live;
         self.legacy_batch_prompt |= o.legacy_batch_prompt;
         self.reads_member_bound |= o.reads_member_bound;
+        self.reads_current_pt |= o.reads_current_pt;
         self.writes_self = self.writes_self.union(o.writes_self);
         self.writes_external = self.writes_external.union(o.writes_external);
         self.writes_event_object = self.writes_event_object.union(o.writes_event_object);
@@ -938,6 +945,7 @@ fn feeds(
     write_census: &Census,
     read_zones: &ZoneSpan,
     write_zones: &ZoneSpan,
+    reads_current_pt: bool,
     spans: SpanGate,
 ) -> bool {
     // PR-6.75 (CR 102.2/109.5): under `UniformAligned`, a player-keyed read and
@@ -971,7 +979,7 @@ fn feeds(
         return true;
     }
     // CR 122.1 + CR 613.4: counters change P/T.
-    if reads.object_pt && writes.object_counters {
+    if reads_current_pt && reads.object_pt && writes.object_counters {
         return true;
     }
     // CR 119.3: a life write feeds a life-change journal read.
@@ -1164,6 +1172,7 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         &src_write_census,
         &p.reads_membership_zones,
         &src_write_zones,
+        p.reads_current_pt,
         // §4.5: no player-kind read routes to `reads_src`, so the gated rows never
         // fire here — pass the inert ungated bundle (fail-closed, documented).
         SpanGate::ungated(),
@@ -1226,6 +1235,7 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         &board_write_census,
         &p.reads_membership_zones,
         &board_write_zones,
+        p.reads_current_pt,
         board_spans,
     ) {
         return true;
@@ -3773,6 +3783,9 @@ fn characteristic_source_read_bounded(source: &CardTypeSetSource) -> RwProfile {
 /// value kind AND `SetMembership` (a membership write changes the aggregate, §2).
 fn board_value_aggregate_read(filter: &TargetFilter, value: StateKind) -> RwProfile {
     let mut p = board_membership_read(filter);
+    if matches!(value, StateKind::ObjectPt) {
+        p.reads_current_pt = true;
+    }
     if filter_is_self_scoped(filter) {
         p.reads_src.set(value);
     } else {
@@ -6054,9 +6067,12 @@ fn rw_quantity_ref(x: &QuantityRef) -> RwProfile {
         QuantityRef::CountersOn { scope, .. } | QuantityRef::Intensity { scope, .. } => {
             read_object_scope(scope, StateKind::ObjectCounters)
         }
-        QuantityRef::Power { scope, .. }
-        | QuantityRef::BasePower { scope, .. }
-        | QuantityRef::Toughness { scope, .. }
+        QuantityRef::Power { scope, .. } | QuantityRef::Toughness { scope, .. } => {
+            let mut p = read_object_scope(scope, StateKind::ObjectPt);
+            p.reads_current_pt = true;
+            p
+        }
+        QuantityRef::BasePower { scope, .. }
         | QuantityRef::ObjectManaValue { scope, .. }
         | QuantityRef::ObjectColorCount { scope, .. }
         | QuantityRef::ObjectNameWordCount { scope, .. }
@@ -7123,6 +7139,11 @@ mod tests {
             scope: ObjectScope::Source,
         }
     }
+    fn base_power_src() -> QuantityRef {
+        QuantityRef::BasePower {
+            scope: ObjectScope::Source,
+        }
+    }
     fn tough_recip() -> QuantityRef {
         QuantityRef::Toughness {
             scope: ObjectScope::Recipient,
@@ -7597,6 +7618,18 @@ mod tests {
             qcheck(power_src(), 6),
         );
         assert!(conflicts(&a, &se()));
+    }
+
+    #[test]
+    fn base_power_read_does_not_feed_from_counter_write() {
+        // CR 208.4b + CR 613.4b: counters modify current P/T in layer 7c,
+        // but a base-power read observes the layer-7b carrier and must not
+        // create a false dependency on the counter writer.
+        let a = cond(
+            ra(put_counter_all(qfix(1), creature())),
+            qcheck(base_power_src(), 4),
+        );
+        assert!(!conflicts(&a, &se()));
     }
 
     #[test]
@@ -8549,16 +8582,16 @@ mod tests {
         let (nc, nz) = (Census::None, ZoneSpan::None);
         let sg = SpanGate::ungated();
         assert!(
-            feeds(ts, ts, &nc, &nc, &nz, &nz, sg),
+            feeds(ts, ts, &nc, &nc, &nz, &nz, false, sg),
             "TurnStructure read × write ⇒ self-conflict"
         );
         let pt = KindSet::one(StateKind::ObjectPt);
         assert!(
-            !feeds(pt, ts, &nc, &nc, &nz, &nz, sg),
+            !feeds(pt, ts, &nc, &nc, &nz, &nz, false, sg),
             "TurnStructure write does not feed ObjectPt"
         );
         assert!(
-            !feeds(ts, pt, &nc, &nc, &nz, &nz, sg),
+            !feeds(ts, pt, &nc, &nc, &nz, &nz, false, sg),
             "ObjectPt write does not feed TurnStructure"
         );
     }

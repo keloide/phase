@@ -325,6 +325,7 @@ pub(crate) fn apply_flipped_face_to_object(obj: &mut GameObject, face: BackFaceD
     // CR 710.1b: alternative power and toughness.
     obj.power = face.power;
     obj.base_power = face.power;
+    obj.layer_base_power = face.power;
     obj.toughness = face.toughness;
     obj.base_toughness = face.toughness;
 

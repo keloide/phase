@@ -2098,6 +2098,9 @@ fn seed_live_characteristics_from_base(obj: &mut crate::game::game_object::GameO
     obj.name = obj.base_name.clone();
     obj.power = obj.base_power;
     obj.toughness = obj.base_toughness;
+    // CR 208.4b + CR 613.4b: layer 7b starts from the printed/copiable base;
+    // later 7b setters update this carrier while 7c leaves it unchanged.
+    obj.layer_base_power = obj.base_power;
     obj.loyalty = obj.base_loyalty;
     obj.card_types = obj.base_card_types.clone();
     obj.mana_cost = obj.base_mana_cost.clone();
@@ -7768,6 +7771,9 @@ fn apply_continuous_effect_filtered(
             }
             ContinuousModification::SetPower { value } => {
                 obj.power = Some(*value);
+                // CR 613.4b: a fixed set effect changes current base power,
+                // not only the post-layer live power field.
+                obj.layer_base_power = Some(*value);
             }
             ContinuousModification::SetToughness { value } => {
                 obj.toughness = Some(*value);
@@ -8124,6 +8130,9 @@ fn apply_continuous_effect_filtered(
             ContinuousModification::SetDynamicPower { .. } => {
                 if let Some(val) = dynamic_pt {
                     obj.power = Some(val);
+                    // CR 613.4a: a characteristic-defining power sets the
+                    // current base power before layer-7b set effects run.
+                    obj.layer_base_power = Some(val);
                 }
             }
             ContinuousModification::SetDynamicToughness { .. } => {
@@ -8135,6 +8144,9 @@ fn apply_continuous_effect_filtered(
             ContinuousModification::SetPowerDynamic { .. } => {
                 if let Some(val) = dynamic_pt {
                     obj.power = Some(val);
+                    // CR 613.4b: dynamic layer-7b setters share the same
+                    // authoritative current-base carrier as fixed setters.
+                    obj.layer_base_power = Some(val);
                 }
             }
             // CR 613.4b: Layer 7b — set base toughness to dynamic value.

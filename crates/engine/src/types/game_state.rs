@@ -20370,7 +20370,7 @@ impl GameState {
                 keywords: object.keywords.clone(),
                 power: object.power,
                 toughness: object.toughness,
-                base_power: object.base_power,
+                base_power: object.layer_base_power.or(object.base_power),
                 base_toughness: object.base_toughness,
                 mana_value: object.effective_mana_value(),
                 counters: object.counters.clone(),

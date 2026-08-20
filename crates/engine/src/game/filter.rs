@@ -5302,7 +5302,11 @@ fn pt_value_from_pair(stat: PtStat, power: Option<i32>, toughness: Option<i32>) 
 fn object_pt_value(obj: &GameObject, stat: PtStat, scope: PtValueScope) -> i32 {
     match scope {
         PtValueScope::Current => pt_value_from_pair(stat, obj.power, obj.toughness),
-        PtValueScope::Base => pt_value_from_pair(stat, obj.base_power, obj.base_toughness),
+        PtValueScope::Base => pt_value_from_pair(
+            stat,
+            obj.layer_base_power.or(obj.base_power),
+            obj.base_toughness,
+        ),
     }
 }
 
@@ -6054,7 +6058,9 @@ fn matches_filter_prop(
         // CR 208.1 + CR 613.4b: Match creatures whose current (post-layer) power
         // exceeds their base power (layer-7b baseline incl. CDA, before
         // counters/pumps in 7c–7e).
-        FilterProp::PowerExceedsBase => obj.power.unwrap_or(0) > obj.base_power.unwrap_or(0),
+        FilterProp::PowerExceedsBase => {
+            obj.power.unwrap_or(0) > obj.layer_base_power.or(obj.base_power).unwrap_or(0)
+        }
         // Match objects whose name differs from all controlled battlefield objects matching the filter.
         FilterProp::DifferentNameFrom { filter } => {
             let controller = source.controller.unwrap_or(PlayerId(0));

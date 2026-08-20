@@ -28474,50 +28474,6 @@ pub(crate) fn is_difference_anaphor_placeholder(expr: &QuantityExpr) -> bool {
     )
 }
 
-/// CR 208.4b + CR 608.2c: Bind "equal to the difference" inside a member-driven
-/// `repeat_for` whose population is selected by current power exceeding base
-/// power. The enclosing loop rebinds its `ParentTarget` to each member, so the
-/// two operands must use the same recipient-relative object scope. This keeps
-/// the binding general for every future "for each ... with power greater than
-/// that creature's base power ... equal to the difference" clause.
-fn difference_expr_for_repeat_for(repeat_for: &QuantityExpr) -> Option<QuantityExpr> {
-    let QuantityExpr::Ref {
-        qty: QuantityRef::ObjectCount { filter },
-    } = repeat_for
-    else {
-        return None;
-    };
-
-    fn filter_has_power_exceeds_base(filter: &TargetFilter) -> bool {
-        match filter {
-            TargetFilter::Typed(typed) => typed
-                .properties
-                .iter()
-                .any(|property| matches!(property, FilterProp::PowerExceedsBase)),
-            TargetFilter::Or { filters } | TargetFilter::And { filters } => {
-                filters.iter().any(filter_has_power_exceeds_base)
-            }
-            TargetFilter::Not { filter } | TargetFilter::TrackedSetFiltered { filter, .. } => {
-                filter_has_power_exceeds_base(filter)
-            }
-            _ => false,
-        }
-    }
-
-    filter_has_power_exceeds_base(filter).then(|| QuantityExpr::Difference {
-        left: Box::new(QuantityExpr::Ref {
-            qty: QuantityRef::Power {
-                scope: ObjectScope::Recipient,
-            },
-        }),
-        right: Box::new(QuantityExpr::Ref {
-            qty: QuantityRef::BasePower {
-                scope: ObjectScope::Recipient,
-            },
-        }),
-    })
-}
-
 /// CR 608.2c: Resolve every deferred "the difference" count-anaphor placeholder
 /// anywhere in an ability's effect tree — the single authority for both the
 /// trigger seam (`lower_trigger_ir`, Drizzt Do'Urden) and the spell clause
@@ -32464,24 +32420,25 @@ pub(crate) fn parse_effect_chain_ir(
         // target permanent, put another counter of that kind on it or remove one
         // from it" — Dramatist's Puppet, Quarry Hauler), whose target and choice
         // would likewise be dropped by the generic strip.
-        let (repeat_for, text, for_each_reference_target) = if try_parse_proliferate_target(&text)
-            .is_some()
-            || try_parse_for_each_counter_kind_adjust_target(&text).is_some()
-        {
-            (None, text, None)
-        } else if let Some(stripped) = strip_redundant_flip_win_quantifier(&text) {
-            // CR 705.2: "for each flip you won, <effect>" (Mirror March) — the flip
-            // loop (`finish_until_lose`) already runs the win effect once per win,
-            // so the quantifier is redundant. Drop it (no `repeat_for`) so the bare
-            // copy clause reaches `CopyTokenOf` instead of an `Unimplemented` "for"
-            // fallback (#5966).
-            (None, stripped, None)
-        } else {
-            let reference_target = for_each_clause_target_controller_filter(&text);
-            let (repeat_for, text) = super::clause_shell::peel_for_each_prefix(&text);
-            let reference_target = repeat_for.as_ref().and(reference_target);
-            (repeat_for, text, reference_target)
-        };
+        let (repeat_for, text, for_each_reference_target, repeat_for_difference) =
+            if try_parse_proliferate_target(&text).is_some()
+                || try_parse_for_each_counter_kind_adjust_target(&text).is_some()
+            {
+                (None, text, None, None)
+            } else if let Some(stripped) = strip_redundant_flip_win_quantifier(&text) {
+                // CR 705.2: "for each flip you won, <effect>" (Mirror March) — the flip
+                // loop (`finish_until_lose`) already runs the win effect once per win,
+                // so the quantifier is redundant. Drop it (no `repeat_for`) so the bare
+                // copy clause reaches `CopyTokenOf` instead of an `Unimplemented` "for"
+                // fallback (#5966).
+                (None, stripped, None, None)
+            } else {
+                let reference_target = for_each_clause_target_controller_filter(&text);
+                let (repeat_for, difference, text) =
+                    lower::strip_for_each_prefix_with_difference(&text);
+                let reference_target = repeat_for.as_ref().and(reference_target);
+                (repeat_for, text, reference_target, difference)
+            };
         let (text_without_where_x, local_where_x_expression) = {
             let text_where_x_lower = text.to_lowercase();
             let (without_where_x, where_x_expression) =
@@ -33399,8 +33356,6 @@ pub(crate) fn parse_effect_chain_ir(
             // before the trigger seam runs, breaking every difference-counter
             // trigger. A spell's difference operands always ride the same clause
             // (Hit the Mother Lode), so `Some(bound)` is the only case to handle.
-            let repeat_for_difference =
-                repeat_for.as_ref().and_then(difference_expr_for_repeat_for);
             if let Some(bound) = effective_condition
                 .and_then(conditions::difference_expr)
                 .or(repeat_for_difference)

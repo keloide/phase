@@ -3607,15 +3607,15 @@ fn resolve_ref(
             |obj| obj.power,
             |lki| lki.power,
         ),
-        // CR 208.4b + CR 613.4b: base power is the layer-7a/7b value, before
-        // counters and other power-modifying effects in layer 7c.
+        // CR 208.4b + CR 613.4a-b: base power is the current layer-7a/7b
+        // value, before counters and other power-modifying effects in layer 7c.
         QuantityRef::BasePower { scope } => resolve_object_pt(
             state,
             *scope,
             ctx,
             targets,
             ability,
-            |obj| obj.base_power,
+            |obj| obj.layer_base_power.or(obj.base_power),
             |lki| lki.base_power,
         ),
         // Digital-only Alchemy: read the object's current intensity. The reader

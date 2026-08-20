@@ -153,6 +153,7 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
     obj.color = color.clone();
     obj.base_power = power;
     obj.base_toughness = toughness;
+    obj.layer_base_power = power;
     obj.base_name = card_face.name.clone();
     obj.base_loyalty = loyalty;
     obj.base_printed_loyalty = printed_loyalty;
@@ -317,6 +318,7 @@ pub fn apply_back_face_to_object(obj: &mut GameObject, back_face: BackFaceData) 
     obj.color = back_face.color.clone();
     obj.base_power = back_face.power;
     obj.base_toughness = back_face.toughness;
+    obj.layer_base_power = back_face.power;
     obj.base_name = back_face.name.clone();
     obj.base_loyalty = back_face.loyalty;
     obj.base_printed_loyalty = back_face.printed_loyalty;
@@ -667,6 +669,9 @@ pub fn apply_copiable_values(
     obj.card_types = values.card_types.clone();
     obj.power = values.power;
     obj.toughness = values.toughness;
+    // CR 613.1a + CR 613.4b: a copy replaces the copiable baseline seen by
+    // subsequent layer-7b/base-power reads until the next layer reset.
+    obj.layer_base_power = values.power;
     obj.loyalty = values.loyalty;
     obj.printed_loyalty = values.printed_loyalty;
     obj.keywords = values.keywords.clone();
@@ -715,6 +720,7 @@ pub fn install_copiable_values_as_base(obj: &mut GameObject, values: &CopiableVa
     obj.base_card_types = values.card_types.clone();
     obj.base_power = values.power;
     obj.base_toughness = values.toughness;
+    obj.layer_base_power = values.power;
     obj.base_loyalty = values.loyalty;
     obj.base_printed_loyalty = values.printed_loyalty;
     obj.base_keywords = values.keywords.clone();

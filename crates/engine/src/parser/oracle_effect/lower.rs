@@ -3913,7 +3913,46 @@ fn is_chain_veil_for_each_grant(lower: &str) -> bool {
     )
 }
 
+/// CR 208.4b + CR 608.2c: The parser's direct typed-property product is the
+/// only for-each population that establishes this recipient-relative
+/// difference. Compound filter operators are intentionally not searched:
+/// their presence does not establish which comparison selected a member.
+fn difference_binding_for_repeat_quantity(qty: &QuantityRef) -> Option<QuantityExpr> {
+    let QuantityRef::ObjectCount {
+        filter: TargetFilter::Typed(TypedFilter { properties, .. }),
+    } = qty
+    else {
+        return None;
+    };
+    properties
+        .iter()
+        .any(|property| matches!(property, FilterProp::PowerExceedsBase))
+        .then(|| QuantityExpr::Difference {
+            left: Box::new(QuantityExpr::Ref {
+                qty: QuantityRef::Power {
+                    scope: ObjectScope::Recipient,
+                },
+            }),
+            right: Box::new(QuantityExpr::Ref {
+                qty: QuantityRef::BasePower {
+                    scope: ObjectScope::Recipient,
+                },
+            }),
+        })
+}
+
 pub(crate) fn strip_for_each_prefix(text: &str) -> (Option<QuantityExpr>, String) {
+    let (repeat_for, _, rest) = strip_for_each_prefix_with_difference(text);
+    (repeat_for, rest)
+}
+
+/// CR 608.2c + CR 208.4b: Peel a leading `for each` prefix while preserving
+/// comparison provenance from the parser product. The optional binding is
+/// produced only by the dedicated controller-scoped `PowerExceedsBase` parser
+/// arm; it is not inferred by searching an arbitrary filter tree later.
+pub(crate) fn strip_for_each_prefix_with_difference(
+    text: &str,
+) -> (Option<QuantityExpr>, Option<QuantityExpr>, String) {
     let lower = text.to_lowercase();
     if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("for each ")).parse(i)) {
         let rest_lower = &lower[text.len() - rest.len()..];
@@ -3934,11 +3973,11 @@ pub(crate) fn strip_for_each_prefix(text: &str) -> (Option<QuantityExpr>, String
                         .trim()
                         .eq_ignore_ascii_case("add one mana of that color")
                 {
-                    return (None, text.to_string());
+                    return (None, None, text.to_string());
                 }
                 let mut copy_ctx = ParseContext::default();
                 if parse_for_each_object_copy_parts(text, &lower, &mut copy_ctx).is_some() {
-                    return (None, text.to_string());
+                    return (None, None, text.to_string());
                 }
                 // CR 606.3: The Chain Veil's "For each planeswalker you control,
                 // you may activate one of its loyalty abilities once this turn..."
@@ -3948,14 +3987,56 @@ pub(crate) fn strip_for_each_prefix(text: &str) -> (Option<QuantityExpr>, String
                 // a repeat count. Bailing out keeps the residual text intact so
                 // the imperative dispatch can recognize the full pattern.
                 if is_chain_veil_for_each_grant(&lower) {
-                    return (None, text.to_string());
+                    return (None, None, text.to_string());
                 }
                 let offset = text.len() - remainder.len();
-                return (Some(QuantityExpr::Ref { qty }), text[offset..].to_string());
+                let difference = difference_binding_for_repeat_quantity(&qty);
+                return (
+                    Some(QuantityExpr::Ref { qty }),
+                    difference,
+                    text[offset..].to_string(),
+                );
             }
         }
     }
-    (None, text.to_string())
+    (None, None, text.to_string())
+}
+
+#[cfg(test)]
+mod difference_binding_tests {
+    use super::{difference_binding_for_repeat_quantity, strip_for_each_prefix_with_difference};
+    use crate::types::ability::{FilterProp, QuantityRef, TargetFilter, TypedFilter};
+
+    #[test]
+    fn comparison_parser_product_carries_difference_provenance() {
+        let (repeat_for, difference, rest) = strip_for_each_prefix_with_difference(
+            "for each creature you control with power greater than that creature's base power, put a counter",
+        );
+        assert!(repeat_for.is_some());
+        assert!(difference.is_some());
+        assert_eq!(rest, "put a counter");
+    }
+
+    #[test]
+    fn nested_not_and_or_properties_do_not_bind_difference() {
+        let property = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![],
+            controller: None,
+            properties: vec![FilterProp::PowerExceedsBase],
+        });
+        let not = QuantityRef::ObjectCount {
+            filter: TargetFilter::Not {
+                filter: Box::new(property.clone()),
+            },
+        };
+        let or = QuantityRef::ObjectCount {
+            filter: TargetFilter::Or {
+                filters: vec![TargetFilter::Typed(TypedFilter::default()), property],
+            },
+        };
+        assert!(difference_binding_for_repeat_quantity(&not).is_none());
+        assert!(difference_binding_for_repeat_quantity(&or).is_none());
+    }
 }
 
 /// CR 705.2: Strip the redundant `"for each flip you won, "` (Mirror March)

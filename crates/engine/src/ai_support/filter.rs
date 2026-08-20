@@ -693,7 +693,7 @@ fn object_fingerprint(state: &GameState, id: ObjectId) -> Option<ObjectFingerpri
         counters: obj.counters.clone(),
         power: obj.power,
         toughness: obj.toughness,
-        base_power: obj.base_power,
+        base_power: obj.layer_base_power.or(obj.base_power),
         name: obj.name.clone(),
         foretold: obj.foretold,
         is_saddled: obj.is_saddled,

@@ -8,17 +8,19 @@
 //! A pumped creature is the discriminating member: current power 4 versus base
 //! power 2 produces two counters. An unpumped creature remains at zero. The
 //! repeated body must rebind both the ParentTarget recipient and the difference
-//! operands for each member.
+//! operands independently for each member.
 //!
 //! CR references (verified against docs/MagicCompRules.txt):
 //! - CR 508.1a: the active player chooses which creatures attack.
 //! - CR 603.2: the attack event automatically triggers the ability.
 //! - CR 608.2c: the controller follows the instructions in order, including the
 //!   per-member repeat and its counter instruction.
-//! - CR 208.4b + CR 613.4b: base power is read before modifying counters.
-//! - CR 122.1a: +1/+1 counters modify a creature's power and toughness.
+//! - CR 208.4b + CR 613.4a-b: base power includes layer-7a/7b set effects;
+//!   counters are applied afterward.
+//! - CR 122.1a + CR 613.4c: +1/+1 counters modify a creature's power and
+//!   toughness in layer 7c.
 
-use engine::game::scenario::{GameRunner, GameScenario, P0};
+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
 use engine::types::phase::Phase;
@@ -86,6 +88,10 @@ fn attacks_use_the_layer_7b_base_power_not_printed_power() {
     );
     scenario.add_enchantment_from_oracle(P0, "Power Anthem", "Creatures you control get +3/+0.");
     let layered_creature = scenario.add_creature(P0, "Layered Creature", 1, 1).id();
+    let second_layered_creature = scenario
+        .add_creature(P0, "Second Layered Creature", 2, 2)
+        .id();
+    let opponent_creature = scenario.add_creature(P1, "Opponent Creature", 2, 2).id();
     let mut runner = scenario.build();
 
     run_combat(&mut runner, vec![sovereign], vec![]);
@@ -95,6 +101,21 @@ fn attacks_use_the_layer_7b_base_power_not_printed_power() {
         plus_one_counters(&runner, layered_creature),
         3,
         "current power 7 minus layer-7b base power 4 must add three counters, not six from printed power 1"
+    );
+    assert_eq!(
+        plus_one_counters(&runner, second_layered_creature),
+        1,
+        "the second eligible creature must receive its own difference: 5 minus 4"
+    );
+    assert_eq!(
+        plus_one_counters(&runner, sovereign),
+        3,
+        "Sovereign is eligible under the same layer effects and must receive its own difference"
+    );
+    assert_eq!(
+        plus_one_counters(&runner, opponent_creature),
+        0,
+        "an opponent's creature is outside Sovereign's controlled-creature filter"
     );
 }
 

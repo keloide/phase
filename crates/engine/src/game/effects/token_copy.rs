@@ -1518,6 +1518,7 @@ fn apply_token_modifications(
                 if let Some(token) = state.objects.get_mut(&token_id) {
                     token.base_power = Some(*value);
                     token.power = Some(*value);
+                    token.layer_base_power = Some(*value);
                 }
             }
             ContinuousModification::SetToughness { value } => {
@@ -1532,6 +1533,7 @@ fn apply_token_modifications(
                 if let Some(token) = state.objects.get_mut(&token_id) {
                     token.base_power = token.base_power.map(|p| p + *value);
                     token.power = token.power.map(|p| p + *value);
+                    token.layer_base_power = token.layer_base_power.map(|p| p + *value);
                 }
             }
             ContinuousModification::AddToughness { value } => {
@@ -1553,6 +1555,7 @@ fn apply_token_modifications(
                 if let Some(token) = state.objects.get_mut(&token_id) {
                     token.base_power = Some(val);
                     token.power = Some(val);
+                    token.layer_base_power = Some(val);
                 }
             }
             ContinuousModification::SetToughnessDynamic { value } => {
@@ -1748,6 +1751,7 @@ pub(crate) fn apply_immediate_copy_token_modifications_to_object(
             ContinuousModification::SetPower { value } => {
                 token.base_power = Some(*value);
                 token.power = Some(*value);
+                token.layer_base_power = Some(*value);
             }
             ContinuousModification::SetToughness { value } => {
                 token.base_toughness = Some(*value);
@@ -1756,6 +1760,7 @@ pub(crate) fn apply_immediate_copy_token_modifications_to_object(
             ContinuousModification::AddPower { value } => {
                 token.base_power = token.base_power.map(|p| p + *value);
                 token.power = token.power.map(|p| p + *value);
+                token.layer_base_power = token.layer_base_power.map(|p| p + *value);
             }
             ContinuousModification::AddToughness { value } => {
                 token.base_toughness = token.base_toughness.map(|t| t + *value);
