@@ -328,6 +328,7 @@ pub(crate) fn apply_flipped_face_to_object(obj: &mut GameObject, face: BackFaceD
     obj.layer_base_power = face.power;
     obj.toughness = face.toughness;
     obj.base_toughness = face.toughness;
+    obj.layer_base_toughness = face.toughness;
 
     // CR 306.5b + CR 310.4b: loyalty/defense track the alternative type line.
     obj.loyalty = face.loyalty;

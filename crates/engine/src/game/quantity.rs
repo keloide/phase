@@ -1559,12 +1559,16 @@ fn quantity_ref_characteristic_reads(qty: &QuantityRef, depth: u32) -> Character
         }
 
         // ---- Single-object characteristic reads. ----
-        // CR 208.1 / CR 209.1.
+        // CR 208.1 / CR 209.1: power and toughness are single-object
+        // characteristic reads.
         QuantityRef::Power { .. }
-        | QuantityRef::BasePower { .. }
         | QuantityRef::Toughness { .. } => {
             CharacteristicKinds::POWER_TOUGHNESS
         }
+        // CR 208.4b + CR 613.4b: BasePower reads the current base value after
+        // characteristic-defining and setting effects, before layer-7c
+        // modifications and counters.
+        QuantityRef::BasePower { .. } => CharacteristicKinds::POWER_TOUGHNESS,
         // CR 607.2b: power of a card in exile, read the same way.
         QuantityRef::ExiledCardPower { .. } => CharacteristicKinds::POWER_TOUGHNESS,
         // CR 202.3 / CR 107.4a.

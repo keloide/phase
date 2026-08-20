@@ -1525,6 +1525,7 @@ fn apply_token_modifications(
                 if let Some(token) = state.objects.get_mut(&token_id) {
                     token.base_toughness = Some(*value);
                     token.toughness = Some(*value);
+                    token.layer_base_toughness = Some(*value);
                 }
             }
             // CR 707.9b: fixed additive P/T exceptions are baked into the
@@ -1540,6 +1541,7 @@ fn apply_token_modifications(
                 if let Some(token) = state.objects.get_mut(&token_id) {
                     token.base_toughness = token.base_toughness.map(|t| t + *value);
                     token.toughness = token.toughness.map(|t| t + *value);
+                    token.layer_base_toughness = token.layer_base_toughness.map(|t| t + *value);
                 }
             }
             // CR 707.9b: "except its base power and toughness are each equal
@@ -1568,6 +1570,7 @@ fn apply_token_modifications(
                 if let Some(token) = state.objects.get_mut(&token_id) {
                     token.base_toughness = Some(val);
                     token.toughness = Some(val);
+                    token.layer_base_toughness = Some(val);
                 }
             }
             // CR 707.9b + CR 306.5b/c: Starting-loyalty exceptions are already
@@ -1756,6 +1759,7 @@ pub(crate) fn apply_immediate_copy_token_modifications_to_object(
             ContinuousModification::SetToughness { value } => {
                 token.base_toughness = Some(*value);
                 token.toughness = Some(*value);
+                token.layer_base_toughness = Some(*value);
             }
             ContinuousModification::AddPower { value } => {
                 token.base_power = token.base_power.map(|p| p + *value);
@@ -1765,6 +1769,7 @@ pub(crate) fn apply_immediate_copy_token_modifications_to_object(
             ContinuousModification::AddToughness { value } => {
                 token.base_toughness = token.base_toughness.map(|t| t + *value);
                 token.toughness = token.toughness.map(|t| t + *value);
+                token.layer_base_toughness = token.layer_base_toughness.map(|t| t + *value);
             }
             ContinuousModification::SetStartingLoyalty { value } => {
                 token.base_loyalty = Some(*value);

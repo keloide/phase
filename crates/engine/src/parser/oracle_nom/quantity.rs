@@ -6121,6 +6121,46 @@ fn parse_for_each_controlled_type_with_property(input: &str) -> OracleResult<'_,
     ))
 }
 
+/// CR 208.4b + CR 608.2c: Parse the one for-each comparison whose Oracle
+/// operands establish the recipient-relative "the difference" binding.
+///
+/// This is deliberately a parser product, not a later walk over `TargetFilter`:
+/// compound filters such as `Not` and `Or` may contain the same property without
+/// establishing that the comparison selected the repeated recipient.
+pub(crate) fn parse_for_each_clause_ref_with_difference(
+    input: &str,
+) -> OracleResult<'_, (QuantityRef, QuantityExpr)> {
+    let (rest, quantity) = parse_for_each_controlled_type_with_property(input)?;
+    let difference = match &quantity {
+        QuantityRef::ObjectCount {
+            filter: TargetFilter::Typed(TypedFilter { properties, .. }),
+        } => properties
+            .iter()
+            .find_map(difference_expr_for_direct_property),
+        _ => None,
+    }
+    .ok_or_else(|| oracle_err(input))?;
+    Ok((rest, (quantity, difference)))
+}
+
+/// CR 208.4b + CR 608.2c: Only the direct comparison property emitted by the
+/// dedicated parser arm establishes the recipient-relative difference. A
+/// negated property or a disjunctive property is not equivalent provenance.
+fn difference_expr_for_direct_property(property: &FilterProp) -> Option<QuantityExpr> {
+    matches!(property, FilterProp::PowerExceedsBase).then(|| QuantityExpr::Difference {
+        left: Box::new(QuantityExpr::Ref {
+            qty: QuantityRef::Power {
+                scope: ObjectScope::Recipient,
+            },
+        }),
+        right: Box::new(QuantityExpr::Ref {
+            qty: QuantityRef::BasePower {
+                scope: ObjectScope::Recipient,
+            },
+        }),
+    })
+}
+
 /// CR 115.1 + CR 707.10: "[other] <type> [you control] [on the battlefield] that
 /// [the] spell could target" — Zada ("other creature you control that the spell
 /// could target"), Ink-Treader Nephilim ("other creature that spell could target"),
@@ -7299,6 +7339,21 @@ mod tests {
             }
             other => panic!("expected ObjectCount(Typed), got {other:?}"),
         }
+    }
+
+    /// CR 208.4b + CR 608.2c: nested negation and unrelated disjunction do not
+    /// establish the direct comparison provenance used by "the difference".
+    #[test]
+    fn nested_filter_properties_do_not_bind_difference() {
+        let negated = FilterProp::Not {
+            prop: Box::new(FilterProp::PowerExceedsBase),
+        };
+        let unrelated_or = FilterProp::AnyOf {
+            props: vec![FilterProp::PowerExceedsBase, FilterProp::Token],
+        };
+        assert!(difference_expr_for_direct_property(&negated).is_none());
+        assert!(difference_expr_for_direct_property(&unrelated_or).is_none());
+        assert!(difference_expr_for_direct_property(&FilterProp::PowerExceedsBase).is_some());
     }
 
     /// CR 604.3 + CR 109.4: opponent-controlled and chosen-player CDA counts.

@@ -214,7 +214,7 @@ pub(crate) fn apply_zone_exit_cleanup(
                 // CR 208.4b + CR 613.4b: Capture the layer-7b base values so
                 // base-scope P/T look-back filters read the base, not current.
                 base_power: obj.layer_base_power.or(obj.base_power),
-                base_toughness: obj.base_toughness,
+                base_toughness: obj.layer_base_toughness.or(obj.base_toughness),
                 // CR 202.3d + CR 709.4b: this LKI is captured on leaving the
                 // battlefield or exile (off the stack), so a split card records
                 // its combined mana value and colors (no-op for single-face and

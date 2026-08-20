@@ -522,6 +522,11 @@ pub struct GameObject {
     /// layer-7a/7b setters, before layer-7c modifications are applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer_base_power: Option<i32>,
+    /// CR 208.4b + CR 613.4a-b: Current base toughness after layer 7a/7b set
+    /// effects. `base_toughness` remains the printed/copiable baseline; this
+    /// carrier stays paired with `layer_base_power` through layer evaluation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_base_toughness: Option<i32>,
     pub loyalty: Option<u32>,
     /// CR 306.5b: Printed loyalty is the entry-counter baseline; battlefield
     /// loyalty itself is counter-derived (CR 306.5c).
@@ -1325,6 +1330,7 @@ fn _gameobject_partition_is_total(o: &GameObject) {
         power: _,
         toughness: _,
         layer_base_power: _,
+        layer_base_toughness: _,
         loyalty: _,
         printed_loyalty: _,
         defense: _,
@@ -1695,6 +1701,7 @@ impl GameObject {
                 self.base_power = Some(*power);
                 self.base_toughness = Some(*toughness);
                 self.layer_base_power = Some(*power);
+                self.layer_base_toughness = Some(*toughness);
             }
             PerpetualModification::ModifyPowerToughness {
                 power_delta,
@@ -1713,6 +1720,7 @@ impl GameObject {
                 self.base_power = Some(base_power);
                 self.base_toughness = Some(base_toughness);
                 self.layer_base_power = Some(base_power);
+                self.layer_base_toughness = Some(base_toughness);
             }
             PerpetualModification::GrantKeywords { keywords } => {
                 for keyword in keywords {
@@ -1761,6 +1769,8 @@ impl GameObject {
                 }
                 self.base_power = Some(*power);
                 self.base_toughness = Some(*toughness);
+                self.layer_base_power = Some(*power);
+                self.layer_base_toughness = Some(*toughness);
                 for keyword in keywords {
                     if !self.base_keywords.contains(keyword) {
                         self.base_keywords.push(keyword.clone());
@@ -2078,7 +2088,7 @@ impl GameObject {
             // event-time base (a base-1/1 with a +1/+1 counter records base 1,
             // current 2).
             base_power: self.layer_base_power.or(self.base_power),
-            base_toughness: self.base_toughness,
+            base_toughness: self.layer_base_toughness.or(self.base_toughness),
             // CR 709.4b: Off the stack, a split card's colors are the combined
             // colors of both halves (`effective_colors` no-ops for single-face).
             colors: self.effective_colors(),
@@ -2126,6 +2136,9 @@ impl GameObject {
         }
         if self.base_toughness.is_none() && self.toughness.is_some() {
             self.base_toughness = self.toughness;
+        }
+        if self.layer_base_toughness.is_none() {
+            self.layer_base_toughness = self.base_toughness;
         }
         if self.base_loyalty.is_none() && self.loyalty.is_some() {
             self.base_loyalty = self.loyalty;
@@ -2220,6 +2233,7 @@ impl GameObject {
             power: None,
             toughness: None,
             layer_base_power: None,
+            layer_base_toughness: None,
             loyalty: None,
             printed_loyalty: None,
             defense: None,
@@ -2357,7 +2371,7 @@ impl GameObject {
             // CR 208.4b + CR 613.4b: Layer-7b base values, mirroring how
             // `power`/`toughness` capture the post-layer-7 current values.
             base_power: self.layer_base_power.or(self.base_power),
-            base_toughness: self.base_toughness,
+            base_toughness: self.layer_base_toughness.or(self.base_toughness),
             // CR 202.3d + CR 709.4b: combined mana value / colors for a split card
             // off the stack (no-op for single-face, on-stack, and battlefield
             // Rooms, which gate out) so look-back queries read the CR-correct
@@ -2568,6 +2582,7 @@ impl GameObject {
         self.power = self.base_power;
         self.toughness = self.base_toughness;
         self.layer_base_power = self.base_power;
+        self.layer_base_toughness = self.base_toughness;
         self.loyalty = self.base_loyalty;
         self.printed_loyalty = self.base_printed_loyalty;
         // CR 310.4a + CR 400.7: Battle defense reverts to printed baseline off the battlefield.

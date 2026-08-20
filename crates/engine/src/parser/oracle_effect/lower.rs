@@ -3913,34 +3913,6 @@ fn is_chain_veil_for_each_grant(lower: &str) -> bool {
     )
 }
 
-/// CR 208.4b + CR 608.2c: The parser's direct typed-property product is the
-/// only for-each population that establishes this recipient-relative
-/// difference. Compound filter operators are intentionally not searched:
-/// their presence does not establish which comparison selected a member.
-fn difference_binding_for_repeat_quantity(qty: &QuantityRef) -> Option<QuantityExpr> {
-    let QuantityRef::ObjectCount {
-        filter: TargetFilter::Typed(TypedFilter { properties, .. }),
-    } = qty
-    else {
-        return None;
-    };
-    properties
-        .iter()
-        .any(|property| matches!(property, FilterProp::PowerExceedsBase))
-        .then(|| QuantityExpr::Difference {
-            left: Box::new(QuantityExpr::Ref {
-                qty: QuantityRef::Power {
-                    scope: ObjectScope::Recipient,
-                },
-            }),
-            right: Box::new(QuantityExpr::Ref {
-                qty: QuantityRef::BasePower {
-                    scope: ObjectScope::Recipient,
-                },
-            }),
-        })
-}
-
 pub(crate) fn strip_for_each_prefix(text: &str) -> (Option<QuantityExpr>, String) {
     let (repeat_for, _, rest) = strip_for_each_prefix_with_difference(text);
     (repeat_for, rest)
@@ -3959,7 +3931,14 @@ pub(crate) fn strip_for_each_prefix_with_difference(
         if let Ok((remainder, clause)) =
             terminated(take_until(", "), tag::<_, _, OracleError<'_>>(", ")).parse(rest_lower)
         {
-            if let Some(qty) = parse_for_each_clause(clause) {
+            let parsed_comparison = nom_quantity::parse_for_each_clause_ref_with_difference(clause)
+                .ok()
+                .and_then(|(rest, parsed)| rest.is_empty().then_some(parsed));
+            let parsed_clause = parsed_comparison
+                .clone()
+                .map(|(qty, difference)| (qty, Some(difference)))
+                .or_else(|| parse_for_each_clause(clause).map(|qty| (qty, None)));
+            if let Some((qty, difference)) = parsed_clause {
                 // CR 105.1: "for each color among [X], add one mana of that color"
                 // must NOT be split into (repeat_for, "add one mana of that color").
                 // The "that color" anaphors the per-iteration color, not the
@@ -3990,7 +3969,6 @@ pub(crate) fn strip_for_each_prefix_with_difference(
                     return (None, None, text.to_string());
                 }
                 let offset = text.len() - remainder.len();
-                let difference = difference_binding_for_repeat_quantity(&qty);
                 return (
                     Some(QuantityExpr::Ref { qty }),
                     difference,
@@ -4004,8 +3982,7 @@ pub(crate) fn strip_for_each_prefix_with_difference(
 
 #[cfg(test)]
 mod difference_binding_tests {
-    use super::{difference_binding_for_repeat_quantity, strip_for_each_prefix_with_difference};
-    use crate::types::ability::{FilterProp, QuantityRef, TargetFilter, TypedFilter};
+    use super::strip_for_each_prefix_with_difference;
 
     #[test]
     fn comparison_parser_product_carries_difference_provenance() {
@@ -4019,23 +3996,13 @@ mod difference_binding_tests {
 
     #[test]
     fn nested_not_and_or_properties_do_not_bind_difference() {
-        let property = TargetFilter::Typed(TypedFilter {
-            type_filters: vec![],
-            controller: None,
-            properties: vec![FilterProp::PowerExceedsBase],
-        });
-        let not = QuantityRef::ObjectCount {
-            filter: TargetFilter::Not {
-                filter: Box::new(property.clone()),
-            },
-        };
-        let or = QuantityRef::ObjectCount {
-            filter: TargetFilter::Or {
-                filters: vec![TargetFilter::Typed(TypedFilter::default()), property],
-            },
-        };
-        assert!(difference_binding_for_repeat_quantity(&not).is_none());
-        assert!(difference_binding_for_repeat_quantity(&or).is_none());
+        for text in [
+            "for each creature you control with not power greater than that creature's base power, put a counter",
+            "for each creature you control with power greater than that creature's base power or flying, put a counter",
+        ] {
+            let (_, difference, _) = strip_for_each_prefix_with_difference(text);
+            assert!(difference.is_none(), "nested property must not bind: {text}");
+        }
     }
 }
 

@@ -21,6 +21,7 @@
 //!   toughness in layer 7c.
 
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+use engine::types::ability::ContinuousModification;
 use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
 use engine::types::phase::Phase;
@@ -88,9 +89,13 @@ fn attacks_use_the_layer_7b_base_power_not_printed_power() {
     );
     scenario.add_enchantment_from_oracle(P0, "Power Anthem", "Creatures you control get +3/+0.");
     let layered_creature = scenario.add_creature(P0, "Layered Creature", 1, 1).id();
-    let second_layered_creature = scenario
-        .add_creature(P0, "Second Layered Creature", 2, 2)
-        .id();
+    let second_layered_creature = {
+        let mut creature = scenario.add_creature(P0, "Second Layered Creature", 2, 2);
+        // This self static is a genuine layer-7c modifier: current 8/base 4
+        // differs from the first recipient's current 7/base 4.
+        creature.with_continuous_static(vec![ContinuousModification::AddPower { value: 1 }]);
+        creature.id()
+    };
     let opponent_creature = scenario.add_creature(P1, "Opponent Creature", 2, 2).id();
     let mut runner = scenario.build();
 
@@ -104,8 +109,8 @@ fn attacks_use_the_layer_7b_base_power_not_printed_power() {
     );
     assert_eq!(
         plus_one_counters(&runner, second_layered_creature),
-        1,
-        "the second eligible creature must receive its own difference: 5 minus 4"
+        4,
+        "the second eligible creature must receive its own difference: 8 minus 4"
     );
     assert_eq!(
         plus_one_counters(&runner, sovereign),
@@ -127,14 +132,24 @@ fn sovereign_attack_does_not_count_itself_without_a_power_modifier() {
         .add_creature(P0, "Sovereign Okinec Ahau", 3, 4)
         .from_oracle_text(SOVEREIGN_ORACLE)
         .id();
+    let eligible = {
+        let mut creature = scenario.add_creature(P0, "Eligible Attacker", 1, 1);
+        creature.with_continuous_static(vec![ContinuousModification::AddPower { value: 1 }]);
+        creature.id()
+    };
     let mut runner = scenario.build();
 
-    run_combat(&mut runner, vec![sovereign], vec![]);
+    run_combat(&mut runner, vec![sovereign, eligible], vec![]);
     runner.advance_until_stack_empty();
 
     assert_eq!(
         plus_one_counters(&runner, sovereign),
         0,
         "the source has no power/base-power difference and must not self-pump"
+    );
+    assert_eq!(
+        plus_one_counters(&runner, eligible),
+        1,
+        "an independently eligible attacking creature must receive its own difference"
     );
 }
