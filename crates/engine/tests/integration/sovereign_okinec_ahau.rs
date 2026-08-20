@@ -26,7 +26,7 @@ use engine::types::ability::{ContinuousModification, TargetFilter};
 use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
 use engine::types::phase::Phase;
-use engine::types::statics::StaticDefinition;
+use engine::types::StaticDefinition;
 
 use super::rules::run_combat;
 
