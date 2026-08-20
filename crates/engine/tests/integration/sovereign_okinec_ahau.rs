@@ -22,10 +22,11 @@
 //!   toughness in layer 7c.
 
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
-use engine::types::ability::ContinuousModification;
+use engine::types::ability::{ContinuousModification, TargetFilter};
 use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
 use engine::types::phase::Phase;
+use engine::types::statics::StaticDefinition;
 
 use super::rules::run_combat;
 
@@ -51,7 +52,11 @@ fn attacks_put_difference_counters_on_each_pumped_creature() {
 
     let pumped = {
         let mut creature = scenario.add_creature(P0, "Pumped Creature", 2, 2);
-        creature.with_continuous_static(vec![ContinuousModification::AddPower { value: 2 }]);
+        creature.with_static_definition(
+            StaticDefinition::continuous()
+                .affected(TargetFilter::SelfRef)
+                .modifications(vec![ContinuousModification::AddPower { value: 2 }]),
+        );
         creature.id()
     };
     let unpumped = scenario.add_creature(P0, "Unpumped Creature", 2, 2).id();
@@ -94,7 +99,11 @@ fn attacks_use_the_layer_7b_base_power_not_printed_power() {
         let mut creature = scenario.add_creature(P0, "Second Layered Creature", 2, 2);
         // This self static is a genuine layer-7c modifier: current 8/base 4
         // differs from the first recipient's current 7/base 4.
-        creature.with_continuous_static(vec![ContinuousModification::AddPower { value: 1 }]);
+        creature.with_static_definition(
+            StaticDefinition::continuous()
+                .affected(TargetFilter::SelfRef)
+                .modifications(vec![ContinuousModification::AddPower { value: 1 }]),
+        );
         creature.id()
     };
     let opponent_creature = scenario.add_creature(P1, "Opponent Creature", 2, 2).id();
@@ -135,7 +144,11 @@ fn sovereign_attack_does_not_count_itself_without_a_power_modifier() {
         .id();
     let eligible = {
         let mut creature = scenario.add_creature(P0, "Eligible Attacker", 1, 1);
-        creature.with_continuous_static(vec![ContinuousModification::AddPower { value: 1 }]);
+        creature.with_static_definition(
+            StaticDefinition::continuous()
+                .affected(TargetFilter::SelfRef)
+                .modifications(vec![ContinuousModification::AddPower { value: 1 }]),
+        );
         creature.id()
     };
     let mut runner = scenario.build();
