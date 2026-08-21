@@ -10512,12 +10512,13 @@ fn draw_cards_equal_to_hand_difference_from_limit() {
 
 /// CR 608.2c: an `Otherwise` branch must inherit a comparison-derived
 /// "the difference" from the same conditional definition as its then branch.
-/// The else chain is parsed independently, so the assembly pass must replace
-/// its deferred `Variable("difference")` with the antecedent's typed operands.
+/// The counter parser emits a deferred `Variable("difference")` for the
+/// independently parsed else chain, so assembly must replace it with the
+/// antecedent's typed operands.
 #[test]
 fn otherwise_branch_binds_difference_from_antecedent_condition() {
     let def = parse_effect_chain(
-        "If you have fewer than seven cards in hand, draw a card. Otherwise, draw cards equal to the difference.",
+        "If you have fewer than seven cards in hand, draw a card. Otherwise, put a number of +1/+1 counters on ~ equal to the difference.",
         AbilityKind::Spell,
     );
 
@@ -10539,12 +10540,17 @@ fn otherwise_branch_binds_difference_from_antecedent_condition() {
     let else_branch = def
         .else_ability
         .as_deref()
-        .expect("Otherwise must attach to the comparison-gated draw");
+        .expect("Otherwise must attach to the comparison-gated effect");
     match else_branch.effect.as_ref() {
-        Effect::Draw {
+        Effect::PutCounter {
+            counter_type,
             count: QuantityExpr::Difference { left, right },
-            target: TargetFilter::Controller,
+            target: TargetFilter::SelfRef,
         } => {
+            assert_eq!(
+                *counter_type,
+                crate::types::counter::CounterType::Plus1Plus1
+            );
             assert_eq!(
                 **left,
                 QuantityExpr::Ref {
@@ -10556,13 +10562,13 @@ fn otherwise_branch_binds_difference_from_antecedent_condition() {
             assert_eq!(**right, QuantityExpr::Fixed { value: 7 });
         }
         other => panic!(
-            "Otherwise draw must contain the typed comparison-derived Difference, got {other:?}"
+            "Otherwise counter effect must contain the typed comparison-derived Difference, got {other:?}"
         ),
     }
     assert!(
         !matches!(
             else_branch.effect.as_ref(),
-            Effect::Draw {
+            Effect::PutCounter {
                 count: QuantityExpr::Ref {
                     qty: QuantityRef::Variable { name }
                 },
