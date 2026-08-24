@@ -2343,12 +2343,14 @@ fn parse_affinity_type(s: &str) -> Option<TypedFilter> {
                     return Some(filter);
                 }
             }
-            // CR 702.41a + CR 205.3: otherwise the text is a subtype. Unknown names
-            // are subtypes, but not always land subtypes ("Daleks", "Cats",
-            // "Birds"). Keep this as a bare subtype constraint so it covers land,
-            // artifact, enchantment, and creature subtype affinity without adding a
-            // false type conjunct.
-            let capitalized = format!("{}{}", &s[..1].to_uppercase(), &s[1..]);
+            // CR 702.41a + CR 205.3: otherwise the text is a subtype. Use the shared
+            // subtype parser first so irregular plurals such as "Elves" are
+            // canonicalized to their rules name ("Elf"). Unknown names are still
+            // valid subtypes (for example, Daleks), so retain the generic fallback.
+            let capitalized = crate::parser::oracle_util::parse_subtype(s)
+                .filter(|(_, consumed)| *consumed == s.len())
+                .map(|(subtype, _)| subtype)
+                .unwrap_or_else(|| format!("{}{}", &s[..1].to_uppercase(), &s[1..]));
             // Strip trailing 's' for plural subtype words (e.g., "Daleks" →
             // "Dalek", "Islands" → "Island"; "Plains" stays "Plains").
             let subtype = if capitalized.ends_with('s') && capitalized != "Plains" {

@@ -15814,6 +15814,51 @@ fn affinity_for_daleks_reduces_dalek_emperor_generic_cost() {
     );
 }
 
+#[test]
+fn affinity_for_elves_counts_controlled_elves() {
+    const ORACLE: &str = "Affinity for Elves (This spell costs {1} less to cast for each Elf you control.)\nWhen this creature enters, mill four cards, then put all Elf cards from among them into your hand.";
+
+    let mut scenario = crate::game::scenario::GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_mana_pool(
+        PlayerId(0),
+        (0..3)
+            .map(|_| ManaUnit::new(ManaType::Green, ObjectId(0), false, vec![]))
+            .collect(),
+    );
+    let keepers = {
+        let mut builder = scenario.add_creature_to_hand(PlayerId(0), "Cantankerous Keepers", 4, 4);
+        builder
+            .with_mana_cost(ManaCost::Cost {
+                shards: vec![ManaCostShard::Green],
+                generic: 5,
+            })
+            .from_oracle_text_with_keywords(&["Affinity", "Mill"], ORACLE);
+        builder.id()
+    };
+
+    for i in 0..3 {
+        scenario
+            .add_creature(PlayerId(0), &format!("Elf {i}"), 1, 1)
+            .with_subtypes(vec!["Elf"]);
+    }
+
+    let cost = effective_spell_cost(&scenario.state, PlayerId(0), keepers)
+        .expect("Cantankerous Keepers cost should compute");
+    assert_eq!(
+        cost,
+        ManaCost::Cost {
+            shards: vec![ManaCostShard::Green],
+            generic: 2,
+        },
+        "CR 702.41a: three controlled Elves reduce {{5}}{{G}} to {{2}}{{G}}"
+    );
+
+    let mut runner = scenario.build();
+    let outcome = runner.cast(keepers).resolve();
+    outcome.assert_zone(&[keepers], Zone::Battlefield);
+}
+
 // Witherbloom, the Balancer's second clause: "Instant and sorcery spells you cast
 // have affinity for creatures." This is a static ability that functions while
 // Witherbloom is on the battlefield. When the player casts an instant or sorcery,
