@@ -13304,6 +13304,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_that_clause_has_adventure() {
+        for phrase in [" that has an adventure", " that have an adventure"] {
+            let (props, consumed) =
+                parse_that_clause_suffix(phrase, None).expect("Adventure clause must parse");
+            assert_eq!(props, vec![FilterProp::HasAdventure]);
+            assert_eq!(consumed, phrase.len());
+        }
+
+        assert!(parse_that_clause_suffix(" that has an adventures", None).is_none());
+    }
+
+    #[test]
     fn parse_type_phrase_creature_with_stun_counter() {
         let (filter, _rest) = parse_type_phrase("creature with a stun counter on it");
         match filter {
