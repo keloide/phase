@@ -642,10 +642,11 @@ fn bonecrusher_full_flow() {
 // Test 8: Adventure qualifier uses the cast-time spell record
 // ---------------------------------------------------------------------------
 
-/// CR 715.2a: A creature spell cast from an Adventure card has the
+/// CR 715.2a + CR 715.4: A creature spell cast from an Adventure card has the
 /// Adventure card's alternative characteristics for the qualifier, even when
 /// the creature face is the face cast. The ordinary-creature cast is the
-/// negative control; the Adventure creature cast is the positive reach guard.
+/// negative control; the Adventure spell's exile-and-recast path is the
+/// positive reach guard.
 #[test]
 fn garenbrig_squire_triggers_only_for_adventure_creature_casts() {
     const GARENBRIG_SQUIRE: &str =
@@ -661,7 +662,7 @@ fn garenbrig_squire_triggers_only_for_adventure_creature_casts() {
 
     let mut runner = scenario.build();
     setup_bonecrusher_adventure(&mut runner, adventure_creature);
-    add_mana(&mut runner, P0, ManaType::Red, 3);
+    add_mana(&mut runner, P0, ManaType::Red, 5);
 
     runner.cast(ordinary_creature).resolve();
     let ordinary_record = runner
@@ -677,8 +678,14 @@ fn garenbrig_squire_triggers_only_for_adventure_creature_casts() {
 
     runner
         .cast(adventure_creature)
-        .adventure_face(true)
+        .adventure_face(false)
+        .target_player(P1)
         .resolve();
+    let squire_after_adventure_spell = runner.state().objects.get(&squire).unwrap();
+    assert_eq!(squire_after_adventure_spell.power, Some(2));
+    assert_eq!(squire_after_adventure_spell.toughness, Some(2));
+
+    runner.cast(adventure_creature).resolve();
     let adventure_record = runner
         .state()
         .spells_cast_this_turn_by_player
