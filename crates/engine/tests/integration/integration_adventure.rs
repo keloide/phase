@@ -681,6 +681,13 @@ fn garenbrig_squire_triggers_only_for_adventure_creature_casts() {
         .adventure_face(false)
         .target_player(P1)
         .resolve();
+    let adventure_spell_record = runner
+        .state()
+        .spells_cast_this_turn_by_player
+        .get(&P0)
+        .and_then(|records| records.back())
+        .expect("Adventure spell cast must be recorded");
+    assert!(!adventure_spell_record.has_adventure);
     let squire_after_adventure_spell = runner.state().objects.get(&squire).unwrap();
     assert_eq!(squire_after_adventure_spell.power, Some(2));
     assert_eq!(squire_after_adventure_spell.toughness, Some(2));

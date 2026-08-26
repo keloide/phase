@@ -1148,8 +1148,10 @@ pub struct SpellCastRecord {
     pub has_x_in_cost: bool,
     /// CR 715.2a: Whether the spell's cast-time object has the alternative
     /// characteristics of an Adventure spell, even when the creature face is
-    /// the face being cast. Captured so filtered cast-history queries do not
-    /// need to inspect the spell object after it leaves the stack.
+    /// the face being cast. This is false when the Adventure face itself is
+    /// being cast: its alternative characteristics are then the normal face.
+    /// Captured so filtered cast-history queries do not need to inspect the
+    /// spell object after it leaves the stack.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_adventure: bool,
     /// CR 400.1 + CR 601.2a: Zone the spell was cast from, captured at cast-time
