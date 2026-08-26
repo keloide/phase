@@ -91,6 +91,14 @@ export type GameFormat =
 
 export type FormatGroup = "Constructed" | "Commander" | "Multiplayer" | "Limited";
 
+/**
+ * CR 100.4 / CR 100.4a: format-specific sideboard policy, mirroring the
+ * engine's tagged `SideboardPolicy` enum.
+ */
+export type SideboardPolicy =
+  | { type: "Forbidden" }
+  | { type: "Limited"; data: number }
+  | { type: "Unlimited" };
 export interface RangeOfInfluenceConfig {
   default_range: number;
   player_overrides: Record<string, number>;
@@ -107,6 +115,10 @@ export interface FormatConfig {
   commander_damage_threshold: number | null;
   range_of_influence: RangeOfInfluenceConfig | null;
   team_based: boolean;
+  /** Engine-authoritative sideboard policy. This must be sent with every
+   * format configuration; the engine intentionally treats a missing policy as
+   * `Forbidden` for legacy payloads. */
+  sideboard_policy: SideboardPolicy;
   /**
    * Engine-derived predicate: true when the format uses a commander card
    * and the commander-damage state-based action (CR 903.10a / CR 704.5u).
@@ -442,6 +454,40 @@ export type SearchOrderingHint = "Unordered" | "OrderedToLibraryTop";
 export type ExileCostSourceZone = "Hand" | "Graveyard";
 export type CounterCostSelection = "SingleObject" | "AmongObjects";
 
+// CR 208.1: power is the sole aggregate axis for a tap-creatures cost today
+// (Crew CR 702.122a / Saddle CR 702.171a / Teamwork CR 702.194a all use
+// TotalPower). Typed as a one-member string-literal union — not `string` —
+// so a second engine-side `TapCreaturesAggregateStat` variant is a TS compile
+// error at every switch over it, not a silently-ignored field. Mirrors
+// `crate::types::ability::TapCreaturesAggregateStat`.
+export type TapCreaturesAggregateStat = "TotalPower";
+
+// CR 601.2f + CR 208.1: the aggregate constraint a `TapCreatures` cost
+// payment must satisfy. `comparator`/`value` are carried verbatim from the
+// engine's `TapCreaturesAggregate` (`crate::types::ability::TapCreaturesAggregate`)
+// — the client never re-derives the threshold. Only `GE` ("total power N or
+// greater") is constructible by any current engine registration site
+// (`TapCreaturesRequirement::total_power_at_least`, Teamwork's sole
+// non-test constructor); `gameStateView.ts`'s mapping is written to fail
+// loud rather than silently mis-gate if that ever changes.
+export type TapCreaturesAggregate = {
+  stat: TapCreaturesAggregateStat;
+  comparator: Comparator;
+  value: number;
+};
+
+// CR 107.3a + CR 208.1: mirrors `crate::types::ability::TapCreaturesSelectionMode`
+// (no `#[serde(tag=...)]` on the Rust enum, so this uses serde's default
+// externally-tagged representation: unit variants are bare strings, the
+// newtype variant is `{ "Aggregate": <payload> }`). `Fixed`/`VariableX` are
+// the count-bounded forms (existing `confirmedCountSelection` mapping
+// applies); `Aggregate` is the Crew/Saddle/Teamwork "total power N or
+// greater" shape and must gate confirmation on summed power, not count.
+export type TapCreaturesSelectionMode =
+  | "Fixed"
+  | "VariableX"
+  | { Aggregate: TapCreaturesAggregate };
+
 // CR 118.3 + CR 601.2b + CR 605.3b: which action a `PayCost` selection applies
 // to the chosen objects. Internally tagged (`#[serde(tag = "type")]`).
 export type PayCostKind =
@@ -461,7 +507,11 @@ export type PayCostKind =
   | { type: "ExilePermanent"; filter: unknown }
   | { type: "ExileFromManaZone"; zone: Zone }
   | { type: "RemoveCounter"; counter_type: CounterMatch; count: number; selection: CounterCostSelection }
-  | { type: "TapCreatures" }
+  // CR 601.2b + CR 107.3a + CR 208.1: `mode` is the single authority for
+  // which of the three `TapCreaturesRequirement` selection semantics this
+  // payment carries (mirrors `crate::types::game_state::PayCostKind::TapCreatures`'s
+  // doc comment). See `TapCreaturesSelectionMode` above.
+  | { type: "TapCreatures"; mode: TapCreaturesSelectionMode }
   | { type: "Behold"; action: "ChooseOrReveal" | "ExileChosen" };
 
 // CR 118.12 + CR 601.2b + CR 605.3b: resumption context after a `PayCost`

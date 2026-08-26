@@ -1493,14 +1493,25 @@ pub enum DamageRedirectTarget {
     AttachedToSource,
 }
 
-/// Shield type for one-shot replacement effects that expire at cleanup.
+/// Classification of WHAT a damage-affecting replacement effect does —
+/// regenerate, prevent, modify a damage amount, or redirect.
+///
+/// **Carries no lifetime meaning.** The lifetime lives in
+/// [`ReplacementDefinition::expiry`] and nowhere else: CR 611.2a bounds a
+/// resolution-created shield by its stated window, while CR 604.2 makes a PRINTED
+/// static ability's shield last as long as its object remains in the appropriate
+/// zone. Both are `ShieldKind::Prevention { amount: All }` on the wire, and only
+/// `expiry` tells them apart.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ShieldKind {
     #[default]
     None,
     /// CR 701.19a: Regeneration shield — consumed on use, expires at cleanup.
     Regeneration,
-    /// CR 615: Prevention shield — absorbs/prevents damage, expires at cleanup.
+    /// CR 615: Prevention shield — absorbs/prevents damage. The ONLY shield kind
+    /// shared between the printed static-ability lowering (CR 604.2 — durable,
+    /// `expiry: None`) and the resolution path (CR 611.2a — turn-bound via
+    /// `expiry`), so this variant on its own says nothing about lifetime.
     Prevention { amount: PreventionAmount },
     /// CR 614.5 + CR 614.1a: One-shot damage-amount replacement created by an
     /// effect ("the next time ... would deal damage this turn, it deals double
@@ -1575,6 +1586,10 @@ impl ShieldKind {
         matches!(self, ShieldKind::None)
     }
 
+    /// Classification only — **never** use this as an expiry predicate (see
+    /// [`ReplacementDefinition::expiry`]). A printed static's shield (CR 604.2)
+    /// and a resolution-created one (CR 611.2a) answer `true` alike while having
+    /// opposite lifetimes.
     pub fn is_shield(&self) -> bool {
         !self.is_none()
     }
@@ -10005,14 +10020,16 @@ impl SacrificeRequirement {
 /// Aggregate statistic for a tap-creatures-cost selection constraint.
 ///
 /// CR 208.1: power is the aggregate axis. Currently only `TotalPower` (Crew
-/// CR 702.122a, Saddle CR 702.171a, Teamwork). Mirrors `SacrificeAggregateStat`.
+/// CR 702.122a, Saddle CR 702.171a, Teamwork CR 702.194a). Mirrors
+/// `SacrificeAggregateStat`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TapCreaturesAggregateStat {
     TotalPower,
 }
 
 /// CR 601.2f + CR 208.1: The aggregate constraint a `TapCreatures` cost payment
-/// must satisfy (Crew CR 702.122a / Saddle CR 702.171a / Teamwork). Snapshots
+/// must satisfy (Crew CR 702.122a / Saddle CR 702.171a / Teamwork
+/// CR 702.194a). Snapshots
 /// the `TapCreaturesRequirement::Aggregate` `{ stat, comparator, value }` triple
 /// into the interactive payment state (`PayCostKind::TapCreatures`) so the
 /// candidate enumerator and selection validator honor the advertised comparator
@@ -10039,9 +10056,9 @@ impl TapCreaturesAggregate {
 /// `Count { count }` is the fixed-number form (Conspire's "tap two creatures",
 /// Convoke-style "tap N creatures"). `Aggregate { stat, comparator, value }` is
 /// the "tap any number of creatures with total power N or greater" form used by
-/// Crew (CR 702.122a), Saddle (CR 702.171a), and Teamwork. Mirrors
-/// `SacrificeRequirement` so the two cost families share one parameterization
-/// shape.
+/// Crew (CR 702.122a), Saddle (CR 702.171a), and Teamwork (CR 702.194a).
+/// Mirrors `SacrificeRequirement` so the two cost families share one
+/// parameterization shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "requirement", rename_all = "snake_case")]
 pub enum TapCreaturesRequirement {
@@ -10061,6 +10078,30 @@ impl Default for TapCreaturesRequirement {
     fn default() -> Self {
         Self::Count { count: 1 }
     }
+}
+
+/// CR 107.3a + CR 208.1: the three mutually exclusive selection semantics a
+/// `TapCreatures` cost can carry. Computed once from `TapCreaturesRequirement`
+/// at registration time (`TapCreaturesRequirement::selection_mode`) and carried
+/// verbatim through `WaitingFor::PayCost` to the completion handler, so no seam
+/// ever re-derives "is this X" from an ambiguous signal like `min_count == 0` —
+/// aggregate selections also have a zero floor (CR 208.1's "any subset
+/// satisfying the power threshold"), which is exactly the conflation this type
+/// exists to make unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TapCreaturesSelectionMode {
+    /// A fixed, non-X requirement (`count != u32::MAX`). The chosen count must
+    /// equal `count` exactly (`min_count == count`).
+    Fixed,
+    /// CR 107.3a's `u32::MAX` X-sentinel ("Tap X untapped … you control"). The
+    /// chosen count ranges freely over `[0, eligible]` and — if and only if the
+    /// mode is `VariableX` — the completion handler binds the resolving
+    /// ability's X to the chosen count.
+    VariableX,
+    /// CR 208.1 Crew (CR 702.122a) / Saddle (CR 702.171a) / Teamwork
+    /// (CR 702.194a): any subset whose total positive power satisfies the
+    /// comparator. Never binds X.
+    Aggregate(TapCreaturesAggregate),
 }
 
 impl TapCreaturesRequirement {
@@ -10087,6 +10128,30 @@ impl TapCreaturesRequirement {
 
     pub fn is_aggregate(&self) -> bool {
         matches!(self, Self::Aggregate { .. })
+    }
+
+    /// CR 107.3a + CR 208.1: the single authority for a `TapCreatures` cost's
+    /// selection semantics. Every registration site computes this once and
+    /// carries the result through `PayCostKind::TapCreatures`, so downstream
+    /// seams never re-derive "is this an X cost" from `min_count == 0` (which an
+    /// aggregate selection also has).
+    pub fn selection_mode(&self) -> TapCreaturesSelectionMode {
+        match self {
+            // CR 107.3a: `u32::MAX` is the X-sentinel for "Tap X untapped … you
+            // control", whose value the controller announces as the chosen
+            // count rather than reading it off the requirement.
+            Self::Count { count } if *count == u32::MAX => TapCreaturesSelectionMode::VariableX,
+            Self::Count { .. } => TapCreaturesSelectionMode::Fixed,
+            Self::Aggregate {
+                stat,
+                comparator,
+                value,
+            } => TapCreaturesSelectionMode::Aggregate(TapCreaturesAggregate {
+                stat: *stat,
+                comparator: *comparator,
+                value: *value,
+            }),
+        }
     }
 }
 
@@ -22676,6 +22741,12 @@ pub enum TriggerCondition {
     /// controller's mutable `state.ring_bearer`. This retains the trigger-time
     /// choice if a later Ring temptation changes the current Ring-bearer.
     ChoseOtherRingBearer,
+    /// CR 701.54a/d: "Whenever you choose a creature as your Ring-bearer"
+    /// (Call of the Ring). True when the triggering
+    /// `GameEvent::RingTemptsYou` carries a `chosen_bearer` — a temptation
+    /// with no legal candidates chooses nothing and must not fire this —
+    /// and the chooser is the trigger's controller.
+    ChoseRingBearer,
     /// CR 702.30a: Echo intervening-if for a permanent that has not yet had
     /// its next-controller-upkeep echo payment handled.
     EchoDue,
@@ -23136,6 +23207,7 @@ impl TriggerCondition {
             | TriggerCondition::LostLife
             | TriggerCondition::Descended
             | TriggerCondition::ChoseOtherRingBearer
+            | TriggerCondition::ChoseRingBearer
             | TriggerCondition::ControlsType { .. }
             | TriggerCondition::NoSpellsCastLastTurn
             | TriggerCondition::TwoOrMoreSpellsCastLastTurn
@@ -25311,7 +25383,10 @@ pub struct ReplacementDefinition {
     /// [`PlaneswalkReplacementScope::PlanarDieOnly`] for Fixed Point in Time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planeswalk_scope: Option<PlaneswalkReplacementScope>,
-    /// Shield type for one-shot replacement effects that expire at cleanup.
+    /// Classification of WHAT this damage-affecting replacement does (regenerate,
+    /// prevent, modify a damage amount, redirect). Carries no lifetime meaning —
+    /// the lifetime lives in `expiry` and nowhere else (CR 604.2 vs CR 611.2a).
+    /// See [`ShieldKind`].
     #[serde(default, skip_serializing_if = "ShieldKind::is_none")]
     pub shield_kind: ShieldKind,
     /// CR 614.1a: Quantity modification for token/counter replacements (Double, Plus, Minus).
@@ -25353,9 +25428,15 @@ pub struct ReplacementDefinition {
     /// `None` means this replacement persists until removed by other means
     /// (e.g., the source object leaving the battlefield).
     ///
-    /// Orthogonal to `shield_kind`: shields imply EOT expiry via
-    /// `is_shield()`. Cleanup logic ORs both signals so a replacement may
-    /// be both a shield and have an explicit `EndOfTurn` expiry.
+    /// **Single authority for WHEN a replacement ends** (CR 514.2 / CR 611.2a).
+    /// `shield_kind` classifies WHAT the replacement does and carries no lifetime
+    /// meaning whatsoever: CR 604.2 makes a static ability's shield last as long
+    /// as its object stays in the appropriate zone, so a printed shield and a
+    /// resolution-created one can hold the identical `ShieldKind` value and still
+    /// have opposite lifetimes. Every prune — `turns::execute_cleanup`,
+    /// `turns::complete_end_combat_teardown`, the untap-step prune, and the
+    /// battlefield-exit prune in `layers.rs` — reads this field and only this
+    /// field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expiry: Option<RestrictionExpiry>,
     /// CR 615.1a: Damage redirection target filter — when present, prevented damage is
@@ -25600,19 +25681,79 @@ impl ReplacementDefinition {
         self
     }
 
+    /// Stamp the engine's default turn window on a shield created by the
+    /// RESOLUTION of a spell or ability that stated no duration.
+    ///
+    /// **This default is an engine fallback, not a rule.** CR 611.2a says a
+    /// resolution-created continuous effect with no stated duration "lasts until
+    /// the end of the game", and CR 615.3 says prevention effects "last until
+    /// they're used up or their duration has expired" — neither authorizes an
+    /// end-of-turn default. It exists because most of the duration-less
+    /// prevention shields in the card corpus come from cards whose printed text
+    /// DOES say "this turn" (Reverse Damage, Circle of Protection: Red,
+    /// Prismatic Strands, Honorable Passage, ...) and the parser drops that
+    /// window before the resolver sees it; the default reconstructs it.
+    /// CR 514.2 is the rule the window obeys ONCE STAMPED
+    /// (`turns::execute_cleanup`).
+    ///
+    /// The installation seam rejects a stated duration it cannot represent rather
+    /// than reaching this fallback and shortening the printed window.
+    ///
+    /// Applies only to shield-carrying definitions: a runtime-installed NON-shield
+    /// rider may legitimately be durable (the CR 611.2b `ControllerControlsSource`
+    /// lock, the CR 702.84a `UntilHostLeavesPlay` rider), and must not be given a
+    /// turn window here.
+    ///
+    /// CR 604.2 + CR 611.3b: a printed static ability's shield never passes through
+    /// a resolution seam, so it keeps `expiry: None` and stays active for as long
+    /// as its object remains in a zone the replacement pipeline scans.
+    fn stamp_default_turn_expiry(&mut self) {
+        if self.expiry.is_none() {
+            self.expiry = Some(RestrictionExpiry::EndOfTurn);
+        }
+    }
+
+    pub fn with_resolution_shield_expiry(mut self) -> Self {
+        if self.shield_kind.is_shield() {
+            self.stamp_default_turn_expiry();
+        }
+        self
+    }
+
     pub fn combat_scope(mut self, scope: CombatDamageScope) -> Self {
         self.combat_scope = Some(scope);
         self
     }
 
-    /// CR 701.19a: Mark this replacement as a regeneration shield (one-shot, expires at cleanup).
+    /// CR 701.19a: Mark this replacement as a regeneration shield created by a
+    /// RESOLVING spell or ability — "the next time [permanent] would be destroyed
+    /// **this turn**". CR 514.2: that window ends at the cleanup step, so the
+    /// shield stamps its own `EndOfTurn` expiry here; the cleanup prune reads
+    /// `expiry` alone (`turns::execute_cleanup`) and never infers a lifetime from
+    /// `shield_kind`. (CR 701.19b's STATIC-ability regeneration is a different
+    /// effect that creates no shield at all.)
+    ///
+    /// An explicit `.expiry(..)` always wins, whether applied before or after.
     pub fn regeneration_shield(mut self) -> Self {
         self.shield_kind = ShieldKind::Regeneration;
+        self.stamp_default_turn_expiry();
         self
     }
 
-    /// CR 615: Mark this replacement as a damage prevention shield.
-    /// The shield absorbs or prevents damage, and is cleaned up at end of turn.
+    /// CR 615: Mark this replacement as a damage prevention shield — the shield
+    /// absorbs or prevents damage.
+    ///
+    /// **Deliberately stamps no lifetime.** This is the one shield builder shared
+    /// between the parser's printed static-ability lowering and the resolution
+    /// path, so the lifetime is decided by `expiry` and by nothing else:
+    /// - CR 604.2 + CR 611.3b: a PRINTED static ability's shield keeps
+    ///   `expiry: None` and stays active for as long as its object remains in a
+    ///   zone the replacement pipeline scans. It must NOT be pruned at cleanup.
+    /// - CR 611.2a: a shield created by the RESOLUTION of a spell or ability is
+    ///   bounded by the window that spell or ability stated. Resolution callers
+    ///   stamp it — an explicit [`ReplacementDefinition::expiry`] for a stated
+    ///   window, then [`ReplacementDefinition::with_resolution_shield_expiry`]
+    ///   for the engine's turn-window fallback.
     pub fn prevention_shield(mut self, amount: PreventionAmount) -> Self {
         self.shield_kind = ShieldKind::Prevention { amount };
         self
@@ -25621,9 +25762,13 @@ impl ReplacementDefinition {
     /// CR 615.1a + CR 615.3 + CR 514.2: Mark this replacement as a one-shot
     /// prevention shield ("the next time [source] would deal damage this turn,
     /// prevent that damage" — Awe Strike). Single opportunity per CR 615.3;
-    /// consumed on use, expires at cleanup per CR 514.2.
+    /// consumed on use, expires at cleanup per CR 514.2 — so the shield stamps its
+    /// own `EndOfTurn` expiry here, because `turns::execute_cleanup` reads `expiry`
+    /// alone and never infers a lifetime from `shield_kind`. An explicit
+    /// `.expiry(..)` always wins, whether applied before or after.
     pub fn prevention_oneshot_shield(mut self) -> Self {
         self.shield_kind = ShieldKind::PreventionOneShot;
+        self.stamp_default_turn_expiry();
         self
     }
 
@@ -25632,15 +25777,25 @@ impl ReplacementDefinition {
     /// the amount formula; the shield is consumed after its single use and
     /// expires at cleanup. Distinct from a continuous static (Furnace of Rath),
     /// which leaves `shield_kind` as `None`.
+    ///
+    /// CR 514.2: that turn window is stamped here as `EndOfTurn`, because
+    /// `turns::execute_cleanup` reads `expiry` alone and never infers a lifetime
+    /// from `shield_kind`. An explicit `.expiry(..)` always wins.
     pub fn damage_replacement_oneshot_shield(mut self) -> Self {
         self.shield_kind = ShieldKind::DamageReplacementOneShot;
+        self.stamp_default_turn_expiry();
         self
     }
 
     /// CR 614.9: Mark this replacement as a redirection shield that re-targets
-    /// the damage recipient. Expires at cleanup; `lifetime` decides whether it is
-    /// also consumed by its first event (CR 614.5) or re-applies to every
-    /// matching event in its window (CR 611.2a).
+    /// the damage recipient. `lifetime` decides whether it is also consumed by its
+    /// first event (CR 614.5) or re-applies to every matching event in its window
+    /// (CR 611.2a) — that axis is CONSUMPTION and is orthogonal to expiry.
+    ///
+    /// CR 611.2a + CR 514.2: this shield is only ever built by a resolving spell
+    /// or ability, so it stamps its own `EndOfTurn` expiry here;
+    /// `turns::execute_cleanup` reads `expiry` alone and never infers a lifetime
+    /// from `shield_kind`. An explicit `.expiry(..)` always wins.
     pub fn redirection_shield(
         mut self,
         recipient: DamageRedirectTarget,
@@ -25652,6 +25807,7 @@ impl ReplacementDefinition {
             amount,
             lifetime,
         };
+        self.stamp_default_turn_expiry();
         self
     }
 
