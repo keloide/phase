@@ -31,19 +31,11 @@ fn contains_unimplemented(definition: &AbilityDefinition) -> bool {
 }
 
 fn assert_padeem_condition(condition: &TriggerCondition) {
-    let TriggerCondition::QuantityComparison {
-        lhs:
-            QuantityExpr::Ref {
-                qty:
-                    QuantityRef::ObjectCount {
-                        filter: TargetFilter::Typed(candidate),
-                    },
-            },
-        comparator: Comparator::GE,
-        rhs: QuantityExpr::Fixed { value: 1 },
+    let TriggerCondition::ControlsType {
+        filter: TargetFilter::Typed(candidate),
     } = condition
     else {
-        panic!("expected controlled-artifact ObjectCount >= 1, got {condition:?}");
+        panic!("expected controlled-artifact type condition, got {condition:?}");
     };
 
     assert_eq!(
