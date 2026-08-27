@@ -203,22 +203,33 @@ fn padeem_does_not_trigger_when_opponent_artifact_has_greater_mana_value() {
     } = board(3, 5, None);
     let parsed = parsed_padeem();
     assert_padeem_condition(parsed.triggers[0].condition.as_ref().unwrap());
-    assert_eq!(runner.object(padeem).name, "Padeem, Consul of Innovation");
+    let battlefield_padeem = runner
+        .state()
+        .objects
+        .get(&padeem)
+        .expect("Padeem remains on the battlefield");
+    assert_eq!(
+        battlefield_padeem.name.as_str(),
+        "Padeem, Consul of Innovation"
+    );
     assert_padeem_condition(
-        runner.object(padeem).trigger_definitions[0]
+        battlefield_padeem.trigger_definitions[0]
             .definition
             .condition
             .as_ref()
             .expect("the battlefield Padeem source must carry the typed condition"),
     );
 
-    let hand_before = runner.hand_count(P0);
+    let hand_before = runner.state().players[P0.0 as usize].hand.len();
     runner.advance_to_upkeep();
     assert!(
         padeem_stack_entries(&runner, padeem).is_empty(),
         "the false intervening-if must keep Padeem off the stack"
     );
-    assert_eq!(runner.hand_count(P0), hand_before);
+    assert_eq!(
+        runner.state().players[P0.0 as usize].hand.len(),
+        hand_before
+    );
 }
 
 /// CR 202.3 + CR 603.4: equal greatest artifact mana values satisfy the exact
@@ -229,7 +240,7 @@ fn padeem_triggers_on_tied_greatest_artifact_ignoring_larger_nonartifact() {
     let Board {
         mut runner, padeem, ..
     } = board(5, 5, Some(9));
-    let hand_before = runner.hand_count(P0);
+    let hand_before = runner.state().players[P0.0 as usize].hand.len();
 
     runner.advance_to_upkeep();
     assert_eq!(
@@ -238,7 +249,10 @@ fn padeem_triggers_on_tied_greatest_artifact_ignoring_larger_nonartifact() {
         "exactly one Padeem upkeep trigger must be on the stack"
     );
     runner.advance_until_stack_empty();
-    assert_eq!(runner.hand_count(P0), hand_before + 1);
+    assert_eq!(
+        runner.state().players[P0.0 as usize].hand.len(),
+        hand_before + 1
+    );
 }
 
 /// CR 202.3 + CR 603.4: the condition is checked again on resolution. Raising
@@ -250,8 +264,9 @@ fn padeem_rechecks_greatest_artifact_at_resolution() {
         mut runner,
         padeem,
         p1_artifact,
+        ..
     } = board(5, 3, None);
-    let hand_before = runner.hand_count(P0);
+    let hand_before = runner.state().players[P0.0 as usize].hand.len();
 
     runner.advance_to_upkeep();
     assert_eq!(padeem_stack_entries(&runner, padeem).len(), 1);
@@ -265,7 +280,7 @@ fn padeem_rechecks_greatest_artifact_at_resolution() {
 
     runner.advance_until_stack_empty();
     assert_eq!(
-        runner.hand_count(P0),
+        runner.state().players[P0.0 as usize].hand.len(),
         hand_before,
         "the false resolution-time recheck must prevent the draw"
     );
@@ -282,8 +297,8 @@ fn padeem_trigger_keeps_captured_controller_after_source_control_changes() {
         p0_artifact,
         p1_artifact,
     } = board(5, 3, None);
-    let p0_hand_before = runner.hand_count(P0);
-    let p1_hand_before = runner.hand_count(P1);
+    let p0_hand_before = runner.state().players[P0.0 as usize].hand.len();
+    let p1_hand_before = runner.state().players[P1.0 as usize].hand.len();
 
     runner.advance_to_upkeep();
     let entries = padeem_stack_entries(&runner, padeem);
@@ -297,14 +312,43 @@ fn padeem_trigger_keeps_captured_controller_after_source_control_changes() {
         .expect("Padeem remains on the battlefield");
     live_padeem.base_controller = Some(P1);
     live_padeem.controller = P1;
-    assert_eq!(runner.object(padeem).controller, P1);
-    assert_eq!(runner.object(p0_artifact).controller, P0);
-    assert_eq!(runner.object(p0_artifact).effective_mana_value(), 5);
-    assert_eq!(runner.object(p1_artifact).controller, P1);
-    assert_eq!(runner.object(p1_artifact).effective_mana_value(), 3);
+    let battlefield_padeem = runner
+        .state()
+        .objects
+        .get(&padeem)
+        .expect("Padeem remains on the battlefield");
+    let p0_artifact = runner
+        .state()
+        .objects
+        .get(&p0_artifact)
+        .expect("P0's artifact remains on the battlefield");
+    let p1_artifact = runner
+        .state()
+        .objects
+        .get(&p1_artifact)
+        .expect("P1's artifact remains on the battlefield");
+    assert_eq!(battlefield_padeem.controller, P1);
+    assert_eq!(p0_artifact.controller, P0);
+    assert_eq!(p0_artifact.effective_mana_value(), 5);
+    assert_eq!(p1_artifact.controller, P1);
+    assert_eq!(p1_artifact.effective_mana_value(), 3);
 
     runner.advance_until_stack_empty();
-    assert_eq!(runner.object(padeem).controller, P1);
-    assert_eq!(runner.hand_count(P0), p0_hand_before + 1);
-    assert_eq!(runner.hand_count(P1), p1_hand_before);
+    assert_eq!(
+        runner
+            .state()
+            .objects
+            .get(&padeem)
+            .expect("Padeem remains on the battlefield")
+            .controller,
+        P1
+    );
+    assert_eq!(
+        runner.state().players[P0.0 as usize].hand.len(),
+        p0_hand_before + 1
+    );
+    assert_eq!(
+        runner.state().players[P1.0 as usize].hand.len(),
+        p1_hand_before
+    );
 }
