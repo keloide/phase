@@ -14,6 +14,7 @@ use engine::types::mana::ManaCost;
 use engine::types::phase::Phase;
 use engine::types::statics::StaticMode;
 use engine::types::triggers::TriggerMode;
+use engine::types::zones::Zone;
 
 const PADEEM_ORACLE: &str = "Artifacts you control have hexproof.\nAt the beginning of your upkeep, if you control the artifact with the greatest mana value or tied for the greatest mana value, draw a card.";
 
@@ -50,6 +51,31 @@ fn assert_padeem_condition(condition: &TriggerCondition) {
         Some(engine::types::ControllerRef::You)
     );
     assert_eq!(candidate.type_filters, vec![TypeFilter::Artifact]);
+    assert_eq!(
+        candidate.properties.len(),
+        2,
+        "expected exactly the battlefield and mana-value membership properties: {candidate:?}"
+    );
+    let battlefield_count = candidate
+        .properties
+        .iter()
+        .filter(|property| {
+            matches!(
+                property,
+                FilterProp::InZone {
+                    zone: Zone::Battlefield
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        battlefield_count, 1,
+        "expected exactly one battlefield property: {candidate:?}"
+    );
+    let mut cmc_properties = candidate
+        .properties
+        .iter()
+        .filter(|property| matches!(property, FilterProp::Cmc { .. }));
     let Some(FilterProp::Cmc {
         comparator: Comparator::EQ,
         value:
@@ -61,11 +87,14 @@ fn assert_padeem_condition(condition: &TriggerCondition) {
                         filter: TargetFilter::Typed(population),
                     },
             },
-    }) = candidate.properties.first()
+    }) = cmc_properties.next()
     else {
         panic!("expected exact membership in the artifact mana-value maximum: {candidate:?}");
     };
-    assert_eq!(candidate.properties.len(), 1);
+    assert!(
+        cmc_properties.next().is_none(),
+        "expected exactly one mana-value membership property: {candidate:?}"
+    );
     assert_eq!(population.type_filters, vec![TypeFilter::Artifact]);
     assert!(
         population.controller.is_none(),
