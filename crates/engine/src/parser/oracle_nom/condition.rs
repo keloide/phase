@@ -20,6 +20,7 @@ use super::primitives::{
     scan_at_word_boundaries,
 };
 use super::quantity as nom_quantity;
+use super::target as nom_target;
 use crate::parser::oracle_target::{
     cast_capable_zones_except, parse_shared_quality, parse_type_phrase, parse_zone_suffix,
     parse_zone_word, peek_zone_boundary, superlative_property_filter_prop,
@@ -3121,10 +3122,9 @@ fn parse_you_control_superlative_object_condition(
         // intentionally consumes those terminal nouns in other contexts, so
         // reject them before delegating the candidate noun phrase.
         if scan_at_word_boundaries(candidate_text, |word| {
-            terminated(
-                alt((tag("cards"), tag("card"), tag("spells"), tag("spell"))),
-                eof,
-            )
+            verify(nom_target::parse_type_filter_word, |type_filter| {
+                matches!(type_filter, TypeFilter::Card)
+            })
             .parse(word)
         })
         .is_some()
@@ -3135,6 +3135,13 @@ fn parse_you_control_superlative_object_condition(
         let (object_filter, candidate_remainder) = parse_type_phrase(candidate_text);
         if matches!(object_filter, TargetFilter::Any) || !candidate_remainder.is_empty() {
             return Err(oracle_err(candidate_remainder));
+        }
+        if object_filter
+            .extract_zones()
+            .iter()
+            .any(|zone| *zone != Zone::Battlefield)
+        {
+            return Err(oracle_err(candidate_text));
         }
 
         let (rest, _) = parse_optional_tied_for_tail(rest, aggregate, property)?;
@@ -20203,17 +20210,34 @@ mod tests {
         assert!(population.controller.is_none());
     }
 
-    /// CR 109.2 + CR 109.4: controlled-permanent superlatives must reject a
-    /// terminal off-battlefield/stack noun and any genuine type-phrase tail.
+    /// CR 109.2 + CR 109.4: controlled-permanent superlatives must reject
+    /// off-battlefield/stack nouns at any word boundary, explicit
+    /// non-battlefield zones, and any genuine type-phrase tail.
     #[test]
     fn parse_inner_condition_you_control_superlative_rejects_nonpermanent_nouns_and_leftovers() {
-        assert!(
-            matches!(
-                parse_inner_condition("you control an artifact card with the greatest mana value."),
-                Err(nom::Err::Failure(_))
+        for (text, reason) in [
+            (
+                "you control an artifact card with the greatest mana value.",
+                "terminal `card`",
             ),
-            "terminal `card` must not be accepted in a `you control` permanent predicate"
-        );
+            (
+                "you control a creature card in your graveyard with the greatest power.",
+                "zone-qualified `card`",
+            ),
+            (
+                "you control an artifact spell on the stack with the greatest mana value.",
+                "zone-qualified `spell`",
+            ),
+            (
+                "you control a creature in your graveyard with the greatest power.",
+                "explicit non-battlefield zone",
+            ),
+        ] {
+            assert!(
+                matches!(parse_inner_condition(text), Err(nom::Err::Failure(_))),
+                "{reason} must not be accepted in a `you control` permanent predicate"
+            );
+        }
         assert!(
             matches!(
                 parse_inner_condition(
@@ -20251,6 +20275,34 @@ mod tests {
             property,
             FilterProp::WithKeyword {
                 value: Keyword::Flying
+            }
+        )));
+    }
+
+    /// CR 109.2: an explicit battlefield candidate remains a permanent, and
+    /// forbidden-noun scanning must not treat a subtype such as Spellshaper as
+    /// the standalone word "spell".
+    #[test]
+    fn parse_inner_condition_you_control_superlative_accepts_explicit_battlefield_candidate() {
+        let (rest, condition) = parse_inner_condition(
+            "you control a spellshaper creature on the battlefield with the greatest power.",
+        )
+        .unwrap();
+        assert!(rest.is_empty());
+        let StaticCondition::IsPresent {
+            filter: Some(TargetFilter::Typed(filter)),
+        } = condition
+        else {
+            panic!("expected controlled permanent superlative, got {condition:?}");
+        };
+        assert_eq!(filter.controller, Some(ControllerRef::You));
+        assert!(filter
+            .type_filters
+            .contains(&TypeFilter::Subtype("Spellshaper".to_string())));
+        assert!(filter.properties.iter().any(|property| matches!(
+            property,
+            FilterProp::InZone {
+                zone: Zone::Battlefield
             }
         )));
     }
