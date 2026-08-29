@@ -30,8 +30,8 @@ use crate::types::ability::{
     AbilityCondition, AggregateFunction, CardTypeSetSource, CastManaObjectScope,
     CastManaSpentMetric, CommanderOwnership, Comparator, ControllerRef, CountScope, DamageChannel,
     DamageGroupKey, DamageKindFilter, FilterProp, ObjectProperty, ObjectScope, PlayerFilter,
-    PlayerRelation, PlayerScope, PropertyAggregate, PtStat, PtValueScope, QuantityExpr,
-    QuantityRef, SharedQuality, StaticCondition, TargetFilter, TypeFilter, TypedFilter, ZoneRef,
+    PlayerRelation, PlayerScope, PropertyAggregate, QuantityExpr, QuantityRef, SharedQuality,
+    StaticCondition, TargetFilter, TypeFilter, TypedFilter, ZoneRef,
 };
 use crate::types::counter::{CounterMatch, CounterType};
 use crate::types::events::PlayerActionKind;
@@ -20138,12 +20138,7 @@ mod tests {
             comparator: Comparator::EQ,
             value:
                 QuantityExpr::Ref {
-                    qty:
-                        QuantityRef::Aggregate {
-                            function: AggregateFunction::Max,
-                            property: ObjectProperty::ManaValue,
-                            filter: TargetFilter::Typed(population),
-                        },
+                    qty: QuantityRef::PropertyAggregate(aggregate),
                 },
         }) = candidate
             .properties
@@ -20154,6 +20149,14 @@ mod tests {
                 "expected exact mana-value membership in the artifact maximum, got {:?}",
                 candidate.properties
             );
+        };
+        assert_eq!(aggregate.function(), AggregateFunction::Max);
+        assert_eq!(aggregate.property(), ObjectProperty::ManaValue);
+        let CardTypeSetSource::Objects {
+            filter: TargetFilter::Typed(population),
+        } = aggregate.source()
+        else {
+            panic!("expected an artifact object population, got {aggregate:?}");
         };
         assert_eq!(population.type_filters, vec![TypeFilter::Artifact]);
         assert!(
@@ -20183,12 +20186,7 @@ mod tests {
             comparator: Comparator::EQ,
             value:
                 QuantityExpr::Ref {
-                    qty:
-                        QuantityRef::Aggregate {
-                            function: AggregateFunction::Min,
-                            property: ObjectProperty::ManaValue,
-                            filter: TargetFilter::Typed(population),
-                        },
+                    qty: QuantityRef::PropertyAggregate(aggregate),
                 },
         }) = candidate
             .properties
@@ -20196,6 +20194,14 @@ mod tests {
             .find(|property| matches!(property, FilterProp::Cmc { .. }))
         else {
             panic!("expected exact membership in the artifact minimum, got {candidate:?}");
+        };
+        assert_eq!(aggregate.function(), AggregateFunction::Min);
+        assert_eq!(aggregate.property(), ObjectProperty::ManaValue);
+        let CardTypeSetSource::Objects {
+            filter: TargetFilter::Typed(population),
+        } = aggregate.source()
+        else {
+            panic!("expected an artifact object population, got {aggregate:?}");
         };
         assert_eq!(candidate.controller, Some(ControllerRef::You));
         assert_eq!(candidate.type_filters, vec![TypeFilter::Artifact]);

@@ -5,8 +5,9 @@
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
-    AbilityDefinition, AggregateFunction, Comparator, ContinuousModification, Effect, FilterProp,
-    ObjectProperty, QuantityExpr, QuantityRef, TargetFilter, TriggerCondition, TypeFilter,
+    AbilityDefinition, AggregateFunction, CardTypeSetSource, Comparator, ContinuousModification,
+    Effect, FilterProp, ObjectProperty, QuantityExpr, QuantityRef, TargetFilter, TriggerCondition,
+    TypeFilter,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
@@ -72,12 +73,7 @@ fn assert_padeem_condition(condition: &TriggerCondition) {
         comparator: Comparator::EQ,
         value:
             QuantityExpr::Ref {
-                qty:
-                    QuantityRef::Aggregate {
-                        function: AggregateFunction::Max,
-                        property: ObjectProperty::ManaValue,
-                        filter: TargetFilter::Typed(population),
-                    },
+                qty: QuantityRef::PropertyAggregate(aggregate),
             },
     }) = cmc_properties.next()
     else {
@@ -87,6 +83,14 @@ fn assert_padeem_condition(condition: &TriggerCondition) {
         cmc_properties.next().is_none(),
         "expected exactly one mana-value membership property: {candidate:?}"
     );
+    assert_eq!(aggregate.function(), AggregateFunction::Max);
+    assert_eq!(aggregate.property(), ObjectProperty::ManaValue);
+    let CardTypeSetSource::Objects {
+        filter: TargetFilter::Typed(population),
+    } = aggregate.source()
+    else {
+        panic!("expected an artifact object population, got {aggregate:?}");
+    };
     assert_eq!(population.type_filters, vec![TypeFilter::Artifact]);
     assert!(
         population.controller.is_none(),
