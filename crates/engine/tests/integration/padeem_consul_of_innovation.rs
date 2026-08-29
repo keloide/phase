@@ -17,7 +17,7 @@ use engine::types::statics::StaticMode;
 use engine::types::triggers::TriggerMode;
 use engine::types::zones::Zone;
 
-const PADEEM_ORACLE: &str = "Artifacts you control have hexproof.\nAt the beginning of your upkeep, if you control the artifact with the greatest mana value or tied for the greatest mana value, draw a card.";
+const PADEEM_ORACLE: &str = "Artifacts you control have hexproof. (They can't be the targets of spells or abilities your opponents control.)\nAt the beginning of your upkeep, if you control the artifact with the greatest mana value or tied for the greatest mana value, draw a card.";
 
 fn contains_unimplemented(definition: &AbilityDefinition) -> bool {
     matches!(definition.effect.as_ref(), Effect::Unimplemented { .. })
