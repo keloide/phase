@@ -177,7 +177,7 @@ fn parse_state_presence_conditions(input: &str) -> OracleResult<'_, StaticCondit
         // wins over the fixed-N "its power is N or greater" combinator inside
         // that group (which only matches numeric thresholds).
         parse_subject_property_superlative_comparison,
-        // CR 608.2c: Effect-resolution gates like Abzan Beastmaster's "if you
+        // CR 603.4 + CR 608.2a: Intervening-if gates like Abzan Beastmaster's "if you
         // control the creature with the greatest toughness or tied for the
         // greatest toughness" are player-control predicates over an implicit
         // creature aggregate population.
@@ -3089,7 +3089,7 @@ fn parse_optional_tied_for_tail(
     Ok((rest, relaxed))
 }
 
-/// CR 109.2 + CR 109.4 + CR 608.2c: Parse a player-control superlative gate such as
+/// CR 109.2 + CR 109.4 + CR 603.4 + CR 608.2a: Parse a player-control superlative gate such as
 /// "you control the creature with the greatest toughness or tied for the
 /// greatest toughness" or "you control an artifact with the greatest mana
 /// value". An unqualified type noun denotes a battlefield permanent, and the
@@ -20313,7 +20313,7 @@ mod tests {
         )));
     }
 
-    /// CR 608.2c: Abzan Beastmaster's resolve-time gate is an existential
+    /// CR 603.4 + CR 608.2a: Abzan Beastmaster's resolve-time gate is an existential
     /// controlled-creature check against the table-wide greatest toughness.
     #[test]
     fn parse_inner_condition_you_control_creature_tied_for_greatest_toughness() {
