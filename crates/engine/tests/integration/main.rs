@@ -1452,6 +1452,7 @@ mod user_capture_probes;
 mod valakut_fireboar_switch_pt_on_attack;
 mod vanille_meld_optional_cost;
 mod vannifar_cloak_from_hand;
+mod varragoth_search_top;
 mod veteran_bodyguard_tap_redirect;
 mod vohar_discard_drain;
 mod wand_of_orcus_compound_subject_6965;

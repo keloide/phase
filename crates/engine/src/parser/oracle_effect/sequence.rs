@@ -205,6 +205,34 @@ fn is_search_result_put_onto_battlefield_restatement(lower: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// CR 701.24b + CR 608.2c: Parse a later search-result instruction that puts
+/// the found card or cards on top of the searched library. Verb agreement and
+/// result referents are independent grammar axes so controller and inherited
+/// player subjects share one production.
+fn parse_search_result_put_on_top_restatement(input: &str) -> OracleResult<'_, ()> {
+    let (input, _) = alt((tag::<_, _, OracleError<'_>>("put "), tag("puts "))).parse(input)?;
+    let (input, _) = alt((
+        tag("that card "),
+        tag("it "),
+        tag("the card "),
+        tag("them "),
+        tag("those cards "),
+        tag("the chosen cards "),
+    ))
+    .parse(input)?;
+    let (input, _) = tag("on top").parse(input)?;
+    Ok((input, ()))
+}
+
+fn has_search_result_put_on_top_restatement(lower: &str) -> bool {
+    let bare = strip_search_result_subject(lower.trim().trim_end_matches('.'));
+    parse_search_result_put_on_top_restatement(bare).is_ok()
+        || nom_primitives::scan_at_word_boundaries(lower, |input| {
+            parse_search_result_put_on_top_restatement(strip_search_result_subject(input))
+        })
+        .is_some()
+}
+
 fn has_conditional_search_result_destination(lower: &str) -> bool {
     fn parse_clause(input: &str) -> Result<(&str, ()), nom::Err<OracleError<'_>>> {
         let (input, _) = parse_search_result_put_onto_battlefield_restatement(input)?;
@@ -5574,19 +5602,14 @@ pub(super) fn parse_intrinsic_continuation_ast(
             if has_conditional_search_result_destination(&full_lower) {
                 return None;
             }
-            // CR 701.24b: If later clauses contain "put on top", suppress the default
-            // ChangeZone(→Hand) — the card stays in the library and a separate
-            // PutAtLibraryPosition effect in the chain handles placement.
+            // CR 701.24b + CR 608.2c: If later clauses put the found card(s) in a
+            // specified library position, suppress the default ChangeZone(→Hand).
+            // The found cards stay outside the shuffled subset, and the separate
+            // PutAtLibraryPosition effect applies the later positional instruction.
             // Also suppress for "Nth from the top" (Long-Term Plans, etc.)
-            let has_positional_put =
-                nom_primitives::scan_contains(&full_lower, "put that card on top")
-                    || nom_primitives::scan_contains(&full_lower, "put it on top")
-                    || nom_primitives::scan_contains(&full_lower, "put the card on top")
-                    || nom_primitives::scan_contains(&full_lower, "put them on top")
-                    || nom_primitives::scan_contains(&full_lower, "put those cards on top")
-                    || nom_primitives::scan_contains(&full_lower, "put the chosen cards on top")
-                    || (nom_primitives::scan_contains(&full_lower, "put that card")
-                        && nom_primitives::scan_contains(&full_lower, "from the top"));
+            let has_positional_put = has_search_result_put_on_top_restatement(&full_lower)
+                || (nom_primitives::scan_contains(&full_lower, "put that card")
+                    && nom_primitives::scan_contains(&full_lower, "from the top"));
             if has_positional_put {
                 return None;
             }
@@ -9151,6 +9174,148 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn search_result_put_on_top_restatement_composes_agreement_and_referent_axes() {
+        let verbs = ["put ", "puts "];
+        let referents = [
+            "that card ",
+            "it ",
+            "the card ",
+            "them ",
+            "those cards ",
+            "the chosen cards ",
+        ];
+
+        for verb in verbs {
+            for referent in referents {
+                let phrase = format!("{verb}{referent}on top");
+                let (rest, _) = parse_search_result_put_on_top_restatement(&phrase)
+                    .unwrap_or_else(|_| panic!("failed to parse {phrase:?}"));
+                assert!(
+                    rest.is_empty(),
+                    "parser must consume the positional production for {phrase:?}, leftover {rest:?}"
+                );
+            }
+        }
+
+        for phrase in [
+            "that player puts that card on top",
+            "those players put those cards on top of their libraries",
+            "each player puts them on top",
+        ] {
+            assert!(
+                has_search_result_put_on_top_restatement(phrase),
+                "expected subject-aware positional match for {phrase:?}"
+            );
+        }
+
+        for phrase in [
+            "put that card into your hand",
+            "puts that card onto the battlefield",
+            "put the rest on the bottom",
+        ] {
+            assert!(
+                !has_search_result_put_on_top_restatement(phrase),
+                "must not match non-top search result instruction {phrase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn search_positional_destination_suppresses_only_the_default_hand_move() {
+        use super::super::parse_effect_chain;
+
+        fn effects_in_order(def: &AbilityDefinition) -> Vec<&Effect> {
+            let mut effects = Vec::new();
+            let mut node = Some(def);
+            while let Some(current) = node {
+                effects.push(current.effect.as_ref());
+                node = current.sub_ability.as_deref();
+            }
+            effects
+        }
+
+        // SHAPE: Exact Varragoth effect text exercises third-person `puts`.
+        // CR 701.24b + CR 608.2c requires Search -> Shuffle -> PutAt, with no
+        // synthetic Library -> Hand move before the later positional instruction.
+        let varragoth = parse_effect_chain(
+            "Target player searches their library for a card, then shuffles and puts that card on top.",
+            AbilityKind::Activated,
+        );
+        let effects = effects_in_order(&varragoth);
+        assert_eq!(effects.len(), 3, "unexpected Varragoth chain: {effects:?}");
+        assert!(matches!(effects[0], Effect::SearchLibrary { .. }));
+        assert!(matches!(effects[1], Effect::Shuffle { .. }));
+        assert!(matches!(
+            effects[2],
+            Effect::PutAtLibraryPosition {
+                position: LibraryPosition::Top,
+                ..
+            }
+        ));
+
+        // Existing first-person sibling remains covered by the same grammar.
+        let enlightened = parse_effect_chain(
+            "Search your library for an artifact or enchantment card, reveal it, then shuffle and put that card on top.",
+            AbilityKind::Spell,
+        );
+        let effects = effects_in_order(&enlightened);
+        assert_eq!(
+            effects.len(),
+            3,
+            "unexpected Enlightened Tutor chain: {effects:?}"
+        );
+        assert!(matches!(effects[0], Effect::SearchLibrary { .. }));
+        assert!(matches!(effects[1], Effect::Shuffle { .. }));
+        assert!(matches!(
+            effects[2],
+            Effect::PutAtLibraryPosition {
+                position: LibraryPosition::Top,
+                ..
+            }
+        ));
+
+        // Preserve the independent ordinal branch used by Long-Term Plans.
+        let long_term_plans = parse_effect_chain(
+            "Search your library for a card, then shuffle and put that card third from the top.",
+            AbilityKind::Spell,
+        );
+        let effects = effects_in_order(&long_term_plans);
+        assert_eq!(
+            effects.len(),
+            3,
+            "unexpected Long-Term Plans chain: {effects:?}"
+        );
+        assert!(matches!(effects[0], Effect::SearchLibrary { .. }));
+        assert!(matches!(effects[1], Effect::Shuffle { .. }));
+        assert!(matches!(
+            effects[2],
+            Effect::PutAtLibraryPosition {
+                position: LibraryPosition::NthFromTop { n: 3 },
+                ..
+            }
+        ));
+
+        // Positive reach guard for the negative grammar case: an ordinary
+        // search still receives the intrinsic Library -> Hand destination.
+        let ordinary = parse_effect_chain("Search your library for a card.", AbilityKind::Spell);
+        let effects = effects_in_order(&ordinary);
+        assert_eq!(
+            effects.len(),
+            2,
+            "unexpected ordinary tutor chain: {effects:?}"
+        );
+        assert!(matches!(effects[0], Effect::SearchLibrary { .. }));
+        assert!(matches!(
+            effects[1],
+            Effect::ChangeZone {
+                origin: Some(Zone::Library),
+                destination: Zone::Hand,
+                ..
+            }
+        ));
     }
 
     #[test]
