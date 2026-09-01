@@ -13,7 +13,7 @@ use super::super::oracle_nom::enters_under::{
 use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_nom::primitives::parse_keyword_name;
 use super::super::oracle_target::{parse_target, parse_target_with_ctx, parse_type_phrase};
-use super::super::oracle_util::{contains_possessive, parse_count_expr, TextPair};
+use super::super::oracle_util::{contains_possessive, parse_count_expr, parse_ordinal, TextPair};
 use super::{apply_where_x_to_filter, strip_trailing_where_x};
 use crate::parser::oracle_ir::ast::*;
 use crate::parser::oracle_ir::context::ParseContext;
@@ -206,10 +206,13 @@ fn is_search_result_put_onto_battlefield_restatement(lower: &str) -> bool {
 }
 
 /// CR 701.24b + CR 608.2c: Parse a later search-result instruction that puts
-/// the found card or cards on top of the searched library. Verb agreement and
-/// result referents are independent grammar axes so controller and inherited
-/// player subjects share one production.
-fn parse_search_result_put_on_top_restatement(input: &str) -> OracleResult<'_, ()> {
+/// the found card or cards at a specific position in the searched library.
+/// Verb agreement, result referent, and library position are independent
+/// grammar axes so controller and inherited player subjects share one
+/// production.
+fn parse_search_result_library_position_restatement(
+    input: &str,
+) -> OracleResult<'_, LibraryPosition> {
     let (input, _) = alt((tag::<_, _, OracleError<'_>>("put "), tag("puts "))).parse(input)?;
     let (input, _) = alt((
         tag("that card "),
@@ -220,15 +223,30 @@ fn parse_search_result_put_on_top_restatement(input: &str) -> OracleResult<'_, (
         tag("the chosen cards "),
     ))
     .parse(input)?;
-    let (input, _) = tag("on top").parse(input)?;
-    Ok((input, ()))
+    alt((
+        value(LibraryPosition::Top, tag("on top")),
+        map_opt(
+            terminated(
+                take_until::<_, _, OracleError<'_>>(" from the top"),
+                tag(" from the top"),
+            ),
+            |ordinal_text| {
+                parse_ordinal(ordinal_text).and_then(|(n, rest)| {
+                    rest.trim()
+                        .is_empty()
+                        .then_some(LibraryPosition::NthFromTop { n })
+                })
+            },
+        ),
+    ))
+    .parse(input)
 }
 
-fn has_search_result_put_on_top_restatement(lower: &str) -> bool {
+fn has_search_result_library_position_restatement(lower: &str) -> bool {
     let bare = strip_search_result_subject(lower.trim().trim_end_matches('.'));
-    parse_search_result_put_on_top_restatement(bare).is_ok()
+    parse_search_result_library_position_restatement(bare).is_ok()
         || nom_primitives::scan_at_word_boundaries(lower, |input| {
-            parse_search_result_put_on_top_restatement(strip_search_result_subject(input))
+            parse_search_result_library_position_restatement(strip_search_result_subject(input))
         })
         .is_some()
 }
@@ -5606,10 +5624,7 @@ pub(super) fn parse_intrinsic_continuation_ast(
             // specified library position, suppress the default ChangeZone(→Hand).
             // The found cards stay outside the shuffled subset, and the separate
             // PutAtLibraryPosition effect applies the later positional instruction.
-            // Also suppress for "Nth from the top" (Long-Term Plans, etc.)
-            let has_positional_put = has_search_result_put_on_top_restatement(&full_lower)
-                || (nom_primitives::scan_contains(&full_lower, "put that card")
-                    && nom_primitives::scan_contains(&full_lower, "from the top"));
+            let has_positional_put = has_search_result_library_position_restatement(&full_lower);
             if has_positional_put {
                 return None;
             }
@@ -9177,7 +9192,7 @@ mod tests {
     }
 
     #[test]
-    fn search_result_put_on_top_restatement_composes_agreement_and_referent_axes() {
+    fn search_result_library_position_restatement_composes_all_grammar_axes() {
         let verbs = ["put ", "puts "];
         let referents = [
             "that card ",
@@ -9187,26 +9202,39 @@ mod tests {
             "those cards ",
             "the chosen cards ",
         ];
+        let positions = [
+            ("on top", LibraryPosition::Top),
+            ("third from the top", LibraryPosition::NthFromTop { n: 3 }),
+        ];
 
         for verb in verbs {
             for referent in referents {
-                let phrase = format!("{verb}{referent}on top");
-                let (rest, _) = parse_search_result_put_on_top_restatement(&phrase)
-                    .unwrap_or_else(|_| panic!("failed to parse {phrase:?}"));
-                assert!(
-                    rest.is_empty(),
-                    "parser must consume the positional production for {phrase:?}, leftover {rest:?}"
-                );
+                for (position_text, expected_position) in &positions {
+                    let phrase = format!("{verb}{referent}{position_text}");
+                    let (rest, position) =
+                        parse_search_result_library_position_restatement(&phrase)
+                            .unwrap_or_else(|_| panic!("failed to parse {phrase:?}"));
+                    assert!(
+                        rest.is_empty(),
+                        "parser must consume the positional production for {phrase:?}, leftover {rest:?}"
+                    );
+                    assert_eq!(
+                        position,
+                        expected_position.clone(),
+                        "wrong position for {phrase:?}"
+                    );
+                }
             }
         }
 
         for phrase in [
             "that player puts that card on top",
+            "that player puts that card third from the top of their library",
             "those players put those cards on top of their libraries",
             "each player puts them on top",
         ] {
             assert!(
-                has_search_result_put_on_top_restatement(phrase),
+                has_search_result_library_position_restatement(phrase),
                 "expected subject-aware positional match for {phrase:?}"
             );
         }
@@ -9215,10 +9243,11 @@ mod tests {
             "put that card into your hand",
             "puts that card onto the battlefield",
             "put the rest on the bottom",
+            "target player puts that card banana from the top",
         ] {
             assert!(
-                !has_search_result_put_on_top_restatement(phrase),
-                "must not match non-top search result instruction {phrase:?}"
+                !has_search_result_library_position_restatement(phrase),
+                "must not match non-positional search result instruction {phrase:?}"
             );
         }
     }
@@ -9273,6 +9302,28 @@ mod tests {
             effects[2],
             Effect::PutAtLibraryPosition {
                 position: LibraryPosition::Top,
+                ..
+            }
+        ));
+
+        // Third-person ordinal wording shares the same verb/referent grammar
+        // as Varragoth's top placement and must not synthesize a hand move.
+        let third_person_ordinal = parse_effect_chain(
+            "Target player searches their library for a card, then shuffles and puts that card third from the top.",
+            AbilityKind::Activated,
+        );
+        let effects = effects_in_order(&third_person_ordinal);
+        assert_eq!(
+            effects.len(),
+            3,
+            "unexpected third-person ordinal chain: {effects:?}"
+        );
+        assert!(matches!(effects[0], Effect::SearchLibrary { .. }));
+        assert!(matches!(effects[1], Effect::Shuffle { .. }));
+        assert!(matches!(
+            effects[2],
+            Effect::PutAtLibraryPosition {
+                position: LibraryPosition::NthFromTop { n: 3 },
                 ..
             }
         ));
