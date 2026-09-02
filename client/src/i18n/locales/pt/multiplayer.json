@@ -81,6 +81,12 @@
   "joinErrorDialog": {
     "dismiss": "Dispensar"
   },
+  "reconnectRejected": {
+    "firstMessageInvalid": "O anfitrião recusou a ligação antes da configuração. Atualize ambas as janelas e tente novamente.",
+    "versionRequired": "Este anfitrião requer o protocolo de ligação v{{version}}. Atualize ambas as janelas e tente novamente.",
+    "versionMismatch": "O protocolo de ligação não corresponde: o seu cliente enviou v{{guestVersion}}, mas o anfitrião usa v{{hostVersion}}. Atualize ambas as janelas.",
+    "malformedAuthority": "O anfitrião recusou uma autorização de ligação inválida. Entre novamente com um novo código de sala."
+  },
   "serverOfflinePrompt": {
     "title": "Matchmaking inacessível",
     "message": "Não conseguimos alcançar o servidor do jogo, então o lobby público está indisponível no momento. Você ainda pode jogar compartilhando um código direto com um amigo.",
@@ -214,7 +220,17 @@
     "back": "Voltar",
     "opening": "Abrindo…",
     "hostP2PGame": "Hospedar Jogo P2P",
-    "hostGame": "Hospedar Jogo"
+    "hostGame": "Hospedar Jogo",
+    "savedFormats": "Formatos personalizados salvos",
+    "saveAsCustomFormat": "Salvar formato",
+    "customFormatNamePlaceholder": "Nomeie este formato",
+    "useCustomFormat": "Usar",
+    "customFormatInUse": "Em uso",
+    "deleteCustomFormat": "Excluir",
+    "loadingCustomFormat": "Carregando formato…",
+    "noSavedCustomFormats": "Nenhum formato personalizado salvo ainda.",
+    "customFormatResolveFailed": "Não foi possível carregar esse formato salvo.",
+    "customFormatHostingUnavailable": "Hospedar com um formato personalizado ainda não é suportado — a legalidade do baralho não pode ser verificada para ele. Por enquanto, salve e apenas visualize."
   },
   "page": {
     "deckRejected": "O deck foi rejeitado pelo anfitrião.",

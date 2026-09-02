@@ -44,10 +44,11 @@
     "respondSubtitle": "Accept the verified route or stop at one of your issued boundaries.",
     "shortenAtBreakpoint": "Stop at boundary {{breakpointId}}"
   },
-  "resolutionProgress": {
-    "label": "Resolviendo {{resolved}} / {{total}}",
-    "collapse": "Contraer progreso de resolución",
-    "expand": "Expandir progreso de resolución"
+  "restoredAutomation": {
+    "dismiss": "Cerrar",
+    "noop": {"title": "Partida guardada cargada", "summary_one": "No fue necesario reanudar la automatización de la pila.", "summary_other": "No fue necesario reanudar la automatización de la pila."},
+    "progressed": {"title": "Automatización de la pila reanudada", "summary_one": "El motor completó {{count}} resolución automatizada.", "summary_other": "El motor completó {{count}} resoluciones automatizadas.", "omitted_one": "Se omitió {{count}} evento intermedio.", "omitted_other": "Se omitieron {{count}} eventos intermedios."},
+    "zeroResolutionRepair": {"title": "Automatización de la pila reparada", "summary_one": "La automatización guardada se reparó de forma segura antes de reanudar la partida.", "summary_other": "La automatización guardada se reparó de forma segura antes de reanudar la partida."}
   },
   "resolveAllConsent": {
     "eyebrow": "Resolver todo",
@@ -63,6 +64,9 @@
     "tokenPowerPlaceholder": "Power",
     "tokenToughnessPlaceholder": "Toughness",
     "sourceDefinedPtRequired": "Enter power and toughness for this source-defined token."
+  },
+  "debugLibrary": {
+    "openActions": "Abrir acciones de depuración para {{name}}"
   },
   "nextUp": {
     "label": "Sigue",
@@ -460,8 +464,9 @@
     "cityBlessingTooltip": "Bendición de la ciudad — controla diez o más permanentes (Ascender)",
     "enduringStory": "Historia perdurable",
     "enduringStoryTooltip": "Historia perdurable — se obtiene al controlar un permanente con Storied y tres o más artefactos, permanentes legendarios y/o sagas; dura el resto del juego",
-    "dungeonAriaLabel": "Aventurándose en {{name}}, sala {{room}}",
-    "dungeonTooltip": "Aventurándose en {{name}} — sala {{room}}",
+    "dungeonAriaLabel": "Aventurándose en {{name}}, {{roomName}}, sala {{room}} de {{total}}",
+    "dungeonRoomTooltip": "{{roomName}} — sala {{room}} de {{total}}",
+    "dungeonTooltip": "Aventurándose en {{name}}",
     "poisonAriaLabel_one": "{{count}} contador de veneno",
     "poisonAriaLabel_other": "{{count}} contadores de veneno",
     "poisonTooltip": "Contadores de veneno: {{count}}\nUn jugador con diez o más contadores de veneno pierde la partida.",
@@ -541,6 +546,7 @@
     "onlyForSpellWithColorCount": "Gastar solo para lanzar hechizos que cumplan un requisito de cantidad de colores",
     "onlyForSpellColor": "Gastar solo para lanzar hechizos del color elegido",
     "onlyForSpellFromZone": "Gastar solo para lanzar hechizos desde una zona permitida",
+    "cannotCastSpellFromZone": "No se puede gastar para lanzar hechizos desde la zona indicada",
     "onlyForFaceDownSpell": "Gastar solo para lanzar hechizos boca abajo",
     "onlyForActivation": "Gastar solo para activar habilidades",
     "onlyForXCosts": "Gastar solo en costes que incluyan {X}",
@@ -599,6 +605,8 @@
     "chooseXInputAria": "Introducir el valor de X",
     "decreaseX": "Disminuir el valor de X",
     "increaseX": "Aumentar el valor de X",
+    "maximum": "Máx.",
+    "setXToMaximum": "Establecer X al máximo",
     "minMax": "mín. {{min}} / máx. {{max}}",
     "maxOnly": "máx. {{max}}",
     "amountOutOfRange": "Introduce un número entero entre {{min}} y {{max}}",
@@ -654,7 +662,9 @@
   },
   "storm": {
     "copies_one": "Tormenta: {{count}} copia",
-    "copies_other": "Tormenta: {{count}} copias"
+    "copies_other": "Tormenta: {{count}} copias",
+    "count_one": "Contador de tormenta: {{count}} copia",
+    "count_other": "Contador de tormenta: {{count}} copias"
   },
   "opponentHud": {
     "ally": "Aliado",
@@ -771,19 +781,34 @@
     "tapUntappedCreatures_one": "Gira {{count}} criatura sin girar",
     "tapUntappedCreatures_other": "Gira {{count}} criaturas sin girar",
     "chooseTargetOf": "Elige el objetivo {{current}} de {{total}}",
+    "slotProgress": "Objetivo {{current}} de {{total}}",
+    "choosePlayerTarget": "Elegir: {{name}}",
+    "expandDescription": "Mostrar la descripción completa",
+    "collapseDescription": "Mostrar menos",
+    "descriptionDisclosure": "{{action}}: {{description}}",
     "chooseTarget": "Elige un objetivo",
     "triggerDamageAmount": "This trigger: {{amount}} damage",
     "noLegalTargets": "No hay objetivos legales disponibles",
-    "modeContext": "{{mode}} — {{prompt}}",
-    "upToOne": "hasta un(a) {{target}}",
-    "one": "un(a) {{target}}",
-    "nounPlayer": "jugador",
-    "nounNonlandPermanent": "permanente que no sea tierra",
-    "nounSpell": "hechizo",
-    "nounCreature": "criatura",
-    "nounPlaneswalker": "planeswalker",
-    "nounTargetPermanent": "permanente objetivo",
-    "nounTarget": "objetivo",
+    "one": {
+      "player": "un jugador",
+      "spell": "un hechizo",
+      "creature": "una criatura",
+      "planeswalker": "un planeswalker",
+      "nonlandPermanent": "un permanente que no sea tierra",
+      "targetPermanent": "un permanente objetivo",
+      "target": "un objetivo",
+      "orPlayer": "{{noun}} o un jugador"
+    },
+    "upToOne": {
+      "player": "hasta un jugador",
+      "spell": "hasta un hechizo",
+      "creature": "hasta una criatura",
+      "planeswalker": "hasta un planeswalker",
+      "nonlandPermanent": "hasta un permanente que no sea tierra",
+      "targetPermanent": "hasta un permanente objetivo",
+      "target": "hasta un objetivo",
+      "orPlayer": "{{noun}} o un jugador"
+    },
     "confirmTap": "Confirmar giro ({{selected}}/{{count}})",
     "keepCurrentTargets": "Conservar objetivos actuales",
     "skip": "Omitir",
@@ -801,6 +826,8 @@
   },
   "log": {
     "title": "Registro de la partida",
+    "dockLeft": "Acoplar el registro a la izquierda",
+    "dockRight": "Acoplar el registro a la derecha",
     "noEvents": "Aún no hay eventos",
     "closeLog": "Cerrar el registro de la partida",
     "verbosityFull": "completo",
@@ -1105,6 +1132,7 @@
       "onlyForSpellWithColorCount": "Solo para hechizos con {{comparator}} {{count}} colores.",
       "onlyForSpellColor": "Solo para hechizos del color {{color}}.",
       "onlyForSpellFromZone": "Solo para hechizos {{polarity}} {{zone}}.",
+      "cannotCastSpellFromZone": "No se puede gastar para lanzar hechizos desde {{zone}}.",
       "onlyForFaceDownSpell": "Solo para hechizos boca abajo.",
       "onlyForAny": "Solo para uno de estos usos: {{restrictions}}",
       "onlyForSpecialAction": "Solo para la acción especial {{action}}.",
@@ -1594,6 +1622,9 @@
       "selectAll": "Seleccionar todo",
       "invert": "Invertir",
       "clear": "Limpiar",
+      "searchLabel": "Filtrar",
+      "searchPlaceholder": "Nombre de carta",
+      "searchCardsAria": "Filtrar cartas por nombre",
       "sortLabel": "Ordenar",
       "groupLabel": "Agrupar",
       "optNone": "Ninguno",
@@ -1922,6 +1953,7 @@
     "title": "Lanza un hechizo gratis",
     "subtitle": "Elige un hechizo para lanzar sin pagar su coste de maná ({{remaining}} restante(s)). Valor de maná total restante: {{budget}}.",
     "subtitleNoBudget": "Elige un hechizo para lanzar sin pagar su coste de maná ({{remaining}} restante(s)).",
+    "remainingAny": "cualquier cantidad",
     "castNamed": "Lanzar {{name}}",
     "castSuffix": "(sin pagar su coste de maná)",
     "done": "Listo",
@@ -2018,6 +2050,7 @@
     "diagnostic": "diagnóstico: {{reason}}",
     "showDetails": "Mostrar detalles",
     "exportGameState": "Exportar estado de la partida",
+    "exportClientSnapshot": "Exportar instantánea del cliente",
     "exported": "Exportado",
     "exportFailed": "Error al exportar",
     "copyDiagnostic": "Copiar diagnóstico",
@@ -2122,7 +2155,28 @@
     "title": "{{name}} - Efecto opcional",
     "yes": "Sí",
     "no": "No",
-    "dontAskAgain": "No volver a preguntar en esta partida"
+    "dontAskAgain": "No volver a preguntar en esta partida",
+    "dontAskAgainForSameCard": "Aplicar a cada copia de esta carta"
+  },
+  "resolutionOptionalPayment": {
+    "title": "Elige un pago opcional",
+    "pay": "Pagar {{cost}}",
+    "decline": "Rechazar",
+    "cost": {
+      "card": "carta",
+      "cards": "cartas",
+      "filteredCard": "carta {{types}}",
+      "filteredCards": "cartas {{types}}",
+      "nonType": "no {{type}}",
+      "orSeparator": " o ",
+      "zoneBattlefield": "el campo de batalla",
+      "zoneGraveyard": "tu cementerio",
+      "zoneLibrary": "tu biblioteca",
+      "zoneExile": "el exilio",
+      "zoneHand": "tu mano",
+      "discard": "Descarta {{count}} {{cards}}",
+      "exile": "Exilia {{count}} {{cards}} de {{zone}}"
+    }
   },
   "topOrBottom": {
     "cardFallback": "Card",

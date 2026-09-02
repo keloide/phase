@@ -177,6 +177,14 @@ function dataFileDefines(mode: string): Record<string, string> {
     // compiles to a permanent no-op and nothing is ever sent anywhere.
     __TELEMETRY_URL__: JSON.stringify(process.env.TELEMETRY_URL || ""),
     __CARD_DATA_URL__: JSON.stringify(process.env.CARD_DATA_URL || "/card-data.json"),
+    // Operator status message. Deliberately NOT manifest-driven: the deploy
+    // workflow's upload loop reads data-files.json and (a) hard-errors when a
+    // listed file was not generated into client/public/, and (b) re-uploads
+    // whatever it finds on EVERY deploy — which would clobber a live status
+    // message the maintainer published out of band. It is published and cleared
+    // by scripts/publish-status.sh alone; no CI job ever touches the object.
+    // Same explicit, non-manifest shape as __CARD_DATA_URL__ above.
+    __STATUS_URL__: JSON.stringify(base ? `${base}/status.json` : "/status.json"),
     // Per-locale content-i18n sidecar URL template ({lng} replaced at runtime).
     // The sidecars are listed in data-files.json, so on deploy they are uploaded
     // to `${DATA_BASE_URL}/card-data.<lng>.json` and stripped from the Pages
@@ -196,7 +204,7 @@ function dataFileDefines(mode: string): Record<string, string> {
     // printing has no localized sibling. An explicit env override still wins.
     __SCRYFALL_IMAGES_LOCALE_URL_TEMPLATE__: JSON.stringify(
       process.env.SCRYFALL_IMAGES_LOCALE_URL_TEMPLATE ||
-        (base ? `${base}/scryfall-images.{lng}.json` : "/scryfall-images.{lng}.json"),
+        (base ? `${base}/scryfall-images.v2.{lng}.json` : "/scryfall-images.v2.{lng}.json"),
     ),
   };
   for (const filename of manifest) {
@@ -338,7 +346,7 @@ export default defineConfig(({ mode }) => ({
             },
           },
           {
-            // Per-locale card-ART maps (`scryfall-images.<lng>.json`), the image
+            // Per-locale card-ART maps (`scryfall-images.v2.<lng>.json`), the image
             // counterpart to the content sidecars above. The data-manifest rule
             // below is an exact-name alternation that does not list these, and
             // the precache glob covers only js/css/html — so without this rule a
@@ -347,7 +355,8 @@ export default defineConfig(({ mode }) => ({
             // as card-locale-sidecars: regenerated each deploy, so
             // StaleWhileRevalidate.
             //
-            // Two anchored branches, mirroring the engine-WASM rule above.
+            // The anchored R2 branch covers both production and staging,
+            // mirroring the engine-WASM rule above.
             // Workbox's RegExpRoute refuses a cross-origin match that does not
             // begin at index 0 of the href, and in production these are served
             // from R2 at DATA_BASE_URL — so a bare `…\.json$` suffix pattern
@@ -355,7 +364,7 @@ export default defineConfig(({ mode }) => ({
             // second branch keeps the same-origin path working in dev/Tauri,
             // where the files are served from the site root.
             urlPattern:
-              /(?:^https:\/\/data\.phase-rs\.dev\/scryfall-images\.[a-z]{2}\.json$|\/scryfall-images\.[a-z]{2}\.json$)/,
+              /(?:^https:\/\/data\.phase-rs\.dev\/(?:staging\/)?scryfall-images\.v2\.[a-z]{2}\.json$|\/scryfall-images\.v2\.[a-z]{2}\.json$)/,
             handler: "StaleWhileRevalidate",
             options: {
               cacheName: "card-art-locale-maps",
@@ -412,6 +421,17 @@ export default defineConfig(({ mode }) => ({
           // colliding cache variants. See the #4822 (introduced) / #4855
           // (credentials patch) incident before re-adding.
           {
+            // Installed images are committed directly to this Cache Storage
+            // bucket by the browser backend. The service worker only reads it;
+            // installation owns every write and never revalidates an image.
+            urlPattern: ({ sameOrigin, url }) =>
+              sameOrigin && /^\/__visual-packs\/sha256\/[0-9a-f]{64}\.(jpg|png|webp|svg)$/.test(url.pathname),
+            handler: "CacheOnly",
+            options: {
+              cacheName: "phase-visual-pack-scryfall-images-v1",
+            },
+          },
+          {
             // Same-origin static imagery from public/ (battlefield art, nav
             // icons, logos). Not in the precache manifest — the default glob
             // only covers js/css/html — and unhashed, so StaleWhileRevalidate
@@ -441,6 +461,16 @@ export default defineConfig(({ mode }) => ({
   // hit Caddy rather than the bare :5173 dev server. Both are gated on a
   // hostname presence check so plain `pnpm dev` on localhost still works.
   server: {
+    // Every consumer of this dev server pins :5173 as a literal it cannot
+    // re-resolve — tauri.conf.json's `devUrl`, the Caddyfile's reverse_proxy
+    // upstreams, the Tiltfile's link. `strictPort` is the enforcement: vite
+    // defaults it to false and on EADDRINUSE drifts to ++port, announced only
+    // by an info line that scrolls past inside `tauri dev`, leaving the shell
+    // on a dead URL painting a blank white document. `port` declares the pin;
+    // `strictPort` is what holds it. `vite preview` inherits strictPort from
+    // here (its own port stays 4173), so `pnpm preview` refuses.
+    port: 5173,
+    strictPort: true,
     allowedHosts: ["local.phase-rs.dev", ".local.phase-rs.dev"],
     hmr: process.env.CADDY_PROXY === "1"
       ? { protocol: "wss", host: "local.phase-rs.dev", clientPort: 443 }

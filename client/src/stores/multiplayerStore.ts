@@ -1,7 +1,11 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import type { PlayerAvatarIdentity } from "../services/playerAvatars.ts";
+
 import type {
+  BuiltInGameFormat,
+  CustomGameFormat,
   FormatConfig,
   GameFormat,
   LobbyGame,
@@ -9,6 +13,10 @@ import type {
   MatchType,
   PlayerId,
 } from "../adapter/types";
+import { AdapterError, AdapterErrorCode, isCustomGameFormat } from "../adapter/types";
+import { isFormatConfigShape } from "../adapter/format-config-shape";
+import { findSavedCustomFormat } from "../services/customFormats";
+import { AI_DIFFICULTIES } from "../constants/ai";
 import { FORMAT_REGISTRY } from "../data/formatRegistry";
 import { serverProtocolRejection, type ServerInfo } from "../adapter/ws-adapter";
 import {
@@ -176,6 +184,18 @@ export interface HostingDeck {
 export interface RememberedHostConfig {
   format: GameFormat;
   formatConfig: FormatConfig;
+  /**
+   * WHICH saved custom-format definition `format` refers to, or `null` for a
+   * built-in format.
+   *
+   * Not redundant with `format`/`formatConfig.custom_rules.id`: every Axis-A
+   * lobby save carries the engine's reserved sentinel
+   * `LOBBY_SAVE_CUSTOM_FORMAT_ID` (`CustomFormatId(0)`) by design, so the
+   * engine id is `0` — and the format string `"Custom:0"` — for ALL of them and
+   * can never distinguish two saved formats from each other. Only the
+   * client-generated id from `services/customFormats.ts` can.
+   */
+  savedCustomFormatId: string | null;
   playerCount: number;
   matchType: MatchType;
   /** CR 732.2a: combo (infinite-loop) detector opt-in, chosen at match creation. */
@@ -265,8 +285,8 @@ interface MultiplayerState {
   isSpectator: boolean;
   // PlayerId → display name, captured from playerSlots at game start (ephemeral — not persisted)
   playerNames: Map<number, string>;
-  // PlayerId → avatar art crop URL (ephemeral — assigned at game start)
-  playerAvatars: Map<number, string>;
+  // PlayerId → semantic avatar identity (ephemeral — assigned at game start)
+  playerAvatars: Map<number, PlayerAvatarIdentity>;
   compatibilityPlayerCount: number | null;
   // Per-player connection tracking (ephemeral — not persisted)
   disconnectedPlayers: Set<number>;
@@ -317,6 +337,7 @@ interface MultiplayerActions {
   setFormatConfig: (config: FormatConfig | null) => void;
   setCompatibilityPlayerCount: (count: number | null) => void;
   rememberHostConfig: (config: RememberedHostConfig) => void;
+  clearRememberedHostConfig: () => void;
   setPlayerSlots: (slots: PlayerSlot[]) => void;
   setSpectators: (names: string[]) => void;
   setIsSpectator: (value: boolean) => void;
@@ -338,7 +359,12 @@ interface MultiplayerActions {
     deck: HostingDeck,
     opts: { useBroker: boolean; roomName?: string | null },
   ) => Promise<boolean>;
-  getActiveP2PHost: () => { adapter: P2PHostAdapter; gameId: string } | null;
+  /**
+   * Transfers the pre-game host adapter to the matching game route. Once
+   * claimed, the game provider is its sole owner and lobby cleanup cannot
+   * later leave a disposed adapter available for a remount.
+   */
+  takeActiveP2PHost: (gameId: string) => P2PHostAdapter | null;
   seatMutate: (mutation: SeatMutation) => void;
   /** Like `seatMutate` but awaits P2P work; server sends are still fire-and-forget. */
   seatMutateAsync: (mutation: SeatMutation) => Promise<void>;
@@ -466,6 +492,7 @@ async function startActiveP2PHostGame(
   saveActiveGame({ id: gameId, mode: "p2p-host", difficulty: "" });
   useGameStore.setState({ gameId });
   setState({
+    activePlayerId: 0,
     pendingGameRoute: `/game/${gameId}?mode=p2p-host`,
     hostGameCode: null,
     hostingStatus: "idle",
@@ -492,10 +519,12 @@ export function isLobbyEntryCompatible(
 }
 
 /**
- * True when the client's wire-protocol can speak to the server's advertised
- * mode. Delegates to `serverProtocolRejection` — the same decision the
+ * True when the client's wire-protocol can speak to `info` on the FULL-GAME
+ * surface — the surface that decides whether a game can actually be played.
+ * Delegates to `serverProtocolRejection` — the same decision the game
  * handshake makes — so the compatibility badge can never disagree with whether
- * the connection actually succeeds.
+ * the connection actually succeeds. A `LobbyOnly` server has no full-game
+ * surface, so it is judged on its lobby version instead.
  */
 export function isServerCompatible(info: ServerInfo | null): boolean {
   return info !== null && serverProtocolRejection(info) === null;
@@ -508,6 +537,219 @@ export const FORMAT_DEFAULTS: Record<GameFormat, FormatConfig> = Object.fromEntr
   FORMAT_REGISTRY.map((m) => [m.format, m.default_config]),
 ) as Record<GameFormat, FormatConfig>;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function isIntegerInRange(value: unknown, upperBound: number): value is number {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value > 0
+    && value <= upperBound;
+}
+
+function isI32(value: unknown): value is number {
+  return isIntegerInRange(value, 2_147_483_647);
+}
+
+function isU16(value: unknown): value is number {
+  return isIntegerInRange(value, 65_535);
+}
+
+function isU8(value: unknown): value is number {
+  return isIntegerInRange(value, 255);
+}
+
+/**
+ * True for a BUILT-IN format the engine registry knows. Deliberately false for
+ * every `Custom:<id>` string: `FORMAT_DEFAULTS` is built from the built-in
+ * registry and has no entry for one, so this is exactly the predicate that must
+ * guard any `FORMAT_DEFAULTS[...]` lookup driven by a stored or user-selected
+ * format. Exported because `HostSetup` needs the same guard before its own
+ * seat-ceiling lookup.
+ */
+export function isKnownFormat(value: unknown): value is BuiltInGameFormat {
+  return typeof value === "string"
+    && Object.prototype.hasOwnProperty.call(FORMAT_DEFAULTS, value);
+}
+
+/**
+ * Rebuilds the engine-authored part of a persisted host setting from the
+ * current format registry. The browser is a durable storage boundary, so a
+ * previous release's serialized `FormatConfig` must never be sent straight
+ * back to a newer engine protocol.
+ *
+ * Only fields the host setup currently lets a player customize survive this
+ * projection. Every structural/derived field comes from the current engine
+ * default, which makes added and reshaped engine fields self-healing on the
+ * next hydration rather than requiring a one-off migration per field.
+ */
+export function normalizeRememberedHostConfig(
+  persisted: unknown,
+): RememberedHostConfig | null {
+  if (!isRecord(persisted)) return null;
+
+  if (isKnownFormat(persisted.format)) {
+    return normalizeBuiltInHostConfig(persisted, persisted.format);
+  }
+  if (isCustomGameFormat(persisted.format)) {
+    return normalizeCustomHostConfig(persisted, persisted.format);
+  }
+  return null;
+}
+
+/**
+ * Rehydration for a CUSTOM-format remembered config.
+ *
+ * Before this branch existed, `isKnownFormat` returned false for every
+ * `Custom:<id>` string and the whole remembered config — player count, AI
+ * seats, privacy, everything — was discarded whenever the player's last hosted
+ * game used a custom format. That is silent data loss, not just a missing
+ * format.
+ *
+ * The projection a built-in gets (rebuild from the current registry default,
+ * keep only the customizable fields) is impossible here: a custom format has no
+ * registry entry to rebuild from, and its only source of truth is its own saved
+ * `CustomFormatRules`. Resolving those to a `FormatConfig` needs
+ * `FormatConfig::for_custom_rules`, which lives in WASM — and this function
+ * runs SYNCHRONOUSLY inside `set()` and cannot await. So instead:
+ *
+ *  1. Resolve WHICH saved definition this was, through `customFormats.ts`'s
+ *     synchronous local read. Gone (deleted, or another device) → `null`.
+ *  2. Structurally revalidate the persisted `FormatConfig` blob against today's
+ *     client-side schema before trusting it back.
+ *
+ * Step 2 proves "this blob still matches today's serialization schema", NOT
+ * "the engine still agrees these rules are legal". That is sufficient here
+ * because a saved `CustomFormatRules` is immutable once saved in this phase —
+ * no edit flow exists — and because the config is re-validated for real by the
+ * engine's own `FormatConfig` deserializer at every boundary it later crosses.
+ *
+ * Any failure degrades to `null`, exactly like every other unresolvable case.
+ */
+function normalizeCustomHostConfig(
+  persisted: Record<string, unknown>,
+  format: CustomGameFormat,
+): RememberedHostConfig | null {
+  const savedCustomFormatId = persisted.savedCustomFormatId;
+  if (typeof savedCustomFormatId !== "string") return null;
+  if (!findSavedCustomFormat(savedCustomFormatId)) return null;
+
+  const storedFormatConfig = persisted.formatConfig;
+  if (!isFormatConfigShape(storedFormatConfig)) return null;
+  // The blob must describe the format it is filed under. `isFormatConfigShape`
+  // already ties `format` to `custom_rules.id`; this ties both to the key the
+  // rest of the remembered config is keyed on.
+  if (storedFormatConfig.format !== format) return null;
+
+  return finalizeRememberedHostConfig(
+    persisted,
+    format,
+    storedFormatConfig,
+    savedCustomFormatId,
+  );
+}
+
+function normalizeBuiltInHostConfig(
+  persisted: Record<string, unknown>,
+  format: BuiltInGameFormat,
+): RememberedHostConfig {
+  const defaults = FORMAT_DEFAULTS[format];
+  const storedFormatConfig = isRecord(persisted.formatConfig)
+    ? persisted.formatConfig
+    : {};
+  const storedDeckSize = isRecord(storedFormatConfig.deck_size)
+    ? storedFormatConfig.deck_size
+    : null;
+  const deckSize: FormatConfig["deck_size"] =
+    storedDeckSize?.type === "Minimum"
+    && defaults.deck_size.type === "Minimum"
+    && isU16(storedDeckSize.data)
+      ? { type: "Minimum", data: storedDeckSize.data }
+      : storedDeckSize?.type === "Exactly"
+        && defaults.deck_size.type === "Exactly"
+        && isU16(storedDeckSize.data)
+        ? { type: "Exactly", data: storedDeckSize.data }
+        : defaults.deck_size;
+  const commanderDamageThreshold =
+    defaults.commander_damage_threshold !== null
+    && isU8(storedFormatConfig.commander_damage_threshold)
+      ? storedFormatConfig.commander_damage_threshold
+      : defaults.commander_damage_threshold;
+  const formatConfig: FormatConfig = {
+    ...defaults,
+    deck_size: deckSize,
+    starting_life: isI32(storedFormatConfig.starting_life)
+      ? storedFormatConfig.starting_life
+      : defaults.starting_life,
+    commander_damage_threshold: commanderDamageThreshold,
+    allow_debug_actions: typeof storedFormatConfig.allow_debug_actions === "boolean"
+      ? storedFormatConfig.allow_debug_actions
+      : defaults.allow_debug_actions,
+  };
+  return finalizeRememberedHostConfig(persisted, format, formatConfig, null);
+}
+
+/**
+ * The format-independent tail both branches share: clamp the player count to
+ * what the resolved config can seat, normalize the retired loop-detection
+ * variant, and filter AI seats. Factored out so the built-in and Custom
+ * branches cannot drift apart on any of it.
+ */
+function finalizeRememberedHostConfig(
+  persisted: Record<string, unknown>,
+  format: GameFormat,
+  formatConfig: FormatConfig,
+  savedCustomFormatId: string | null,
+): RememberedHostConfig {
+  const playerCount = isU8(persisted.playerCount)
+    ? Math.min(Math.max(persisted.playerCount, formatConfig.min_players), formatConfig.max_players)
+    : formatConfig.min_players;
+  const loopDetectionType = isRecord(persisted.loopDetection)
+    ? persisted.loopDetection.type
+    : "Off";
+  const loopDetection: LoopDetectionMode = loopDetectionType === "Interactive" || loopDetectionType === "On"
+    ? { type: "Interactive" }
+    : { type: "Off" };
+  const aiSeats: AiSeatConfig[] = [];
+  if (Array.isArray(persisted.aiSeats)) {
+    for (const seat of persisted.aiSeats) {
+      if (
+        !isRecord(seat)
+        || !isU8(seat.seatIndex)
+        || seat.seatIndex >= playerCount
+        || aiSeats.some((existing) => existing.seatIndex === seat.seatIndex)
+        || !(
+          AI_DIFFICULTIES.some((difficulty) => difficulty.id === seat.difficulty)
+          || seat.difficulty === "CEDH"
+        )
+        || typeof seat.difficulty !== "string"
+        || (typeof seat.deckName !== "string" && seat.deckName !== null)
+      ) {
+        continue;
+      }
+      aiSeats.push({
+        seatIndex: seat.seatIndex,
+        difficulty: seat.difficulty,
+        deckName: seat.deckName,
+      });
+    }
+  }
+
+  return {
+    format,
+    formatConfig,
+    savedCustomFormatId,
+    playerCount,
+    matchType: playerCount === 2 && persisted.matchType === "Bo3" ? "Bo3" : "Bo1",
+    loopDetection,
+    isPublic: typeof persisted.isPublic === "boolean" ? persisted.isPublic : true,
+    startWhenFull: typeof persisted.startWhenFull === "boolean" ? persisted.startWhenFull : true,
+    ranked: false,
+    aiSeats,
+  };
+}
+
 export function migrateOfficialServerAddress(
   address: unknown,
   targetAddress: string,
@@ -515,6 +757,19 @@ export function migrateOfficialServerAddress(
   return typeof address === "string" && isOfficialMultiplayerServerUrl(address)
     ? targetAddress
     : address;
+}
+
+// The host-setup selector retired its standalone "On" loop-detection choice
+// in favor of "Interactive" (its surviving semantics). A `lastHostConfig`
+// persisted before that change may still carry `{ type: "On" }`; forward it
+// to Interactive rather than silently dropping to Off, which would turn the
+// detector off for a player who had chosen it on.
+export function migrateLegacyLoopDetectionOn(lastHostConfig: unknown): unknown {
+  if (!lastHostConfig || typeof lastHostConfig !== "object") return lastHostConfig;
+  const config = lastHostConfig as Record<string, unknown>;
+  const loopDetection = config.loopDetection as { type?: unknown } | undefined;
+  if (loopDetection?.type !== "On") return lastHostConfig;
+  return { ...config, loopDetection: { type: "Interactive" } };
 }
 
 export function migratePersistedMultiplayerState(
@@ -528,6 +783,12 @@ export function migratePersistedMultiplayerState(
       migrated.serverAddress,
       DEFAULT_MULTIPLAYER_SERVER_URL,
     );
+  }
+  if (version < 4 && "lastHostConfig" in migrated) {
+    migrated.lastHostConfig = migrateLegacyLoopDetectionOn(migrated.lastHostConfig);
+  }
+  if (version < 5 && "lastHostConfig" in migrated) {
+    migrated.lastHostConfig = normalizeRememberedHostConfig(migrated.lastHostConfig);
   }
   return migrated;
 }
@@ -824,7 +1085,10 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
       setFormatConfig: (config) => set({ formatConfig: config }),
       setCompatibilityPlayerCount: (count) =>
         set({ compatibilityPlayerCount: count }),
-      rememberHostConfig: (config) => set({ lastHostConfig: config }),
+      rememberHostConfig: (config) => set({
+        lastHostConfig: normalizeRememberedHostConfig(config),
+      }),
+      clearRememberedHostConfig: () => set({ lastHostConfig: null }),
       setPlayerSlots: (slots) => set({ playerSlots: slots }),
       setSpectators: (names) => set({ spectators: names }),
       setIsSpectator: (value) => set({ isSpectator: value }),
@@ -1224,16 +1488,24 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
           releaseAttempt();
           if (!isCurrentAttempt()) return false;
           console.error("[startP2PHostingSession] failed:", err);
+          if (
+            err instanceof AdapterError
+            && err.code === AdapterErrorCode.NOT_INITIALIZED
+          ) {
+            get().showToast(err.message);
+          }
           resetFailedHosting();
           return false;
         }
       },
 
-      getActiveP2PHost: () => {
-        if (activeP2PHostAdapter && activeP2PHostGameId) {
-          return { adapter: activeP2PHostAdapter, gameId: activeP2PHostGameId };
-        }
-        return null;
+      takeActiveP2PHost: (gameId) => {
+        if (!activeP2PHostAdapter || activeP2PHostGameId !== gameId) return null;
+
+        const adapter = activeP2PHostAdapter;
+        activeP2PHostAdapter = null;
+        activeP2PHostGameId = null;
+        return adapter;
       },
 
       seatMutateAsync: async (mutation) => {
@@ -1293,7 +1565,13 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
 
           subscriptionReconnect = withReconnect(
             () =>
-              openPhaseSocket(addr).catch((err) => {
+              // The shared subscription socket carries lobby frames only —
+              // `SubscribeLobby`, the join-target RPCs, `PlayerCount`. Declaring
+              // the surface keeps it usable against a server whose full-game
+              // protocol has drifted from this build's, which is the whole point
+              // of versioning the lobby separately. Server-run hosting and
+              // joining open their own sockets and keep the exact-match window.
+              openPhaseSocket(addr, { surface: "lobby" }).catch((err) => {
                 // Protocol mismatch is not retryable — surface the toast
                 // on the *first* handshake attempt, then let
                 // `withReconnect` treat subsequent attempts as plain
@@ -1469,7 +1747,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
     }),
     {
       name: "phase-multiplayer",
-      version: 3,
+      version: 5,
       // v0/v1 → v2: official hosted lobby addresses are deployment defaults,
       // not user intent. A self-hosted build must move returning browsers from
       // the official lobby to its configured default while preserving explicit
@@ -1478,11 +1756,36 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
       // v2 → v3: same rule, re-applied because the official set now spans a
       // broker PER RELEASE CHANNEL. Without this bump a returning preview
       // browser keeps its persisted production address, and detectServerUrl
-      // honours any stored address whose /health answers — production's does —
-      // so it would silently stay pinned to a lobby its build cannot handshake
-      // with. Re-running the same migration repoints it at this channel's
-      // broker; a user-typed non-official address is still preserved.
+      // honours any valid stored address, so it would silently stay pinned to a
+      // lobby its build cannot handshake with. Re-running the same migration
+      // repoints it at this channel's broker; a user-typed non-official address
+      // is still preserved.
+      //
+      // v3 → v4: the host-setup selector dropped its standalone "On"
+      // loop-detection choice. A `lastHostConfig.loopDetection` of `{ type:
+      // "On" }` persisted under an older build is forwarded to `Interactive`
+      // (its surviving semantics) rather than left to silently fall back to
+      // `Off` on next read.
+      //
+      // v4 → v5: persisted host configurations used to retain a serialized
+      // `FormatConfig`. Project it onto the current engine registry while
+      // retaining only user-editable fields, so engine protocol shape changes
+      // (such as `deck_size: 100` becoming `{ type: "Exactly", data: 100 }`)
+      // cannot leave hosting stuck before GameCreated.
       migrate: migratePersistedMultiplayerState,
+      // Persisted state is external input. Migration only runs when the schema
+      // version changes, so hydrate current-version blobs through the same
+      // normalizer before the store exposes them to host setup.
+      merge: (persisted, current) => {
+        const saved = persisted && typeof persisted === "object"
+          ? persisted as Partial<MultiplayerState>
+          : {};
+        return {
+          ...current,
+          ...saved,
+          lastHostConfig: normalizeRememberedHostConfig(saved.lastHostConfig),
+        };
+      },
       partialize: (state) => ({
         playerId: state.playerId,
         displayName: state.displayName,

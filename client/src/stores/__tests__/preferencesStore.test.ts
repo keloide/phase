@@ -12,10 +12,12 @@ describe("preferencesStore", () => {
         hudLayout: "inline",
         followActiveOpponent: false,
         logDefaultState: "closed",
+        logDockSide: "right",
         boardBackground: "auto-wubrg",
         vfxQuality: "full",
         animationSpeedMultiplier: 1.0,
         showCardPreviewFooter: true,
+        draftDoubleClickConfirmPick: true,
         pacingMultipliers: { effects: 1.0, combat: 1.0, banners: 1.0 },
         priorityPassingMode: "Standard",
         masterVolume: 100,
@@ -24,7 +26,8 @@ describe("preferencesStore", () => {
         sfxMuted: false,
         musicMuted: false,
         masterMuted: false,
-        multiplayerBoardLayout: "focused",
+        multiplayerBoardLayout: "auto",
+        multiplayerSplitLayoutNudgeDismissed: true,
         aiSeats: [{ difficulty: "Medium", deckId: "Random" }],
         aiBracketFilter: [],
       });
@@ -39,10 +42,16 @@ describe("preferencesStore", () => {
     expect(state.hudLayout).toBe("inline");
     expect(state.followActiveOpponent).toBe(false);
     expect(state.logDefaultState).toBe("closed");
+    expect(usePreferencesStore.getInitialState().logDockSide).toBe("right");
     expect(state.boardBackground).toBe("auto-wubrg");
-    expect(state.multiplayerBoardLayout).toBe("focused");
+    // Read the store's real initialization snapshot (the getInitialState idiom
+    // used below): the shared beforeEach writes its own defaults snapshot, so a
+    // getState() read here would assert that snapshot, not buildDefaultPreferences().
+    expect(usePreferencesStore.getInitialState().multiplayerBoardLayout).toBe("auto");
+    expect(usePreferencesStore.getInitialState().multiplayerSplitLayoutNudgeDismissed).toBe(true);
     expect(state.aiSeats).toEqual([{ difficulty: "Medium", deckId: "Random" }]);
     expect(state.priorityPassingMode).toBe("Standard");
+    expect(state.draftDoubleClickConfirmPick).toBe(true);
   });
 
   it("setAiSeatDifficulty updates the target seat", () => {
@@ -103,6 +112,15 @@ describe("preferencesStore", () => {
     expect(usePreferencesStore.getState().multiplayerBoardLayout).toBe("split");
   });
 
+  it("updates the multiplayer split-layout nudge dismissal independently", () => {
+    act(() => {
+      usePreferencesStore.getState().setMultiplayerSplitLayoutNudgeDismissed(false);
+    });
+
+    expect(usePreferencesStore.getState().multiplayerSplitLayoutNudgeDismissed).toBe(false);
+    expect(usePreferencesStore.getState().multiplayerBoardLayout).toBe("auto");
+  });
+
   it("setFollowActiveOpponent updates the value", () => {
     act(() => {
       usePreferencesStore.getState().setFollowActiveOpponent(true);
@@ -117,6 +135,21 @@ describe("preferencesStore", () => {
     });
 
     expect(usePreferencesStore.getState().logDefaultState).toBe("open");
+  });
+
+  it("persists the game-log dock side and reset restores the right dock", () => {
+    act(() => {
+      usePreferencesStore.getState().setLogDockSide("left");
+    });
+
+    expect(usePreferencesStore.getState().logDockSide).toBe("left");
+    expect(JSON.parse(localStorage.getItem("phase-preferences")!).state.logDockSide).toBe("left");
+
+    act(() => {
+      usePreferencesStore.getState().resetAllPreferences();
+    });
+
+    expect(usePreferencesStore.getState().logDockSide).toBe("right");
   });
 
   it("setBoardBackground updates board background", () => {
@@ -231,6 +264,7 @@ describe("preferencesStore", () => {
       usePreferencesStore.getState().setMasterVolume(20);
       usePreferencesStore.getState().setPacingMultiplier("combat", 1.5);
       usePreferencesStore.getState().setPriorityPassingMode("SkipLowUseWindows");
+      usePreferencesStore.getState().setDraftDoubleClickConfirmPick(false);
     });
 
     act(() => {
@@ -242,6 +276,7 @@ describe("preferencesStore", () => {
     expect(state.masterVolume).toBe(100);
     expect(state.pacingMultipliers).toEqual({ effects: 1.0, combat: 1.0, banners: 1.0 });
     expect(state.priorityPassingMode).toBe("Standard");
+    expect(state.draftDoubleClickConfirmPick).toBe(true);
   });
 
   it("existing preferences are unchanged after setting animation prefs", () => {
@@ -262,6 +297,7 @@ describe("preferencesStore", () => {
       usePreferencesStore.getState().setCardSize("small");
       usePreferencesStore.getState().setFollowActiveOpponent(true);
       usePreferencesStore.getState().setAiSeatDifficulty(0, "VeryHard");
+      usePreferencesStore.getState().setDraftDoubleClickConfirmPick(false);
     });
 
     // Zustand persist writes to localStorage
@@ -272,6 +308,56 @@ describe("preferencesStore", () => {
     expect(parsed.state.cardSize).toBe("small");
     expect(parsed.state.followActiveOpponent).toBe(true);
     expect(parsed.state.aiSeats[0].difficulty).toBe("VeryHard");
+    expect(parsed.state.draftDoubleClickConfirmPick).toBe(false);
+  });
+
+  it("normalizes a current-version persisted locale before consumers can use it", () => {
+    localStorage.setItem(
+      "phase-preferences",
+      JSON.stringify({ state: { language: "pt-BR" }, version: 33 }),
+    );
+
+    act(() => usePreferencesStore.persist.rehydrate());
+
+    expect(usePreferencesStore.getState().language).toBe("pt");
+  });
+
+  it("falls back from an unsupported current-version persisted locale", () => {
+    localStorage.setItem(
+      "phase-preferences",
+      JSON.stringify({ state: { language: "zh-Hans" }, version: 33 }),
+    );
+
+    act(() => usePreferencesStore.persist.rehydrate());
+
+    expect(["en", "es", "fr", "de", "it", "pt", "pl"]).toContain(
+      usePreferencesStore.getState().language,
+    );
+  });
+
+  it("migrates pre-log-dock preferences to the prior right dock", () => {
+    localStorage.setItem(
+      "phase-preferences",
+      JSON.stringify({ state: { logDockSide: "left" }, version: 32 }),
+    );
+
+    act(() => usePreferencesStore.persist.rehydrate());
+
+    expect(usePreferencesStore.getState().logDockSide).toBe("right");
+  });
+
+  it.each([undefined, "middle", 7])("resets an invalid current log-dock value (%j) to right", (logDockSide) => {
+    localStorage.setItem(
+      "phase-preferences",
+      JSON.stringify({
+        state: logDockSide === undefined ? {} : { logDockSide },
+        version: 33,
+      }),
+    );
+
+    act(() => usePreferencesStore.persist.rehydrate());
+
+    expect(usePreferencesStore.getState().logDockSide).toBe("right");
   });
 
   it("migrates v1 enum animationSpeed='instant' to multiplier 0", () => {
@@ -590,7 +676,7 @@ describe("preferencesStore", () => {
     expect(usePreferencesStore.getState().aiBracketFilter).toEqual([]);
   });
 
-  it("v20 → v21 migration defaults multiplayerBoardLayout to focused", () => {
+  it("v20 → v21 migration keeps pre-existing stores on the focused layout", () => {
     localStorage.setItem(
       "phase-preferences",
       JSON.stringify({
@@ -606,5 +692,37 @@ describe("preferencesStore", () => {
     });
 
     expect(usePreferencesStore.getState().multiplayerBoardLayout).toBe("focused");
+  });
+
+  it("v29 → v30 migration defaults draft card previews to none", () => {
+    localStorage.setItem(
+      "phase-preferences",
+      JSON.stringify({
+        state: { cardPreviewMode: "follow" },
+        version: 29,
+      }),
+    );
+
+    act(() => {
+      usePreferencesStore.persist.rehydrate();
+    });
+
+    expect(usePreferencesStore.getState().draftCardPreviewMode).toBe("none");
+  });
+
+  it("v30 → v31 migration enables draft double-click confirmation", () => {
+    localStorage.setItem(
+      "phase-preferences",
+      JSON.stringify({
+        state: { draftCardPreviewMode: "none" },
+        version: 30,
+      }),
+    );
+
+    act(() => {
+      usePreferencesStore.persist.rehydrate();
+    });
+
+    expect(usePreferencesStore.getState().draftDoubleClickConfirmPick).toBe(true);
   });
 });

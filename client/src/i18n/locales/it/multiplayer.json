@@ -81,6 +81,12 @@
   "joinErrorDialog": {
     "dismiss": "Ignora"
   },
+  "reconnectRejected": {
+    "firstMessageInvalid": "L'host ha rifiutato la connessione prima della configurazione. Aggiorna entrambe le finestre e riprova.",
+    "versionRequired": "Questo host richiede il protocollo di connessione v{{version}}. Aggiorna entrambe le finestre e riprova.",
+    "versionMismatch": "Il protocollo di connessione non corrisponde: il tuo client ha inviato v{{guestVersion}}, ma l'host usa v{{hostVersion}}. Aggiorna entrambe le finestre.",
+    "malformedAuthority": "L'host ha rifiutato un'autorizzazione di connessione non valida. Rientra con un nuovo codice stanza."
+  },
   "serverOfflinePrompt": {
     "title": "Matchmaking irraggiungibile",
     "message": "Non siamo riusciti a raggiungere il server di gioco, quindi la lobby pubblica non è disponibile al momento. Puoi comunque giocare condividendo un codice diretto con un amico.",
@@ -214,7 +220,17 @@
     "back": "Indietro",
     "opening": "Apertura…",
     "hostP2PGame": "Ospita partita P2P",
-    "hostGame": "Ospita partita"
+    "hostGame": "Ospita partita",
+    "savedFormats": "Formati personalizzati salvati",
+    "saveAsCustomFormat": "Salva formato",
+    "customFormatNamePlaceholder": "Dai un nome a questo formato",
+    "useCustomFormat": "Usa",
+    "customFormatInUse": "In uso",
+    "deleteCustomFormat": "Elimina",
+    "loadingCustomFormat": "Caricamento del formato…",
+    "noSavedCustomFormats": "Nessun formato personalizzato salvato.",
+    "customFormatResolveFailed": "Impossibile caricare il formato salvato.",
+    "customFormatHostingUnavailable": "Ospitare con un formato personalizzato non è ancora supportato — la legalità del mazzo non può essere verificata per esso. Per ora, salvalo e limitati all'anteprima."
   },
   "page": {
     "deckRejected": "Il mazzo è stato rifiutato dall'host.",

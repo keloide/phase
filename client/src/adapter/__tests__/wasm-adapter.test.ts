@@ -8,9 +8,10 @@ import type {
   SubmitResult,
 } from "../types";
 import { AdapterError, AdapterErrorCode } from "../types";
-import { buildGameState } from "../../test/factories/gameStateFactory";
+import { buildGameState, gameStateFactory } from "../../test/factories/gameStateFactory";
 
 const ensureWasmInit = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const resumeRestoredGameState = vi.hoisted(() => vi.fn());
 const resumeMultiplayerHostState = vi.hoisted(() => vi.fn());
 
 vi.mock("../../services/cardData", () => ({
@@ -19,6 +20,7 @@ vi.mock("../../services/cardData", () => ({
 }));
 
 vi.mock("@wasm/engine", () => ({
+  resume_restored_game_state: resumeRestoredGameState,
   resume_multiplayer_host_state: resumeMultiplayerHostState,
 }));
 
@@ -31,6 +33,9 @@ const mockWorkerClient = {
   evaluateDeckCompatibility: vi
     .fn()
     .mockResolvedValue({ standard: { compatible: true, reasons: [] } }),
+  evaluateDeckFormatGate: vi.fn().mockResolvedValue({ compatible: true, reasons: [] }),
+  customFormatFromLobbyConfig: vi.fn().mockResolvedValue({ label: "My Format" }),
+  formatConfigForCustomRules: vi.fn().mockResolvedValue({ format: "Custom:0" }),
   getCardFaceData: vi.fn().mockResolvedValue({ name: "Lightning Bolt" }),
   getCardParseDetails: vi.fn().mockResolvedValue([{ category: "ability" }]),
   getCardRulings: vi.fn().mockResolvedValue([{ date: "2020-01-01", text: "Test" }]),
@@ -41,6 +46,8 @@ const mockWorkerClient = {
     .fn()
     .mockResolvedValue({ events: [], log_entries: [] } as SubmitResult),
   submitInteraction: vi.fn().mockResolvedValue({ events: [], log_entries: [] } as SubmitResult),
+  previewManaPayment: vi.fn().mockResolvedValue([]),
+  resolveAll: vi.fn().mockResolvedValue({ items_resolved: 0 }),
   getAiActionProposal: vi.fn(),
   getAiActionProposalWithDiagnostics: vi.fn(),
   getAiTacticalActionProposal: vi.fn(),
@@ -56,7 +63,8 @@ const mockWorkerClient = {
   getLegalActions: vi.fn().mockResolvedValue({ actions: [], autoPassRecommended: false }),
   exportState: vi.fn().mockResolvedValue("{}"),
   restoreState: vi.fn().mockResolvedValue(undefined),
-  resumeMultiplayerHostState: vi.fn().mockResolvedValue(undefined),
+  resumeRestoredGameState: vi.fn(),
+  resumeMultiplayerHostState: vi.fn(),
   setMultiplayerMode: vi.fn().mockResolvedValue(undefined),
   resetGame: vi.fn().mockResolvedValue(undefined),
   applySeatMutation: vi.fn().mockResolvedValue({ state: {}, delta: {} }),
@@ -91,12 +99,28 @@ describe("WasmAdapter", () => {
     mockWorkerClient.getAiScoredCandidates.mockResolvedValue([]);
     mockWorkerClient.getAiActionProposal.mockResolvedValue(null);
     mockWorkerClient.getAiActionProposalWithDiagnostics.mockResolvedValue(null);
+    mockWorkerClient.getAiActionProposalFromScores.mockResolvedValue(null);
+    mockWorkerClient.getAiActionProposalFromScoresWithDiagnostics.mockResolvedValue(null);
     mockWorkerClient.getAiTacticalActionProposal.mockResolvedValue(null);
     mockWorkerClient.getAiTacticalActionProposalWithDiagnostics.mockResolvedValue(null);
     mockWorkerClient.submitAiActionProposal.mockResolvedValue({
       status: "stale",
       reason: "test",
     });
+    const restored = {
+      presentation: {
+        outcome: "noop" as const,
+        automatedResolutionCount: 0,
+        omittedEventCount: 0,
+        logEntries: [],
+      },
+      snapshot: {
+        state: buildGameState({ turn_number: 3, phase: "PreCombatMain" }),
+        legalResult: { actions: [], autoPassRecommended: false },
+      },
+    };
+    mockWorkerClient.resumeRestoredGameState.mockResolvedValue(restored);
+    mockWorkerClient.resumeMultiplayerHostState.mockResolvedValue(restored);
   });
 
   describe("AI decision diagnostics", () => {
@@ -139,7 +163,15 @@ describe("WasmAdapter", () => {
     it("publishes only after apply and retains a rejected proposal for retry", async () => {
       mockWorkerClient.getAiActionProposalWithDiagnostics.mockResolvedValue({ proposal, receipt });
       mockWorkerClient.submitAiActionProposal
-        .mockResolvedValueOnce({ status: "rejected", reason: "retry" })
+        .mockResolvedValueOnce({
+          status: "rejected",
+          rejection: {
+            code: "action_not_allowed",
+            disposition: "unavailable",
+            message: "That action is not allowed right now.",
+            related_object_ids: [7],
+          },
+        })
         .mockResolvedValueOnce({ status: "applied", result: { events: [], log_entries: [] } });
       await adapter.initialize();
       const listener = vi.fn();
@@ -147,7 +179,10 @@ describe("WasmAdapter", () => {
       adapter.subscribeAiDecisionDiagnostics(listener);
 
       await expect(adapter.getAiActionProposal("Medium", 0)).resolves.toEqual(proposal);
-      await expect(adapter.submitAiActionProposal(proposal)).resolves.toMatchObject({ status: "rejected" });
+      await expect(adapter.submitAiActionProposal(proposal)).resolves.toMatchObject({
+        status: "rejected",
+        rejection: { related_object_ids: [7] },
+      });
       expect(listener).not.toHaveBeenCalled();
 
       await expect(adapter.submitAiActionProposal(proposal)).resolves.toMatchObject({ status: "applied" });
@@ -170,6 +205,101 @@ describe("WasmAdapter", () => {
     });
   });
 
+  it.each([false, true])("uses VeryHard pool scores from a state envelope with diagnostics %s", async (diagnostics) => {
+    const proposal: AiActionProposal = {
+      token: "scored-token",
+      semanticOwner: 0,
+      actor: 0,
+      action: { type: "PassPriority" },
+    };
+    const receipt: AiDecisionDiagnosticReceipt = {
+      semanticOwner: 0,
+      authorizedActor: 0,
+      selectedAction: proposal.action,
+      status: "direct",
+      selectionExplanation: "The authoritative worker selected the scored action.",
+      samplingTemperature: null,
+      candidates: [],
+    };
+    const scores = [[proposal.action, 12]];
+    mockWorkerClient.getState.mockResolvedValue({
+      state: gameStateFactory.priority().build(),
+      derived: {},
+    });
+    mockWorkerClient.getAiScoredCandidates.mockResolvedValue(scores);
+    mockWorkerClient.getAiActionProposalFromScores.mockResolvedValue(proposal);
+    mockWorkerClient.getAiActionProposalFromScoresWithDiagnostics.mockResolvedValue({ proposal, receipt });
+    mockWorkerClient.submitAiActionProposal.mockResolvedValue({
+      status: "applied",
+      result: { events: [], log_entries: [] },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await adapter.initialize();
+      adapter.cardDbLoaded = true;
+      adapter.setAiDecisionDiagnosticsEnabled(diagnostics);
+      const listener = vi.fn();
+      adapter.subscribeAiDecisionDiagnostics(listener);
+
+      await expect(adapter.getAiActionProposal("VeryHard", 0)).resolves.toEqual(proposal);
+
+      expect(mockWorkerClient.getAiScoredCandidates).toHaveBeenCalledWith("VeryHard", 0, expect.any(Number));
+      const selectedEndpoint = diagnostics
+        ? mockWorkerClient.getAiActionProposalFromScoresWithDiagnostics
+        : mockWorkerClient.getAiActionProposalFromScores;
+      const unusedEndpoint = diagnostics
+        ? mockWorkerClient.getAiActionProposalFromScores
+        : mockWorkerClient.getAiActionProposalFromScoresWithDiagnostics;
+      expect(selectedEndpoint).toHaveBeenCalledExactlyOnceWith(JSON.stringify(scores), "VeryHard", 0, expect.any(Number));
+      expect(unusedEndpoint).not.toHaveBeenCalled();
+      expect(mockWorkerClient.getAiActionProposal).not.toHaveBeenCalled();
+      expect(mockWorkerClient.getAiActionProposalWithDiagnostics).not.toHaveBeenCalled();
+      expect(mockWorkerClient.getAiTacticalActionProposal).not.toHaveBeenCalled();
+      expect(mockWorkerClient.getAiTacticalActionProposalWithDiagnostics).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+      expect(listener).not.toHaveBeenCalled();
+
+      await expect(adapter.submitAiActionProposal(proposal)).resolves.toMatchObject({ status: "applied" });
+      expect(mockWorkerClient.submitAiActionProposal).toHaveBeenCalledExactlyOnceWith(proposal);
+      if (diagnostics) {
+        expect(listener).toHaveBeenCalledExactlyOnceWith(receipt);
+      } else {
+        expect(listener).not.toHaveBeenCalled();
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([false, true])("skips VeryHard pool scoring for a non-Priority envelope with diagnostics %s", async (diagnostics) => {
+    mockWorkerClient.getState.mockResolvedValue({
+      state: gameStateFactory.manaPayment().build(),
+      derived: {},
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await adapter.initialize();
+      adapter.cardDbLoaded = true;
+      adapter.setAiDecisionDiagnosticsEnabled(diagnostics);
+
+      await expect(adapter.getAiActionProposal("VeryHard", 0)).resolves.toBeNull();
+
+      const selectedEndpoint = diagnostics
+        ? mockWorkerClient.getAiActionProposalWithDiagnostics
+        : mockWorkerClient.getAiActionProposal;
+      expect(selectedEndpoint).toHaveBeenCalledExactlyOnceWith("VeryHard", 0);
+      expect(mockWorkerClient.exportState).not.toHaveBeenCalled();
+      expect(mockWorkerClient.getAiScoredCandidates).not.toHaveBeenCalled();
+      expect(mockWorkerClient.getAiActionProposalFromScores).not.toHaveBeenCalled();
+      expect(mockWorkerClient.getAiActionProposalFromScoresWithDiagnostics).not.toHaveBeenCalled();
+      expect(mockWorkerClient.getAiTacticalActionProposal).not.toHaveBeenCalled();
+      expect(mockWorkerClient.getAiTacticalActionProposalWithDiagnostics).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("retires a failed VeryHard pool before the next decision", async () => {
     const proposal: AiActionProposal = {
       token: "authoritative-token",
@@ -177,7 +307,10 @@ describe("WasmAdapter", () => {
       actor: 0,
       action: { type: "PassPriority" },
     };
-    mockWorkerClient.getState.mockResolvedValue({ waiting_for: { type: "Priority" } });
+    mockWorkerClient.getState.mockResolvedValue({
+      state: gameStateFactory.priority().build(),
+      derived: {},
+    });
     mockWorkerClient.getAiScoredCandidates.mockRejectedValue(new Error("pool worker crashed"));
     mockWorkerClient.getAiActionProposal.mockResolvedValue(proposal);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -207,7 +340,10 @@ describe("WasmAdapter", () => {
       actor: 0,
       action: { type: "PassPriority" },
     };
-    mockWorkerClient.getState.mockResolvedValue({ waiting_for: { type: "Priority" } });
+    mockWorkerClient.getState.mockResolvedValue({
+      state: gameStateFactory.priority().build(),
+      derived: {},
+    });
     mockWorkerClient.getAiScoredCandidates.mockReturnValue(new Promise(() => {}));
     mockWorkerClient.getAiActionProposal.mockResolvedValue(proposal);
     mockWorkerClient.getAiTacticalActionProposal.mockResolvedValue(proposal);
@@ -251,7 +387,10 @@ describe("WasmAdapter", () => {
       samplingTemperature: null,
       candidates: [],
     };
-    mockWorkerClient.getState.mockResolvedValue({ waiting_for: { type: "Priority" } });
+    mockWorkerClient.getState.mockResolvedValue({
+      state: gameStateFactory.priority().build(),
+      derived: {},
+    });
     mockWorkerClient.getAiScoredCandidates.mockReturnValue(new Promise(() => {}));
     mockWorkerClient.getAiTacticalActionProposalWithDiagnostics.mockResolvedValue({ proposal, receipt });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -314,7 +453,7 @@ describe("WasmAdapter", () => {
       expect(adapter.getEngineClient()).toBeNull();
     });
 
-    it("does not reactivate after disposal while initialization is pending", async () => {
+    it("rejects initialization canceled by disposal", async () => {
       let finishInitialization!: () => void;
       mockWorkerClient.initialize.mockImplementationOnce(
         () =>
@@ -326,7 +465,10 @@ describe("WasmAdapter", () => {
       const staleInitialization = adapter.initialize();
       adapter.dispose();
       finishInitialization();
-      await staleInitialization;
+      await expect(staleInitialization).rejects.toMatchObject({
+        code: AdapterErrorCode.NOT_INITIALIZED,
+        message: "Adapter initialization was canceled. Please try again.",
+      });
 
       await expect(adapter.ping()).rejects.toMatchObject({
         code: AdapterErrorCode.NOT_INITIALIZED,
@@ -360,6 +502,43 @@ describe("WasmAdapter", () => {
       expect(mockWorkerClient.loadCardDbFromUrl).toHaveBeenCalledOnce();
       expect(mockWorkerClient.evaluateDeckCompatibility).toHaveBeenCalledWith(request);
       expect(result).toEqual({ standard: { compatible: true, reasons: [] } });
+    });
+  });
+
+  // Symmetric with the block above, and load-bearing for exactly one reason: a
+  // copy-paste slip inside `evaluateDeckFormatGate`'s real implementation —
+  // calling `evaluateDeckCompatibility` instead of `evaluateDeckFormatGate` —
+  // would silently restore the UI-hint path's "no opinion" answer on the
+  // security gate, and every fully-mocked `p2p-adapter` test would still pass.
+  // This is the only layer that can catch it.
+  describe("evaluateDeckFormatGate", () => {
+    it("ensures the DB is loaded then delegates to the gate worker method", async () => {
+      const request = { main_deck: ["Forest"], sideboard: [], selected_format: "Custom:0" };
+      const result = await adapter.evaluateDeckFormatGate(request);
+      expect(mockWorkerClient.loadCardDbFromUrl).toHaveBeenCalledOnce();
+      expect(mockWorkerClient.evaluateDeckFormatGate).toHaveBeenCalledWith(request);
+      // The UI-hint method must NOT be what a gate call reaches.
+      expect(mockWorkerClient.evaluateDeckCompatibility).not.toHaveBeenCalled();
+      expect(result).toEqual({ compatible: true, reasons: [] });
+    });
+  });
+
+  describe("custom format save/select", () => {
+    it("delegates a lobby-config save to the engine", async () => {
+      const config = { format: "Commander" };
+      const result = await adapter.customFormatFromLobbyConfig("My Format", config);
+      expect(mockWorkerClient.customFormatFromLobbyConfig).toHaveBeenCalledWith(
+        "My Format",
+        config,
+      );
+      expect(result).toEqual({ label: "My Format" });
+    });
+
+    it("delegates custom-rule resolution to the engine's own resolver", async () => {
+      const rules = { id: 0 };
+      const result = await adapter.formatConfigForCustomRules(rules);
+      expect(mockWorkerClient.formatConfigForCustomRules).toHaveBeenCalledWith(rules);
+      expect(result).toEqual({ format: "Custom:0" });
     });
   });
 
@@ -446,6 +625,24 @@ describe("WasmAdapter", () => {
 
       expect(mockWorkerClient.submitAction).toHaveBeenCalledOnce();
       expect(mockWorkerClient.loadCardDbFromUrl).not.toHaveBeenCalled();
+    });
+
+    it("preserves a structured rejection without parsing its message", async () => {
+      const rejection = {
+        code: "wrong_player" as const,
+        disposition: "unauthorized" as const,
+        message: "That action belongs to a different player.",
+        related_object_ids: [42],
+      };
+      mockWorkerClient.submitAction.mockRejectedValueOnce(
+        new AdapterError(AdapterErrorCode.ACTION_REJECTED, rejection.message, true, undefined, rejection),
+      );
+      await adapter.initialize();
+
+      await expect(adapter.submitAction({ type: "PassPriority" }, 0)).rejects.toMatchObject({
+        code: AdapterErrorCode.ACTION_REJECTED,
+        rejection,
+      });
     });
 
     it("loads the card database and retries only after Rust admits a nonzero create", async () => {
@@ -647,6 +844,22 @@ describe("WasmAdapter", () => {
         "resume failed",
       );
       expect(resumeMultiplayerHostState).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe("resumeRestoredGameState", () => {
+    it("returns the engine-authored presentation with its matching snapshot", async () => {
+      await adapter.initialize();
+
+      const resumed = await adapter.resumeRestoredGameState();
+
+      expect(mockWorkerClient.resumeRestoredGameState).toHaveBeenCalledOnce();
+      expect(resumed.presentation).toMatchObject({
+        outcome: "noop",
+        automatedResolutionCount: 0,
+        omittedEventCount: 0,
+      });
+      expect(resumed.snapshot.state.turn_number).toBe(3);
     });
   });
 

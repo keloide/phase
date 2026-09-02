@@ -10,8 +10,8 @@ use nom::Parser;
 use super::oracle_effect::conditions::source_saddled_filter;
 use super::oracle_effect::{
     attach_terminal_die_result_branches_before_finalization, condition_text_is_rehomeable,
-    lower_effect_chain_ir, parse_effect_chain_ir, try_parse_reanimator_aura_etb_effect_ir,
-    try_parse_reanimator_aura_grant_etb_effect_ir,
+    lower_effect_chain_ir, parse_attacked_player_relative_clause, parse_effect_chain_ir,
+    try_parse_reanimator_aura_etb_effect_ir, try_parse_reanimator_aura_grant_etb_effect_ir,
 };
 use super::oracle_ir::ast::parsed_clause;
 use super::oracle_ir::context::{ParseContext, TriggerConditionScope};
@@ -22,7 +22,9 @@ use super::oracle_ir::trigger::{
     TriggerBody, TriggerIr, TriggerModifiers, TriggerNodeIr,
 };
 use super::oracle_modal::try_parse_inline_modal_ir;
-use super::oracle_nom::condition::parse_elided_subject_state_condition;
+use super::oracle_nom::condition::{
+    parse_affirmative_reflexive_connector, parse_elided_subject_state_condition,
+};
 use super::oracle_nom::condition::{
     parse_inner_condition, parse_spell_history_filter, parse_there_are_battlefield_count_clause,
 };
@@ -50,16 +52,16 @@ use crate::types::ability::ManaProduction;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AbilityTag,
     AdditionalCostOrigin, AdditionalCostPaymentSource, AggregateFunction, AttachmentKind,
-    AttackersDeclaredCountSubject, CardSelectionMode, CastManaObjectScope, CastManaSpentMetric,
-    CastVariantPaid, CoinFlipResult, Comparator, ControllerRef, CountScope, CounterTriggerFilter,
-    DamageAmountScope, DamageAmountThreshold, DamageChannel, DamageKindFilter,
-    DestinationConstraint, DieResultFilter, Effect, EffectScope, FilterProp,
-    ManaAbilityProducedFilter, ObjectScope, OriginConstraint, ParsedCondition, PlayerFilter,
-    PlayerScope, PtStat, PtValueScope, QuantityExpr, QuantityRef, RenownSubject,
-    SacrificeAggregateStat, SacrificeCost, SacrificeRequirement, SharedQuality, StaticCondition,
-    SubAbilityLink, TapCreaturesRequirement, TapStateChange, TargetFilter, TriggerCondition,
-    TriggerConstraint, TriggerDefinition, TypeFilter, TypedFilter, UnlessPayModifier,
-    ZoneChangeClause,
+    AttackersDeclaredCountSubject, CardSelectionMode, CardTypeSetSource, CastManaObjectScope,
+    CastManaSpentMetric, CastVariantPaid, CoinFlipResult, Comparator, ControllerRef, CountScope,
+    CounterTriggerFilter, DamageAmountScope, DamageAmountThreshold, DamageChannel,
+    DamageKindFilter, DelayedTriggerCondition, DestinationConstraint, DieResultFilter, Effect,
+    EffectScope, FilterProp, ManaAbilityProducedFilter, ObjectScope, OriginConstraint,
+    ParsedCondition, PlayerFilter, PlayerRelation, PlayerScope, PropertyAggregate, PtStat,
+    PtValueScope, QuantityExpr, QuantityRef, RenownSubject, SacrificeAggregateStat, SacrificeCost,
+    SacrificeRequirement, SharedQuality, StaticCondition, SubAbilityLink, TapCreaturesRequirement,
+    TapStateChange, TargetFilter, TriggerCondition, TriggerConstraint, TriggerDefinition,
+    TypeFilter, TypedFilter, UnlessPayModifier, ZoneChangeClause,
 };
 use crate::types::card_type::{is_land_subtype, CoreType};
 use crate::types::counter::CounterType;
@@ -106,7 +108,7 @@ fn strip_spell_not_owned_qualifier(payload: &str) -> (&str, bool) {
         .unwrap_or((payload, false))
 }
 
-/// CR 603.7c: "Whenever a player casts a spell they don't own" — the casting
+/// CR 108.3 + CR 603.2: "Whenever a player casts a spell they don't own" — the casting
 /// player is the trigger event's player; the spell must not be owned by them.
 fn strip_spell_they_dont_own_qualifier(payload: &str) -> (&str, bool) {
     let mut parser = alt((
@@ -975,6 +977,51 @@ fn parse_referenced_player_phrase(input: &str) -> OracleResult<'_, ()> {
     .parse(input)
 }
 
+/// CR 508.3e: the attacked-player OBJECT of a bare "you attack …" trigger
+/// condition, i.e. the `[another player]` slot in "Whenever [a player] attacks
+/// [another player], . . .".
+///
+/// Returning `Some` does two independent jobs, both owned by
+/// `attack_target_filter`:
+///
+/// 1. **Restriction.** CR 508.3e: "It won't trigger if a creature is put onto
+///    the battlefield attacking or if a creature attacks a planeswalker or a
+///    battle." Without the filter the trigger fires on a planeswalker-only
+///    declaration.
+/// 2. **Per-firing binding.** CR 508.3e binds one attacked player per firing,
+///    which `triggers::trigger_event_batches` turns into one synthesized
+///    `AttackersDeclared` per attacked player. Confirmed by the printed
+///    rulings on Echoing Assault ("triggers once for each player you
+///    attacked"), Soaring Lightbringer, and Horizon Explorer — the last of
+///    which has no "that player" anaphor at all, proving the cardinality is a
+///    property of the trigger CONDITION, not of the ability's body.
+///
+/// `None` (a bare "you attack") keeps CR 508.3d: fires once per declaration,
+/// any defender. A trailing qualifier ("a player WITH one or more equipped
+/// creatures", Akiri) also declines: that clause narrows the trigger further
+/// and is not modelled on this arm, so claiming the CR 508.3e restriction
+/// while dropping the qualifier would be worse than leaving the shape alone.
+fn parse_you_attack_player_object(rest: &str) -> Option<AttackTargetFilter> {
+    let (remainder, filter) = alt((
+        value(
+            AttackTargetFilter::Player,
+            tag::<_, _, OracleError<'_>>(" a player"),
+        ),
+        // CR 725.1: exactly one player holds the monarch designation, so the
+        // per-attacked-player split is degenerate here — but binding it still
+        // beats the batch-global defender when the monarch is attacked
+        // alongside another player.
+        value(AttackTargetFilter::Monarch, tag(" the monarch")),
+    ))
+    .parse(rest)
+    .ok()?;
+    remainder
+        .trim_start_matches(',')
+        .trim()
+        .is_empty()
+        .then_some(filter)
+}
+
 fn condition_introduces_defending_player(cond_lower: &str) -> bool {
     // Walk word boundaries — the actor/verb pair may be preceded by "whenever",
     // "when", or quantifiers like "one or more creatures you control".
@@ -1241,7 +1288,7 @@ fn is_damage_done_trigger_pattern(cond_lower: &str) -> bool {
     )
 }
 
-/// CR 109.4 + CR 115.1 + CR 506.2 + CR 603.7c: Derive the relative-player scope
+/// CR 109.4 + CR 115.1 + CR 506.2: Derive the relative-player scope
 /// that a trigger condition introduces for `"that player"`/`"they"`-style
 /// anaphors in the trigger's effect body.
 ///
@@ -1461,7 +1508,7 @@ pub(crate) fn parse_trigger_line_with_index_ir(
         ..Default::default()
     };
 
-    // CR 109.4 + CR 115.1 + CR 506.2 + CR 603.7c: Set relative-player scope for
+    // CR 109.4 + CR 115.1 + CR 506.2: Set relative-player scope for
     // `"that player"` resolution inside the trigger effect body. Delegated to the
     // single-authority `relative_player_scope_for_condition` so the delayed-trigger
     // split path derives the identical scope from the same condition.
@@ -1501,7 +1548,7 @@ pub(crate) fn parse_trigger_line_with_index_ir(
     let has_up_to = scan_contains(&effect_for_parse_lower, "up to one")
         || scan_contains(&effect_for_parse_lower, "any number of target");
     let body = if !effect_for_parse.is_empty() {
-        if let Some((cost, reflexive_effect_text)) =
+        if let Some((cost, connector, reflexive_effect_text)) =
             split_reflexive_optional_payment(&effect_for_parse)
         {
             optional = false;
@@ -1512,6 +1559,7 @@ pub(crate) fn parse_trigger_line_with_index_ir(
                     cost,
                     payment_chain: None,
                 },
+                connector,
                 effect_chain,
                 modal: None,
             })))
@@ -1598,7 +1646,7 @@ pub(crate) fn parse_trigger_line_with_index_ir(
                 // through the modal parser so each mode body is independently
                 // parsed with the trigger's established relative_player_scope (e.g.
                 // TriggeringPlayer for DamageDone triggers) so "that player" in mode
-                // bodies resolves to the damaged player (CR 603.7c).
+                // bodies resolves to the damaged player (CR 120.3).
                 if let Some(modal) = try_parse_inline_modal_ir(&effect_for_parse, &effect_ctx) {
                     return Some(TriggerBody::Modal(Box::new(modal)));
                 }
@@ -1781,7 +1829,7 @@ pub(crate) fn lower_trigger_ir(ir: &TriggerIr) -> TriggerDefinition {
                 modifiers,
                 reflexive_die_results,
             );
-            reflexive_ability.condition = Some(AbilityCondition::WhenYouDo);
+            reflexive_ability.condition = Some(reflexive.connector.clone());
 
             if let Some(modal) = &reflexive.modal {
                 reflexive_ability = reflexive_ability.with_modal(
@@ -1796,7 +1844,8 @@ pub(crate) fn lower_trigger_ir(ir: &TriggerIr) -> TriggerDefinition {
 
             // CR 603.12: the parent is either an optional instruction the
             // controller may decline or a mandatory instruction. Both build the
-            // same parent → `WhenYouDo` sub shape.
+            // same parent → dependent-subability shape; the typed connector
+            // preserves whether the printed rider is reflexive or outcome-gated.
             let mut parent_ability = match &reflexive.parent {
                 ReflexiveParent::MayPay {
                     cost,
@@ -1851,7 +1900,7 @@ pub(crate) fn lower_trigger_ir(ir: &TriggerIr) -> TriggerDefinition {
         None => None,
     };
 
-    // CR 603.7c + CR 120.3 + CR 506.2: For triggers that introduce an
+    // CR 120.3 + CR 506.2: For triggers that introduce an
     // event-bound player ("deals combat damage to a player, they lose half
     // their life"), rebind the body's `PlayerScope::Target` possessive
     // quantities to `PlayerScope::ScopedPlayer` so they resolve against the
@@ -2067,7 +2116,7 @@ pub(crate) fn lower_trigger_ir(ir: &TriggerIr) -> TriggerDefinition {
         }
     }
 
-    // CR 109.4 + CR 603.7c: Surface TargetFilter::Player when execute
+    // CR 109.4 + CR 115.1d: Surface TargetFilter::Player when execute
     // references ControllerRef::TargetPlayer, when the effect text names a
     // target opponent/player (Sméagol, Helpful Guide RingTemptsYou), or when a
     // RevealUntil names an opponent library without TargetPlayer binding.
@@ -2220,6 +2269,14 @@ pub(crate) fn lower_trigger_ir(ir: &TriggerIr) -> TriggerDefinition {
     //      AND `optional_targeting == false`) — otherwise `ParentTarget`
     //      legitimately inherits the player's chosen target.
     if let Some(execute) = def.execute.as_deref_mut() {
+        // BecomesTarget's event object is the permanent/player that received the
+        // target designation, not the spell or ability that selected it. Keep
+        // the binding within the immediate chain: delayed triggers need a
+        // creation-time snapshot, which this path intentionally does not add.
+        if def.mode == TriggerMode::BecomesTarget {
+            rebind_immediate_parent_target_to_event_target(execute);
+            demote_becomes_target_delayed_payloads(execute);
+        }
         if mode_carries_event_source_object(&def.mode)
             && !valid_target_blocks_event_source_lift(&def.mode, def.valid_target.as_ref())
             && !execute.optional_targeting
@@ -2252,7 +2309,7 @@ pub(crate) fn lower_trigger_ir(ir: &TriggerIr) -> TriggerDefinition {
     def
 }
 
-/// CR 603.7c: Trigger modes whose firing event carries a specific source
+/// CR 608.2k + CR 400.7e: Trigger modes whose firing event carries a specific source
 /// object id retrievable via `extract_source_from_event`. The "that card /
 /// that creature / that permanent" anaphor in these triggers' effect bodies
 /// refers to *that* object.
@@ -2392,6 +2449,278 @@ fn lift_parent_target_to_triggering_source_in_ability(ability: &mut AbilityDefin
         lift_parent_target_to_triggering_source(link.effect.as_mut(), allow_set_tap_lift);
         node = link.sub_ability.as_deref_mut();
         is_top_level = false;
+    }
+}
+
+/// Engine contract: rebind immediate `ParentTarget` or `TriggeringSource`
+/// anaphora in a BecomesTarget trigger to the object that became a target. This
+/// mirrors the event-source lift's first fresh-choice boundary: the triggering
+/// object remains the antecedent only until an instruction introduces a
+/// player-chosen object, after which a `ParentTarget` denotes that new choice.
+///
+/// Delayed payloads are intentionally not traversed. They resolve in a later
+/// trigger window and require a creation-time snapshot rather than live event
+/// context; the strict-failure companion below keeps that unsupported shape
+/// coverage-honest.
+fn rebind_immediate_parent_target_to_event_target(ability: &mut AbilityDefinition) {
+    for mode in &mut ability.mode_abilities {
+        rebind_immediate_parent_target_to_event_target(mode);
+    }
+
+    let mut node = Some(ability);
+    while let Some(link) = node {
+        if matches!(link.effect.as_ref(), Effect::CreateDelayedTrigger { .. }) {
+            break;
+        }
+        if let Some(else_ability) = link.else_ability.as_deref_mut() {
+            rebind_immediate_parent_target_to_event_target(else_ability);
+        }
+        rebind_parent_target_to_event_target_in_effect(link.effect.as_mut());
+        if introduces_chosen_object_target(link.effect.as_ref()) {
+            break;
+        }
+        node = link.sub_ability.as_deref_mut();
+    }
+}
+
+fn rebind_parent_target_to_event_target_in_effect(effect: &mut Effect) {
+    crate::parser::oracle_effect::each_target_filter_mut(effect, &mut |filter| {
+        rebind_parent_target_to_event_target_in_filter(filter);
+    });
+
+    // Population filters are not target slots, so the shared target-field
+    // walker deliberately excludes them. They still carry immediate anaphora:
+    // Pawpatch Formation's `DistinctFrom { ParentTarget }` is the proof case.
+    match effect {
+        Effect::PutCounterAll { target, .. }
+        | Effect::PumpAll { target, .. }
+        | Effect::DamageAll { target, .. }
+        | Effect::DestroyAll { target, .. }
+        | Effect::GainControlAll { target, .. }
+        | Effect::BounceAll { target, .. }
+        | Effect::CounterAll { target, .. }
+        | Effect::ChangeZoneAll { target, .. }
+        | Effect::DoublePTAll { target, .. } => {
+            rebind_parent_target_to_event_target_in_filter(target)
+        }
+        _ => {}
+    }
+}
+
+fn rebind_parent_target_to_event_target_in_filter(filter: &mut TargetFilter) {
+    match filter {
+        TargetFilter::ParentTarget | TargetFilter::TriggeringSource => {
+            *filter = TargetFilter::EventTarget
+        }
+        TargetFilter::Typed(typed) => {
+            for prop in &mut typed.properties {
+                rebind_parent_target_to_event_target_in_prop(prop);
+            }
+        }
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+            for filter in filters {
+                rebind_parent_target_to_event_target_in_filter(filter);
+            }
+        }
+        TargetFilter::Not { filter } | TargetFilter::TrackedSetFiltered { filter, .. } => {
+            rebind_parent_target_to_event_target_in_filter(filter);
+        }
+        _ => {}
+    }
+}
+
+fn rebind_parent_target_to_event_target_in_prop(prop: &mut FilterProp) {
+    match prop {
+        FilterProp::CanEnchant { target }
+        | FilterProp::DifferentNameFrom { filter: target }
+        | FilterProp::DistinctFrom { reference: target }
+        | FilterProp::TargetsOnly { filter: target }
+        | FilterProp::Targets { filter: target } => {
+            rebind_parent_target_to_event_target_in_filter(target);
+        }
+        FilterProp::SharesQuality {
+            reference: Some(reference),
+            ..
+        } => rebind_parent_target_to_event_target_in_filter(reference),
+        FilterProp::AnyOf { props } => {
+            for prop in props {
+                rebind_parent_target_to_event_target_in_prop(prop);
+            }
+        }
+        FilterProp::Not { prop } => rebind_parent_target_to_event_target_in_prop(prop),
+        _ => {}
+    }
+}
+
+fn target_filter_contains_event_target(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::EventTarget | TargetFilter::ParentTarget | TargetFilter::TriggeringSource => {
+            true
+        }
+        TargetFilter::Typed(typed) => typed
+            .properties
+            .iter()
+            .any(filter_prop_contains_event_target),
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+            filters.iter().any(target_filter_contains_event_target)
+        }
+        TargetFilter::Not { filter } | TargetFilter::TrackedSetFiltered { filter, .. } => {
+            target_filter_contains_event_target(filter)
+        }
+        _ => false,
+    }
+}
+
+fn filter_prop_contains_event_target(prop: &FilterProp) -> bool {
+    match prop {
+        FilterProp::CanEnchant { target }
+        | FilterProp::DifferentNameFrom { filter: target }
+        | FilterProp::DistinctFrom { reference: target }
+        | FilterProp::TargetsOnly { filter: target }
+        | FilterProp::Targets { filter: target } => target_filter_contains_event_target(target),
+        FilterProp::SharesQuality {
+            reference: Some(reference),
+            ..
+        } => target_filter_contains_event_target(reference),
+        FilterProp::AnyOf { props } => props.iter().any(filter_prop_contains_event_target),
+        FilterProp::Not { prop } => filter_prop_contains_event_target(prop),
+        _ => false,
+    }
+}
+
+fn ability_contains_event_target(ability: &AbilityDefinition) -> bool {
+    effect_contains_event_target(ability.effect.as_ref())
+        || ability
+            .mode_abilities
+            .iter()
+            .any(ability_contains_event_target)
+        || ability
+            .sub_ability
+            .as_deref()
+            .is_some_and(ability_contains_event_target)
+        || ability
+            .else_ability
+            .as_deref()
+            .is_some_and(ability_contains_event_target)
+}
+
+fn trigger_definition_contains_event_target(trigger: &TriggerDefinition) -> bool {
+    [
+        trigger.valid_card.as_ref(),
+        trigger.valid_source.as_ref(),
+        trigger.valid_target.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(target_filter_contains_event_target)
+}
+
+fn delayed_condition_contains_event_target(condition: &DelayedTriggerCondition) -> bool {
+    match condition {
+        DelayedTriggerCondition::WhenDies { filter }
+        | DelayedTriggerCondition::WhenLeavesPlayFiltered { filter }
+        | DelayedTriggerCondition::WhenEntersBattlefield { filter }
+        | DelayedTriggerCondition::WhenDiesOrExiled { filter } => {
+            target_filter_contains_event_target(filter)
+        }
+        DelayedTriggerCondition::WheneverEvent { trigger, .. } => {
+            trigger_definition_contains_event_target(trigger)
+        }
+        DelayedTriggerCondition::WhenNextEvent {
+            trigger,
+            or_trigger,
+            ..
+        } => {
+            trigger_definition_contains_event_target(trigger)
+                || or_trigger
+                    .as_deref()
+                    .is_some_and(trigger_definition_contains_event_target)
+        }
+        DelayedTriggerCondition::AtNextPhase { .. }
+        | DelayedTriggerCondition::AtNextPhaseForPlayer { .. }
+        | DelayedTriggerCondition::WhenLeavesPlay { .. } => false,
+    }
+}
+
+fn effect_contains_event_target(effect: &Effect) -> bool {
+    let mut effect = effect.clone();
+    let mut found = false;
+    crate::parser::oracle_effect::each_target_filter_mut(&mut effect, &mut |filter| {
+        found |= target_filter_contains_event_target(filter);
+    });
+    if found {
+        return true;
+    }
+
+    // `each_target_filter_mut` intentionally covers the common target slots.
+    // These explicit branches cover all current known non-walker target-bearing
+    // payload carriers: copy source/recipient pairs and population filters. The
+    // delayed tests lock preservation plus the CopyTokenOf and BecomeCopy cases.
+    match &effect {
+        Effect::BecomeCopy {
+            target, recipient, ..
+        } => {
+            target_filter_contains_event_target(target)
+                || target_filter_contains_event_target(recipient)
+        }
+        Effect::CopyTokenOf {
+            target,
+            owner,
+            source_filter,
+            ..
+        } => {
+            target_filter_contains_event_target(target)
+                || target_filter_contains_event_target(owner)
+                || source_filter
+                    .as_ref()
+                    .is_some_and(target_filter_contains_event_target)
+        }
+        Effect::CreateDelayedTrigger {
+            condition, effect, ..
+        } => {
+            delayed_condition_contains_event_target(condition)
+                || ability_contains_event_target(effect)
+        }
+        Effect::PutCounterAll { target, .. }
+        | Effect::PumpAll { target, .. }
+        | Effect::DamageAll { target, .. }
+        | Effect::DestroyAll { target, .. }
+        | Effect::GainControlAll { target, .. }
+        | Effect::BounceAll { target, .. }
+        | Effect::CounterAll { target, .. }
+        | Effect::ChangeZoneAll { target, .. }
+        | Effect::DoublePTAll { target, .. } => target_filter_contains_event_target(target),
+        _ => false,
+    }
+}
+
+fn demote_becomes_target_delayed_payloads(ability: &mut AbilityDefinition) {
+    if let Effect::CreateDelayedTrigger {
+        condition, effect, ..
+    } = ability.effect.as_mut()
+    {
+        if delayed_condition_contains_event_target(condition)
+            || ability_contains_event_target(effect)
+        {
+            *effect.effect = Effect::unimplemented(
+                "becomes_target_delayed_event_target",
+                "delayed BecomesTarget payload requires an unsupported event snapshot",
+            );
+            effect.modal = None;
+            effect.mode_abilities.clear();
+            effect.sub_ability = None;
+            effect.else_ability = None;
+        }
+        return;
+    }
+    for mode in &mut ability.mode_abilities {
+        demote_becomes_target_delayed_payloads(mode);
+    }
+    if let Some(sub) = ability.sub_ability.as_deref_mut() {
+        demote_becomes_target_delayed_payloads(sub);
+    }
+    if let Some(else_ability) = ability.else_ability.as_deref_mut() {
+        demote_becomes_target_delayed_payloads(else_ability);
     }
 }
 
@@ -3032,12 +3361,12 @@ fn extract_unless_pay_modifier(
         return (cleaned, Some(UnlessPayModifier { cost, payer }));
     }
 
-    // CR 118.12a: "[trigger] ... unless they/that player/that opponent
-    // {sacrifice|discard|pay life} [or ...]" — same disjunctive non-mana
+    // CR 118.12a: "[trigger] ... unless they/that player/that opponent/defending
+    // player {sacrifice|discard|pay life} [or ...]" — same disjunctive non-mana
     // unless-cost shape the resolution-time path handles. Delegate to the
     // single authority (`parse_unless_they_alt_cost_chain`) so trigger-side
     // and resolution-side parse identically. The chain requires an explicit
-    // pronoun ("they"/"that player"/"that opponent"), so "you"/mana forms
+    // subject (`parse_unless_payer_subject`), so "you"/mana forms
     // fall through to the existing blocks unchanged.
     //
     // GUARD: the chain's per-branch `unless_branch_boundary` stops at the
@@ -3048,11 +3377,22 @@ fn extract_unless_pay_modifier(
     // terminal unless-cost; defer to the gap path (mirrors the `unless`
     // dispatch guard below at the `Unsupported unless clause` site).
     if !has_later_sentence_if(&lower) {
-        if let Some(cost) = parse_unless_they_alt_cost_chain(after_unless) {
-            let payer = infer_pronoun_unless_payer(&lower[..unless_pos], condition_lower)
-                .unwrap_or(TargetFilter::TriggeringPlayer);
+        if let Some(alt_cost) = parse_unless_they_alt_cost_chain(after_unless) {
+            // CR 508.5: a subject that NAMES its payer ("defending player")
+            // outranks the anaphoric inference below, which exists only to
+            // find the referent of a pronoun.
+            let payer = alt_cost.payer.unwrap_or_else(|| {
+                infer_pronoun_unless_payer(&lower[..unless_pos], condition_lower)
+                    .unwrap_or(TargetFilter::TriggeringPlayer)
+            });
             let cleaned = text[..unless_pos].trim().to_string();
-            return (cleaned, Some(UnlessPayModifier { cost, payer }));
+            return (
+                cleaned,
+                Some(UnlessPayModifier {
+                    cost: alt_cost.cost,
+                    payer,
+                }),
+            );
         }
     }
 
@@ -3285,7 +3625,9 @@ fn infer_pronoun_unless_payer(
 /// fully recognized and payable during resolution; unsupported or branch-choice
 /// costs should remain honest parser gaps rather than becoming a broad no-op
 /// `PayCost`.
-fn split_reflexive_optional_payment(effect_text: &str) -> Option<(AbilityCost, String)> {
+fn split_reflexive_optional_payment(
+    effect_text: &str,
+) -> Option<(AbilityCost, AbilityCondition, String)> {
     let lower = effect_text.to_lowercase();
     let (after_prefix, _) = tag::<_, _, OracleError<'_>>("you may ")
         .parse(lower.as_str())
@@ -3293,9 +3635,7 @@ fn split_reflexive_optional_payment(effect_text: &str) -> Option<(AbilityCost, S
     let (connector, cost_lower) = terminated(take_until::<_, _, OracleError<'_>>(". "), tag(". "))
         .parse(after_prefix)
         .ok()?;
-    let (body_lower, _) = tag::<_, _, OracleError<'_>>("when you do, ")
-        .parse(connector)
-        .ok()?;
+    let (body_lower, connector) = parse_affirmative_reflexive_connector(connector).ok()?;
 
     let cost_start = effect_text.len() - after_prefix.len();
     let cost_len = cost_lower.len();
@@ -3314,7 +3654,62 @@ fn split_reflexive_optional_payment(effect_text: &str) -> Option<(AbilityCost, S
     {
         return None;
     }
-    Some((cost, body_text.to_string()))
+    Some((cost, connector, body_text.to_string()))
+}
+
+#[cfg(test)]
+#[test]
+fn reflexive_optional_payment_preserves_the_printed_affirmative_connector() {
+    const THOUSAND_MOONS_SMITHY: &str = "At the beginning of your first main phase, you may tap five untapped artifacts and/or creatures you control. If you do, transform Thousand Moons Smithy.";
+
+    let trigger = parse_trigger_line(THOUSAND_MOONS_SMITHY, "Thousand Moons Smithy");
+    let parent = trigger
+        .execute
+        .as_deref()
+        .expect("Smithy's first-main-phase trigger must have a parent instruction");
+    let Effect::PayCost { cost, .. } = parent.effect.as_ref() else {
+        panic!(
+            "Smithy's parent must lower to PayCost, got {:?}",
+            parent.effect
+        );
+    };
+    assert!(matches!(
+        cost,
+        AbilityCost::TapCreatures {
+            requirement: TapCreaturesRequirement::Count { count: 5 },
+            ..
+        }
+    ));
+    assert!(
+        parent.target_prompt.is_none()
+            && parent.multi_target.is_none()
+            && parent.target_constraints.is_empty(),
+        "the fixed-five payment must not introduce a spell-target selection"
+    );
+    assert_eq!(
+        parent
+            .sub_ability
+            .as_deref()
+            .and_then(|child| child.condition.clone()),
+        Some(AbilityCondition::EffectOutcome {
+            signal: crate::types::ability::EffectOutcomeSignal::OptionalEffectPerformed,
+        }),
+        "Smithy's printed If-you-do rider must remain an EffectOutcome gate"
+    );
+
+    let when_you_do = parse_trigger_line(
+        "Whenever ~ attacks, you may tap five untapped creatures you control. When you do, transform ~.",
+        "When Probe",
+    );
+    assert_eq!(
+        when_you_do
+            .execute
+            .as_deref()
+            .and_then(|parent| parent.sub_ability.as_deref())
+            .and_then(|child| child.condition.clone()),
+        Some(AbilityCondition::WhenYouDo),
+        "a printed When-you-do connector must remain a reflexive trigger"
+    );
 }
 
 fn is_unsupported_disjunctive_reflexive_optional_payment(effect_text: &str) -> bool {
@@ -3334,8 +3729,7 @@ fn is_unsupported_disjunctive_reflexive_optional_payment(effect_text: &str) -> b
     {
         return false;
     }
-    let parsed_reflexive_connector = tag::<_, _, OracleError<'_>>("when you do, ").parse(connector);
-    if parsed_reflexive_connector.is_err() {
+    if parse_affirmative_reflexive_connector(connector).is_err() {
         return false;
     }
 
@@ -3366,13 +3760,63 @@ fn reflexive_optional_cost_payable_by_resolution_prompt(cost: &AbilityCost) -> b
                 .all(reflexive_optional_cost_payable_by_resolution_prompt)
                 && costs.iter().any(cost_contains_tap_creatures)
         }
-        // `OneOf` needs an interactive branch-choice prompt before a concrete
-        // branch can be paid. Do not let the generic reflexive splitter mark
-        // those cards supported until that flow exists.
-        AbilityCost::OneOf { .. } => false,
+        AbilityCost::OneOf { costs } => {
+            // CR 608.2d: every offered branch must be a legal choice; CR 118.12:
+            // admission is limited to the exact immediate payment allowlist.
+            costs.len() >= 2 && costs.iter().all(reflexive_optional_direct_cost)
+        }
         AbilityCost::TapCreatures { .. } => true,
-        _ => false,
+        AbilityCost::Mana { .. }
+        | AbilityCost::ManaDynamic { .. }
+        | AbilityCost::Tap
+        | AbilityCost::Untap
+        | AbilityCost::Loyalty { .. }
+        | AbilityCost::Sacrifice(_)
+        | AbilityCost::PayLife { .. }
+        | AbilityCost::Discard { .. }
+        | AbilityCost::Exile { .. }
+        | AbilityCost::ExileMaterials { .. }
+        | AbilityCost::CollectEvidence { .. }
+        | AbilityCost::ExileWithAggregate { .. }
+        | AbilityCost::RemoveCounter { .. }
+        | AbilityCost::PayEnergy { .. }
+        | AbilityCost::PaySpeed { .. }
+        | AbilityCost::ReturnToHand { .. }
+        | AbilityCost::Unattach
+        | AbilityCost::UnattachFrom { .. }
+        | AbilityCost::Mill { .. }
+        | AbilityCost::Exert
+        | AbilityCost::Blight { .. }
+        | AbilityCost::Reveal { .. }
+        | AbilityCost::Behold { .. }
+        | AbilityCost::Waterbend { .. }
+        | AbilityCost::NinjutsuFamily { .. }
+        | AbilityCost::EffectCost { .. }
+        | AbilityCost::PerCounter { .. }
+        | AbilityCost::KeywordCostOfCastSpell { .. }
+        | AbilityCost::GetPlayerCounters { .. }
+        | AbilityCost::Unimplemented { .. } => false,
     }
+}
+
+/// CR 608.2d: every offered branch must be legal; CR 118.12: only exact
+/// resolution-time payment shapes enter this parser family.
+///
+/// Direct payment leaves remain centralized in the runtime classifier.
+/// Sacrifice is deliberately limited here to a positive, finite fixed count of
+/// a typed permanent population. This excludes self/granting-object/any
+/// targets, aggregate requirements, and the `u32::MAX` X/any-number sentinel.
+fn reflexive_optional_direct_cost(cost: &AbilityCost) -> bool {
+    crate::game::costs::is_direct_resolution_optional_payment_branch(cost)
+        || matches!(
+            cost,
+            AbilityCost::Sacrifice(cost)
+                if matches!(cost.target, TargetFilter::Typed(_))
+                    && cost
+                        .requirement
+                        .fixed_count()
+                        .is_some_and(|count| count > 0 && count != u32::MAX)
+        )
 }
 
 fn cost_contains_tap_creatures(cost: &AbilityCost) -> bool {
@@ -3798,12 +4242,12 @@ fn parse_unless_counted_target_filter(rest: &str) -> Option<(u32, TargetFilter)>
     Some((count, filter))
 }
 
-/// CR 118.12 + CR 118.12a: Parse a chain of "they"-pronoun alternative
-/// payment verbs joined by " or " into either a single `AbilityCost` (one
-/// branch) or `AbilityCost::OneOf { costs }` (two or more branches). Used by
-/// the resolution-time "[Effect] unless they X or Y" pattern (Tergrid's
-/// Lantern: "Target player loses 3 life unless they sacrifice a nonland
-/// permanent of their choice or discard a card.").
+/// CR 118.12 + CR 118.12a: Parse an unless-clause subject followed by a chain
+/// of alternative payment verbs joined by " or ", into either a single
+/// `AbilityCost` (one branch) or `AbilityCost::OneOf { costs }` (two or more).
+/// Used by the resolution-time "[Effect] unless <subject> X or Y" pattern
+/// (Tergrid's Lantern: "Target player loses 3 life unless they sacrifice a
+/// nonland permanent of their choice or discard a card.").
 ///
 /// The "of their choice" qualifier on `parse_unless_they_sacrifice_filter`
 /// is structurally redundant — the runtime sacrifice-cost prompt
@@ -3812,20 +4256,30 @@ fn parse_unless_counted_target_filter(rest: &str) -> Option<(u32, TargetFilter)>
 /// must be absorbed to avoid leaving unparsed tail text on the cost.
 ///
 /// `after_unless` is the lowercase tail immediately after the literal
-/// `"unless "` prefix has been consumed; the sole caller
-/// (`extract_resolution_unless_pay_modifier`) strips the entire unless
-/// clause from the surrounding effect text using its own pre-computed
-/// `before_unless` offset, so this combinator only needs to return the
-/// parsed cost. Returns `None` if no "they X" branch is recognized.
-pub(crate) fn parse_unless_they_alt_cost_chain(after_unless: &str) -> Option<AbilityCost> {
-    let (first_cost, after_first) = parse_unless_they_single_alt_cost(after_unless)?;
+/// `"unless "` prefix has been consumed. Every caller strips the entire
+/// unless clause from the surrounding effect text using its own pre-computed
+/// offset, so this combinator returns only what the clause itself carries:
+/// the cost, plus the payer its SUBJECT names (see `parse_unless_payer_subject`
+/// — `Some` for a named role like CR 508.5's "defending player", `None` for
+/// the anaphoric pronouns, whose referent only the caller's surrounding
+/// context can supply). Returns `None` if no subject+verb branch is
+/// recognized.
+///
+/// Three production callers consume this: the trigger-side
+/// `extract_unless_pay_modifier`, the resolution-side
+/// `extract_resolution_unless_pay_modifier`, and the counter path's
+/// `parse_unless_payment` (which discards the payer — it pins the payer to the
+/// targeted spell's controller at its own call site).
+pub(crate) fn parse_unless_they_alt_cost_chain(after_unless: &str) -> Option<UnlessAltCost> {
+    let (first, after_first) = parse_unless_they_single_alt_cost(after_unless)?;
+    let payer = first.payer;
 
     // CR 118.12a: Greedily consume " or {alt_cost}" continuations to build
     // a disjunctive `OneOf`. English elides the second-clause subject
     // pronoun ("unless they sacrifice X or discard Y" — the "they" before
     // "discard" is implicit). `parse_unless_they_continuation` accepts
     // either form, dispatching by verb.
-    let mut costs = vec![first_cost];
+    let mut costs = vec![first.cost];
     let mut remainder = after_first;
     while let Ok((after_or, _)) = tag::<_, _, OracleError<'_>>(" or ").parse(remainder) {
         let Some((next_cost, after_next)) = parse_unless_they_continuation(after_or) else {
@@ -3835,33 +4289,85 @@ pub(crate) fn parse_unless_they_alt_cost_chain(after_unless: &str) -> Option<Abi
         remainder = after_next;
     }
 
-    if costs.len() == 1 {
-        costs.pop()
+    let cost = if costs.len() == 1 {
+        costs.pop()?
     } else {
-        Some(AbilityCost::OneOf { costs })
-    }
+        AbilityCost::OneOf { costs }
+    };
+    Some(UnlessAltCost { cost, payer })
 }
 
-/// CR 118.12: Parse a single "they {verb} ..." alternative payment branch.
-/// Mirrors the verb set of `parse_unless_alt_cost` but with the "they"
-/// pronoun (the target player) instead of "you" (the resolving ability's
-/// controller). Returns the cost and the unconsumed tail.
-fn parse_unless_they_single_alt_cost(input: &str) -> Option<(AbilityCost, &str)> {
-    // CR 118.12a: The first branch requires an explicit payer pronoun — it
-    // anchors the unless-clause to the paying player. The pronoun axis is
-    // parameterized: "they " (Tergrid's Lantern — a player target) and "that
-    // player " / "that opponent " (Nicol Bolas, Torment of Hailfire — the
-    // per-opponent scoped player). All forms resolve to the same payer, so
-    // only the verb dispatch downstream needs the remainder. Continuation
-    // branches omit the pronoun (English elision).
-    let (rest, _) = alt((
-        tag::<_, _, OracleError<'_>>("they "),
-        tag("that player "),
-        tag("that opponent "),
+/// CR 118.12a: An "unless [subject] [verb] …" alternative cost together with
+/// the payer its *subject* names outright.
+///
+/// The subject axis has two kinds of member (see
+/// [`parse_unless_payer_subject`]): anaphoric pronouns, which name no player of
+/// their own and leave `payer` as `None` for the caller to resolve from the
+/// surrounding effect text, and named combat/game roles, which resolve to a
+/// concrete [`TargetFilter`] here. Carrying the two in one value keeps the
+/// subject grammar in a single authority instead of forcing every caller to
+/// re-scan the clause to learn who the subject was.
+#[derive(Debug)]
+pub(crate) struct UnlessAltCost {
+    pub(crate) cost: AbilityCost,
+    /// `Some` when the clause's subject names its payer directly; `None` for
+    /// the anaphoric pronouns, whose referent only the caller's surrounding
+    /// context can supply.
+    pub(crate) payer: Option<TargetFilter>,
+}
+
+/// CR 118.12a: The subject of an "unless [subject] [verb] …" clause, as the
+/// payer it names (or `None` when it names none).
+///
+/// Two kinds of subject share this position in the grammar:
+///
+/// - **Anaphoric pronouns** — "they " (Tergrid's Lantern — a player target),
+///   "that player " / "that opponent " (Nicol Bolas, Torment of Hailfire — the
+///   per-opponent scoped player). These point back at a player the surrounding
+///   effect text established, so they carry no payer of their own; the caller
+///   infers it (`infer_pronoun_unless_payer` trigger-side, the
+///   `before_unless` scan resolution-side).
+/// - **Named roles** — CR 508.5: "defending player" is the player the
+///   attacking creature is attacking, determined per attacker and resolved
+///   from combat state, so the clause names its payer outright and no
+///   surrounding context is needed (Ogre Marauder). CR 508.5a makes this one
+///   specific player in multiplayer, which is exactly what
+///   `TargetFilter::DefendingPlayer` resolves to.
+fn parse_unless_payer_subject(input: &str) -> OracleResult<'_, Option<TargetFilter>> {
+    alt((
+        // CR 508.5: named role — the subject IS the payer.
+        value(
+            Some(TargetFilter::DefendingPlayer),
+            alt((
+                tag("the defending player "),
+                tag::<_, _, OracleError<'_>>("defending player "),
+            )),
+        ),
+        // CR 118.12a: anaphoric pronouns — payer resolved by the caller.
+        value(
+            None,
+            alt((
+                tag::<_, _, OracleError<'_>>("they "),
+                tag("that player "),
+                tag("that opponent "),
+            )),
+        ),
     ))
     .parse(input)
-    .ok()?;
-    parse_unless_they_branch_by_verb(rest)
+}
+
+/// CR 118.12: Parse a single "[subject] {verb} ..." alternative payment
+/// branch. Mirrors the verb set of `parse_unless_alt_cost` but with a payer
+/// subject (the paying player) instead of "you" (the resolving ability's
+/// controller). Returns the cost, the payer its subject names (if any), and
+/// the unconsumed tail.
+fn parse_unless_they_single_alt_cost(input: &str) -> Option<(UnlessAltCost, &str)> {
+    // CR 118.12a: The first branch requires an explicit payer subject — it
+    // anchors the unless-clause to the paying player. Continuation branches
+    // omit it (English elision).
+    let (rest, payer) = parse_unless_payer_subject(input).ok()?;
+    let (cost, after) = parse_unless_they_branch_by_verb(rest)?;
+    Some((UnlessAltCost { cost, payer }, after))
 }
 
 /// CR 118.12a: Parse the second-or-later branch of a "unless they X or Y"
@@ -4225,6 +4731,33 @@ fn substitute_another_in_filter(filter: &TargetFilter) -> TargetFilter {
     }
 }
 
+fn substitute_another_in_aggregate_source(source: &CardTypeSetSource) -> CardTypeSetSource {
+    match source {
+        CardTypeSetSource::Objects { filter } => CardTypeSetSource::Objects {
+            filter: substitute_another_in_filter(filter),
+        },
+        CardTypeSetSource::TurnJournal {
+            journal,
+            scope,
+            filter,
+        } => CardTypeSetSource::TurnJournal {
+            journal: *journal,
+            scope: scope.clone(),
+            filter: filter.as_ref().map(substitute_another_in_filter),
+        },
+        CardTypeSetSource::AnyOf { sources } => CardTypeSetSource::any_of(
+            sources
+                .iter()
+                .map(substitute_another_in_aggregate_source)
+                .collect(),
+        )
+        .expect("rewriting preserves union arity"),
+        CardTypeSetSource::TrackedSet { .. }
+        | CardTypeSetSource::Zone { .. }
+        | CardTypeSetSource::ExiledBySource => source.clone(),
+    }
+}
+
 /// CR 603.4: Rewrite `Another` inside any `ObjectCount` / `ObjectCountDistinct`
 /// or `Aggregate` filter carried by a `QuantityExpr`. Leaves non-population
 /// refs untouched.
@@ -4264,18 +4797,16 @@ fn substitute_another_in_expr(expr: &QuantityExpr) -> QuantityExpr {
         // intervening-if references an aggregate over "each other <type>",
         // the exclusion must be trigger-relative, not source-relative.
         QuantityExpr::Ref {
-            qty:
-                QuantityRef::Aggregate {
-                    function,
-                    property,
-                    filter,
-                },
+            qty: QuantityRef::PropertyAggregate(aggregate),
         } => QuantityExpr::Ref {
-            qty: QuantityRef::Aggregate {
-                function: *function,
-                property: *property,
-                filter: substitute_another_in_filter(filter),
-            },
+            qty: QuantityRef::PropertyAggregate(
+                PropertyAggregate::new(
+                    aggregate.function(),
+                    aggregate.property(),
+                    substitute_another_in_aggregate_source(aggregate.source()),
+                )
+                .expect("rewriting filters preserves aggregate validity"),
+            ),
         },
         QuantityExpr::Offset { inner, offset } => QuantityExpr::Offset {
             inner: Box::new(substitute_another_in_expr(inner)),
@@ -5036,6 +5567,18 @@ fn graveyard_origin_or_condition(owner: Option<ControllerRef>) -> TriggerConditi
 /// where
 ///   <compact-form>     = "entered or " ( "was" | "were" ) " cast from a graveyard"
 ///   <split-your-form>  = "entered from your graveyard or you cast it from your graveyard"
+/// CR 701.54a + CR 603.4: "if you chose a creature other than ~ as your
+/// ring-bearer, " — Aragorn, Company Leader's intervening-if. The card name is
+/// already normalized to `~` at the parser entry point (CR 201.5: a name in an
+/// object's own text means just that object).
+fn parse_chose_other_ring_bearer_intervening_if(input: &str) -> OracleResult<'_, TriggerCondition> {
+    value(
+        TriggerCondition::ChoseOtherRingBearer,
+        tag("if you chose a creature other than ~ as your ring-bearer, "),
+    )
+    .parse(input)
+}
+
 fn parse_graveyard_origin_intervening_if(input: &str) -> OracleResult<'_, TriggerCondition> {
     let (rest, _) = tag("if ").parse(input)?;
     let (rest, _) = alt((tag("it "), tag("they "))).parse(rest)?;
@@ -5336,6 +5879,10 @@ fn extract_if_condition_with_card_name(
 ) -> (String, Option<TriggerCondition>) {
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
+    // Only a proven self-trigger may use the source-bound "it's on the
+    // battlefield" shorthand. On a non-self zone-change trigger, "it" is
+    // the event object, so the simple source-condition table must not steal it.
+    let source_is_self = matches!(dying_subject, Some(TargetFilter::SelfRef));
 
     // CR 603.4: Only a true intervening-if is hoisted to the trigger-level condition.
     // A trigger-level `if` is one that IMMEDIATELY follows the trigger condition
@@ -5383,6 +5930,20 @@ fn extract_if_condition_with_card_name(
 
     // --- Source-referential patterns (cannot be StaticConditions) ---
     // These require trigger-source context that StaticCondition can't express.
+
+    // CR 701.54a + CR 603.4: "if you chose a creature other than ~ as your
+    // ring-bearer" (Aragorn, Company Leader) — the temptation that fired this
+    // RingTemptsYou observer completes its bearer choice before the batched
+    // triggers drain, so the condition reads the fresh choice at fire time.
+    if let Some((before, condition, rest)) =
+        scan_preceded(&lower, parse_chose_other_ring_bearer_intervening_if)
+    {
+        let clause_len = lower.len() - before.len() - rest.len();
+        return (
+            strip_condition_clause(text, before.len(), clause_len),
+            Some(condition),
+        );
+    }
 
     // CR 603.4 + CR 702.33d-f + CR 702.166a: an ETB "if it was kicked
     // [twice]" or "if it was bargained" clause is an
@@ -5725,6 +6286,7 @@ fn extract_if_condition_with_card_name(
     if let Some(result) = try_extract_simple_condition(
         &tp,
         text,
+        source_is_self,
         &[
             // CR 508.1 / CR 603.4: attacking state.
             ("if it's attacking", TriggerCondition::SourceIsAttacking),
@@ -6133,6 +6695,7 @@ fn extract_if_condition_with_card_name(
         text,
         "if ",
         PostEffectPolicy::DeferIfRehomeable,
+        source_is_self,
         |c| c,
     ) {
         return result;
@@ -6143,6 +6706,7 @@ fn extract_if_condition_with_card_name(
         text,
         " unless ",
         PostEffectPolicy::AlwaysHoist,
+        source_is_self,
         |c| TriggerCondition::Not {
             condition: Box::new(c),
         },
@@ -6433,10 +6997,17 @@ fn build_event_object_subtype_condition(
 /// already covers explicit negation; only the apostrophe contraction needs
 /// a dedicated arm so attachment lookbacks (`if it was enchanted`) keep their
 /// leading `was` for `parse_zone_change_object_filter_predicate`.
+///
+/// Pronoun axis (mirrors `parse_cast_using_variant_intervening_if`'s "they
+/// were"/"it was" split): a self-copying permanent with a grammatically
+/// plural name — The Notary Hobbits: "When ~ enter, if they're not a
+/// token, create two tokens that are copies of them, except the tokens
+/// aren't legendary" — uses gender-neutral singular "they" for the same
+/// single-permanent subject that singular cards refer to as "it".
 fn parse_zone_change_object_token_contraction_intervening_if(
     input: &str,
 ) -> OracleResult<'_, TriggerCondition> {
-    let (rest, _) = tag("if it's not a ").parse(input)?;
+    let (rest, _) = alt((tag("if it's not a "), tag("if they're not a "))).parse(input)?;
     let (rest, _) = tag("token").parse(rest)?;
     Ok((rest, zone_change_object_token_condition(true)))
 }
@@ -7211,6 +7782,7 @@ fn try_extract_intervening(
     text: &str,
     keyword: &str,
     policy: PostEffectPolicy,
+    source_is_self: bool,
     wrap: impl FnOnce(TriggerCondition) -> TriggerCondition,
 ) -> Option<(String, Option<TriggerCondition>)> {
     let pos = tp.find(keyword)?;
@@ -7228,7 +7800,21 @@ fn try_extract_intervening(
         // AlwaysHoist, or non-re-homeable: fall through and hoist as before.
     }
     let cond_fragment = &lower[pos + keyword.len()..];
-    let (rest, sc) = parse_inner_condition(cond_fragment).ok()?;
+    // CR 113.6b: the source-bound contraction in a leading intervening-if
+    // ("if it's on the battlefield ...") is not the same generic `it`
+    // anaphor used for an event object elsewhere in a trigger. Normalize only
+    // the source-zone production, then delegate the complete conjunction to
+    // the shared condition grammar. In particular, do not teach the global
+    // self-token parser that bare `it` is a source reference.
+    let normalized_fragment;
+    let condition_input =
+        if let Some(tail) = source_zone_contraction_tail(cond_fragment, source_is_self) {
+            normalized_fragment = format!("this creature is{tail}");
+            normalized_fragment.as_str()
+        } else {
+            cond_fragment
+        };
+    let (rest, sc) = parse_inner_condition(condition_input).ok()?;
     let rest_trimmed = rest.trim();
     let after_dots = rest_trimmed.trim_start_matches('.').trim_start();
     let has_otherwise = tag::<_, _, OracleError<'_>>("otherwise")
@@ -7240,11 +7826,41 @@ fn try_extract_intervening(
         return None;
     }
     let inner = static_condition_to_trigger_condition(&sc)?;
+    // `source_zone_contraction_tail` changes only the consumed subject/copula;
+    // the unconsumed suffix is byte-for-byte the original suffix, so its length
+    // gives the correct span in `cond_fragment` for `strip_condition_clause`.
     let consumed = cond_fragment.len() - rest.len();
     Some((
         strip_condition_clause(text, pos, keyword.len() + consumed),
         Some(wrap(inner)),
     ))
+}
+
+/// Returns the unmodified suffix after a source-bound `it's` / `it’s` only
+/// when it immediately opens a zone predicate. This is deliberately narrower
+/// than a global pronoun rule: an event-object condition such as `if it's a
+/// Goblin` must retain its existing event-subject meaning, and bare `it on ...`
+/// must decline rather than being guessed as the trigger source.
+fn source_zone_contraction_tail(input: &str, source_is_self: bool) -> Option<&str> {
+    if !source_is_self {
+        return None;
+    }
+    let (tail, _) = alt((
+        tag::<_, _, OracleError<'_>>("it's"),
+        tag::<_, _, OracleError<'_>>("it’s"),
+    ))
+    .parse(input)
+    .ok()?;
+    let _ = alt((
+        tag::<_, _, OracleError<'_>>(" on the battlefield"),
+        tag(" in your "),
+        tag(" in the command zone"),
+        tag(" in exile"),
+        tag(" exiled"),
+    ))
+    .parse(tail)
+    .ok()?;
+    Some(tail)
 }
 
 /// CR 702.49a + CR 702.142b: Parse "whenever you activate a [keyword] ability" triggers.
@@ -7589,13 +8205,18 @@ fn try_parse_ability_activation_trigger(lower: &str) -> Option<(TriggerMode, Tri
         alt((parse_subtyped_planeswalker, parse_attached_to_subject)).parse(input)
     }
 
-    fn parse_loyalty_line(input: &str) -> OracleResult<'_, TargetFilter> {
+    fn parse_loyalty_scope(input: &str) -> OracleResult<'_, Option<TargetFilter>> {
+        alt((
+            map(preceded(tag(" of "), parse_loyalty_planeswalker), Some),
+            value(None, eof),
+        ))
+        .parse(input)
+    }
+
+    fn parse_loyalty_line(input: &str) -> OracleResult<'_, Option<TargetFilter>> {
         preceded(
             alt((tag("whenever "), tag("when "))),
-            preceded(
-                tag("you activate a loyalty ability of "),
-                parse_loyalty_planeswalker,
-            ),
+            preceded(tag("you activate a loyalty ability"), parse_loyalty_scope),
         )
         .parse(input)
     }
@@ -7603,7 +8224,7 @@ fn try_parse_ability_activation_trigger(lower: &str) -> Option<(TriggerMode, Tri
     if let Ok((_, pw_filter)) = all_consuming(parse_loyalty_line).parse(lower) {
         let mut def = make_base();
         def.mode = TriggerMode::LoyaltyAbilityActivated;
-        def.valid_card = Some(pw_filter);
+        def.valid_card = pw_filter;
         return Some((TriggerMode::LoyaltyAbilityActivated, def));
     }
 
@@ -7740,10 +8361,19 @@ fn try_extract_cast_variant_paid_condition(
 fn try_extract_simple_condition(
     tp: &TextPair<'_>,
     text: &str,
+    source_is_self: bool,
     patterns: &[(&str, TriggerCondition)],
 ) -> Option<(String, Option<TriggerCondition>)> {
     let first_if = tp.find("if "); // allow-noncombinator: structural first-if anchor for trigger-level intervening-if extraction
     for (pattern, condition) in patterns {
+        if !source_is_self
+            && matches!(
+                *pattern,
+                "if it's on the battlefield" | "if it is on the battlefield"
+            )
+        {
+            continue;
+        }
         if let Some(pos) = tp.find(pattern) {
             if Some(pos) != first_if {
                 continue;
@@ -9677,7 +10307,7 @@ pub(crate) fn parse_trigger_condition(
     // ctx.diagnostics now contains only pre-existing diagnostics (restored to snapshot)
 
     // Parse event verb from the remaining text.
-    if let Some((mode, mut def)) = try_parse_event(&subject, rest, &lower) {
+    if let Some((mode, mut def)) = try_parse_event(&subject, rest, &lower, ctx) {
         // Re-emit subject diagnostics — the trigger parsed but the subject degraded to Any.
         ctx.diagnostics.extend(subject_diagnostics);
         if is_batched {
@@ -9730,7 +10360,7 @@ pub(crate) fn parse_trigger_condition(
     (mode, def)
 }
 
-/// CR 109.4 + CR 603.7c: Returns `true` when any filter inside the execute
+/// CR 109.4 + CR 115.1d: Returns `true` when any filter inside the execute
 /// ability's effect chain references `ControllerRef::TargetPlayer`. Walks
 /// sub-abilities so triggers like Dokuchi Silencer (outer Discard, inner
 /// Destroy targeting "that player controls") trigger the companion
@@ -11239,6 +11869,7 @@ fn try_parse_event(
     subject: &TargetFilter,
     rest: &str,
     full_lower: &str,
+    ctx: &mut ParseContext,
 ) -> Option<(TriggerMode, TriggerDefinition)> {
     let rest = rest.trim_start();
 
@@ -11569,7 +12200,11 @@ fn try_parse_event(
             ))
             .parse(input)
         }
-        let attack_target_filter = parse_attack_target.parse(after).ok().map(|(_, f)| f);
+        // Retain the REMAINDER: discarding it here is what silently dropped
+        // "who has more life than you" (Namor, Atlantean King) and "who controls
+        // eight or more lands" (Owlbear Cub) from the trigger event clause.
+        let attack_target_parsed = parse_attack_target.parse(after).ok();
+        let attack_target_filter = attack_target_parsed.as_ref().map(|(_, f)| f.clone());
         let attacks_one_of_your_opponents = tag::<_, _, OracleError<'_>>(" one of your opponents")
             .parse(after)
             .is_ok();
@@ -11606,7 +12241,86 @@ fn try_parse_event(
             def.valid_card = Some(subject.clone());
         }
         def.attack_target_filter = attack_target_filter;
-        if attacks_one_of_your_opponents {
+        // CR 603.2 + CR 508.1b: a `who`-headed relative clause narrows the
+        // TRIGGER EVENT's defending player ("attacks a player WHO HAS MORE LIFE
+        // THAN YOU"). It belongs on `valid_target` — read once by
+        // `trigger_matchers::attack_target_matches` at declaration — and NOT on
+        // `condition`, which CR 603.4 re-checks at resolution. The clause has no
+        // "if", so CR 603.4 does not apply to it; putting it on `condition`
+        // would wrongly remove the ability from the stack if the defender's life
+        // changed in response.
+        //
+        // `AttackTargetFilter::PlayerOrPlaneswalker` is deliberately NOT in this
+        // gate: it is produced only by the "you or a planeswalker you control"
+        // tags, after which a `who`-headed clause is grammatically impossible,
+        // and `attack_target_matches` would resolve such a candidate through
+        // `defending_player_for_target_or` (a planeswalker's CONTROLLER) — a
+        // different referent that needs its own fixture, not a quiet inclusion.
+        let mut declined_unmodelled_predicate = false;
+        if matches!(def.attack_target_filter, Some(AttackTargetFilter::Player)) {
+            if let Some((rest_after_noun, _)) = &attack_target_parsed {
+                // Every `parse_attack_target` arm's tag carries a LEADING space,
+                // so `rest` begins with the character AFTER the noun: a space
+                // before a relative clause, or ","/eof otherwise. Bind the
+                // post-space slice exactly ONCE and use it for BOTH the
+                // predicate hook and the fail-closed guard, so the two can never
+                // disagree about where the clause starts. A guard aimed at the
+                // raw remainder could never fire, because `tag("who ")` cannot
+                // match a leading " who ".
+                let after_noun = tag::<_, _, OracleError<'_>>(" ")
+                    .parse(*rest_after_noun)
+                    .map_or(*rest_after_noun, |(after, _)| after);
+                // CR 102.3: derive the candidate relation from the BASE noun so
+                // the base-scope and predicate axes compose. "a player" imports
+                // no opponent relation the printed text does not state — the
+                // predicate is evaluated against the TRIGGER CONTROLLER, which
+                // on a player-subject attack trigger need not be the attacker.
+                let relation = if attacks_one_of_your_opponents {
+                    PlayerRelation::Opponent
+                } else {
+                    PlayerRelation::All
+                };
+                // CR 603.2 consume-on-success, enforced on the REMAINDER: an arm
+                // that matches only a PREFIX of the relative clause ("…more life
+                // than you" inside "…more life than you and controls a Forest")
+                // must not bind an under-restricted `valid_target` and drop the
+                // rest. The clause counts as modelled only when what follows it
+                // is a real clause boundary, checked with the shared
+                // `peek_clause_terminator` authority; anything else falls into
+                // the SAME declined branch as a total parse failure.
+                let modelled = parse_attacked_player_relative_clause(after_noun, relation, ctx)
+                    .ok()
+                    .filter(|(remainder, _)| {
+                        nom_primitives::peek_clause_terminator(remainder).is_ok()
+                    });
+                match modelled {
+                    Some((_, player)) => {
+                        def.valid_target = Some(TargetFilter::PlayerMatching {
+                            player: Box::new(player),
+                        });
+                    }
+                    None => {
+                        // A `who`-headed clause the predicate grammar cannot
+                        // model (or can model only partially) must NOT be
+                        // silently discarded, leaving the broad `Player` scope
+                        // behind — that is exactly the bug this change fixes.
+                        // Detect it with a zero-consumption `peek`, never
+                        // `starts_with`. The trailing space inside the tag IS the
+                        // word boundary, so "whoever"/"whose" cannot match.
+                        declined_unmodelled_predicate = peek(tag::<_, _, OracleError<'_>>("who "))
+                            .parse(after_noun)
+                            .is_ok();
+                    }
+                }
+            }
+        }
+        if declined_unmodelled_predicate {
+            return None;
+        }
+        if def.valid_target.is_some() {
+            // The predicate branch already bound the attacked-player scope;
+            // the coarser fallbacks below must not clobber it.
+        } else if attacks_one_of_your_opponents {
             def.valid_target = Some(TargetFilter::Typed(
                 TypedFilter::default().controller(ControllerRef::Opponent),
             ));
@@ -12855,6 +13569,22 @@ fn try_parse_named_trigger_mode(lower: &str) -> Option<(TriggerMode, TriggerDefi
     .is_ok()
     {
         def.mode = TriggerMode::RingTemptsYou;
+        return Some((TriggerMode::RingTemptsYou, def));
+    }
+
+    // CR 701.54a: "Whenever you choose a creature as your Ring-bearer" — the
+    // same temptation event, gated on a choice actually having been made
+    // (Call of the Ring). The gate rides in `def.condition`, which the
+    // caller ANDs with any additional intervening-if.
+    if all_consuming(pair(
+        alt((tag::<_, _, OracleError<'_>>("whenever "), tag("when "))),
+        tag("you choose a creature as your ring-bearer"),
+    ))
+    .parse(lower)
+    .is_ok()
+    {
+        def.mode = TriggerMode::RingTemptsYou;
+        def.condition = Some(TriggerCondition::ChoseRingBearer);
         return Some((TriggerMode::RingTemptsYou, def));
     }
     None
@@ -16050,7 +16780,7 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
     // Anchored (NOT a substring scan): an optional "whenever "/"when " prefix
     // followed by "you attack". The bare "you attack" form is the prefix-stripped
     // delayed-trigger condition emitted by `try_parse_whenever_this_turn`
-    // (CR 603.7c) for cards like Dalkovan Encampment.
+    // (CR 603.7b) for cards like Dalkovan Encampment.
     //
     // The trailing `peek` is a word-boundary guard: "you attack" must be followed
     // by end-of-input, a space, or a comma so that "you attacked this turn" (a
@@ -16080,6 +16810,15 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
         {
             let mut def = make_base();
             def.mode = TriggerMode::YouAttack;
+            // CR 508.3d vs CR 508.3e: a bare "you attack" names no attacked
+            // object and fires once per declaration (CR 508.3d); "you attack a
+            // player" / "you attack the monarch" names [another player], which
+            // both RESTRICTS the trigger to player-directed attacks (CR 508.3e:
+            // "It won't trigger ... if a creature attacks a planeswalker or a
+            // battle") and makes the attacked player a per-firing binding. Both
+            // halves live on `attack_target_filter`; `None` keeps the CR 508.3d
+            // any-defender semantics exactly as before.
+            def.attack_target_filter = parse_you_attack_player_object(rest);
             return Some((TriggerMode::YouAttack, def));
         }
     }
@@ -17075,6 +17814,25 @@ pub(crate) fn extract_colored_mana_symbol_spell_qualifier(text: &str) -> Option<
 
 pub(crate) fn parse_post_spell_modifier(modifier: &str) -> Option<TargetFilter> {
     use crate::types::ability::{FilterProp, TypedFilter};
+
+    // CR 715.2a: The post-spell path recognizes only the Adventure qualifier.
+    // Other relative clauses must fall through to the existing type-phrase
+    // parsing path, which preserves its target-filter distribution.
+    if all_consuming((
+        tag::<_, _, OracleError<'_>>("that "),
+        alt((
+            tag::<_, _, OracleError<'_>>("has "),
+            tag::<_, _, OracleError<'_>>("have "),
+        )),
+        tag::<_, _, OracleError<'_>>("an adventure"),
+    ))
+    .parse(modifier)
+    .is_ok()
+    {
+        return Some(TargetFilter::Typed(
+            TypedFilter::default().properties(vec![FilterProp::HasAdventure]),
+        ));
+    }
 
     // CR 608.2b: "that has the same name as a card in your graveyard"
     // (Pyromancer's Ascension). Reuse the search-filter name-reference suffix

@@ -403,6 +403,9 @@ pub enum InteractionManaRestriction {
         zone: InteractionZoneCode,
         polarity: InteractionManaZoneSpendPolarity,
     },
+    CannotCastSpellFromZone {
+        zone: InteractionZoneCode,
+    },
     OnlyForFaceDownSpell,
     OnlyForAny {
         restrictions: Vec<InteractionManaRestriction>,
@@ -548,6 +551,7 @@ pub enum InteractionActionCode {
     CastSpellAsMiracle,
     CastSpellAsMadness,
     DecideOptionalEffect,
+    ChooseResolutionOptionalPaymentBranch,
     RespondToSpliceOffer,
     DecideOptionalEffectAndRemember,
     PayUnlessCost,

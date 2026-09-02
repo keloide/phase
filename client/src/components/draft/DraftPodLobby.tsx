@@ -23,7 +23,9 @@ import type { SeatPublicView } from "../../adapter/draft-adapter";
 import { menuButtonClass } from "../menu/buttonStyles";
 import { useMultiplayerDraftStore } from "../../stores/multiplayerDraftStore";
 import { useDraftPodStore } from "../../stores/draftPodStore";
+import { draftKindLabels } from "./draftKind";
 import { BotIndicator } from "./BotIndicator";
+import { copyText } from "../../services/copyText";
 
 // ── Seat Card ─────────────────────────────────────────────────────────
 
@@ -146,10 +148,28 @@ export function DraftPodLobby({ onLeave }: DraftPodLobbyProps) {
   const config = useDraftPodStore((s) => s.config);
   const poolMode = useDraftPodStore((s) => s.poolMode);
   const cubeForm = useDraftPodStore((s) => s.cubeForm);
+  const allowedPodSizes = useDraftPodStore((s) => s.allowedPodSizes);
+
+  // `lobby.draftKind` interpolates the kind into a sentence, so a raw enum reads
+  // "CommanderDraft Draft" once Commander is selectable. `draftKindLabels` is the
+  // single authority for that rendering, shared with the landing page's resume card.
+  //
+  // DEFERRED(out of scope): `config.kind` is HOST INTENT, not the pod's kind. A guest
+  // never populates its local config, so it reads the store's `"Premier"` default
+  // rather than the pod's real kind — pre-existing behaviour (a guest in a Sealed
+  // pod already reads "Premier Draft" today). The engine-published authority is
+  // `multiplayerDraftStore`'s `view.kind`; switching to it is a behavioural change
+  // on a shared surface and is out of scope here.
+  const kindLabel = draftKindLabels(t);
 
   const isHost = role === "host";
   const filledSeats = seats.filter((s) => s.display_name).length;
-  const canStart = isHost && (filledSeats >= 2 || botFillEnabled);
+  // The engine publishes the exact legal seat counts for this procedure and
+  // tournament format. No client-side floor or fallback: `null` disables the
+  // button until the engine answers, while bot fill remains an explicit path
+  // that pads the pod before draft creation.
+  const canStart =
+    isHost && (botFillEnabled || (allowedPodSizes?.includes(filledSeats) ?? false));
 
   // Build a full 8-seat grid (pad with empty seats if the adapter
   // hasn't sent all seats yet)
@@ -177,9 +197,7 @@ export function DraftPodLobby({ onLeave }: DraftPodLobbyProps) {
 
   const handleCopyCode = useCallback(() => {
     if (roomCode) {
-      navigator.clipboard.writeText(roomCode).catch(() => {
-        // Clipboard API may not be available
-      });
+      void copyText(roomCode);
     }
   }, [roomCode]);
 
@@ -193,7 +211,7 @@ export function DraftPodLobby({ onLeave }: DraftPodLobbyProps) {
             {poolMode === "cube"
               ? cubeForm?.cubeName ?? config.setName
               : config.setName || config.setCode} &mdash;{" "}
-            {t("lobby.draftKind", { kind: config.kind })}
+            {t("lobby.draftKind", { kind: kindLabel[config.kind] })}
           </p>
         </div>
 

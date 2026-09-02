@@ -37,6 +37,8 @@ import { AI_DECK_RANDOM, usePreferencesStore } from "../stores/preferencesStore"
 import { effectiveAiDifficulty } from "../services/cedhLock";
 import { createGameLoopController } from "../game/controllers/gameLoopController";
 import { dispatchAction, processRemoteUpdate } from "../game/dispatch";
+import { resyncFromAdapterSafely } from "../game/staleStateWatchdog";
+import { debugLog } from "../game/debugLog";
 import { clearPromptOverlayState } from "../game/sessionCleanup";
 import { useGameplayPreferencesSync } from "../hooks/useGameplayPreferencesSync";
 import { hostRoom, joinRoom } from "../network/connection";
@@ -79,8 +81,8 @@ import { useMultiplayerDraftStore } from "../stores/multiplayerDraftStore";
 import {
   assignRandomAvatars,
   avatarCardNameForName,
-  fetchAvatarArtUrl,
 } from "../services/playerAvatars";
+import type { PlayerAvatarIdentity } from "../services/playerAvatars";
 
 /** Build per-seat AI controller bindings for a game about to start. Reads
  *  the session-scoped `aiSeats` snapshot from `ActiveGameMeta` (written at
@@ -107,36 +109,27 @@ export function isDeckRejectedError(error: unknown): error is AdapterError {
   return error instanceof AdapterError && error.code === AdapterErrorCode.DECK_REJECTED;
 }
 
-let avatarGeneration = 0;
-
 function setupRandomAvatars(playerCount: number, seed: string, preservePlayerNames = false) {
-  const generation = ++avatarGeneration;
   const avatars = assignRandomAvatars(playerCount, seed);
   const names = new Map<number, string>();
+  const playerAvatars = new Map<number, PlayerAvatarIdentity>();
   names.set(0, "You");
-  for (let i = 1; i < avatars.length; i++) {
-    names.set(i, avatars[i].name);
+  for (const [playerId, avatar] of avatars.entries()) {
+    if (playerId > 0) names.set(playerId, avatar.name);
+    playerAvatars.set(playerId, { kind: "card", cardName: avatar.cardName });
   }
   useMultiplayerStore.setState(
-    preservePlayerNames ? { playerAvatars: new Map() } : { playerNames: names, playerAvatars: new Map() },
+    preservePlayerNames ? { playerAvatars } : { playerNames: names, playerAvatars },
   );
-  for (let i = 0; i < avatars.length; i++) {
-    fetchAvatarArtUrl(avatars[i].cardName).then((url) => {
-      if (!url || avatarGeneration !== generation) return;
-      const next = new Map(useMultiplayerStore.getState().playerAvatars);
-      next.set(i, url);
-      useMultiplayerStore.setState({ playerAvatars: next });
-    });
-  }
 }
 
 function setupCommanderAvatars(
   gameState: { objects: Record<number, { name: string; owner: number; is_commander?: boolean }> },
   preservePlayerNames = false,
 ) {
-  const generation = ++avatarGeneration;
   const names = new Map<number, string>();
   const commanderNames = new Map<number, string>();
+  const playerAvatars = new Map<number, PlayerAvatarIdentity>();
 
   for (const obj of Object.values(gameState.objects)) {
     if (!obj?.is_commander) continue;
@@ -146,24 +139,15 @@ function setupCommanderAvatars(
 
   for (const [playerId, cardName] of commanderNames) {
     names.set(playerId, cardName.split(",")[0].split(" //")[0]);
+    playerAvatars.set(playerId, { kind: "card", cardName });
   }
 
   useMultiplayerStore.setState(
-    preservePlayerNames ? { playerAvatars: new Map() } : { playerNames: names, playerAvatars: new Map() },
+    preservePlayerNames ? { playerAvatars } : { playerNames: names, playerAvatars },
   );
-
-  for (const [playerId, cardName] of commanderNames) {
-    fetchAvatarArtUrl(cardName).then((url) => {
-      if (!url || avatarGeneration !== generation) return;
-      const next = new Map(useMultiplayerStore.getState().playerAvatars);
-      next.set(playerId, url);
-      useMultiplayerStore.setState({ playerAvatars: next });
-    });
-  }
 }
 
 function setupDraftMatchAvatars(seed: string) {
-  const generation = ++avatarGeneration;
   const matchPairing = useMultiplayerDraftStore.getState().matchPairing;
   const randomAvatars = assignRandomAvatars(2, seed);
   const names = new Map<number, string>();
@@ -179,25 +163,20 @@ function setupDraftMatchAvatars(seed: string) {
   names.set(localPlayerId, "You");
   names.set(opponentPlayerId, opponentName);
 
-  useMultiplayerStore.setState({
-    activePlayerId: localPlayerId,
-    playerNames: names,
-    playerAvatars: new Map(),
-  });
-
   const avatarCards = new Map<number, string | undefined>([
     [localPlayerId, randomAvatars[localPlayerId]?.cardName ?? randomAvatars[0]?.cardName],
     [opponentPlayerId, avatarCardNameForName(opponentName) ?? randomAvatars[opponentPlayerId]?.cardName],
   ]);
+  const playerAvatars = new Map<number, PlayerAvatarIdentity>();
   for (const [playerId, cardName] of avatarCards) {
     if (!cardName) continue;
-    fetchAvatarArtUrl(cardName).then((url) => {
-      if (!url || avatarGeneration !== generation) return;
-      const next = new Map(useMultiplayerStore.getState().playerAvatars);
-      next.set(playerId, url);
-      useMultiplayerStore.setState({ playerAvatars: next });
-    });
+    playerAvatars.set(playerId, { kind: "card", cardName });
   }
+  useMultiplayerStore.setState({
+    activePlayerId: localPlayerId,
+    playerNames: names,
+    playerAvatars,
+  });
 }
 
 function playerNamesRecordToMap(playerNames: Record<number, string>): Map<number, string> {
@@ -768,7 +747,10 @@ export function GameProvider({
             }
           }
           if (event.type === "stateChanged") {
-            processRemoteUpdate(event.snapshot, event.events, event.logEntries);
+            processRemoteUpdate(event.snapshot, event.events, event.logEntries).catch((err) => {
+              debugLog(`p2p remote update failed: ${err instanceof Error ? err.message : String(err)}`);
+              resyncFromAdapterSafely("delivery rejected");
+            });
           }
           if (event.type === "guestConnected") {
             notifyOpponentJoined(tRef.current);
@@ -795,9 +777,12 @@ export function GameProvider({
 
         try {
           if (mode === "p2p-host") {
-            const activeHost = useMultiplayerStore.getState().getActiveP2PHost();
-            if (activeHost?.gameId === gameId) {
-              const adapter = activeHost.adapter;
+            // Browser P2P hosts always own seat zero. Do this before claiming
+            // a pre-game adapter: its one-shot identity event may already have
+            // fired while the lobby was starting the game.
+            useMultiplayerStore.getState().setActivePlayerId(0);
+            const adapter = useMultiplayerStore.getState().takeActiveP2PHost(gameId);
+            if (adapter) {
               p2pAdapter = adapter;
               wireP2PEvents(adapter);
               await resumeP2PHost(gameId, adapter);
@@ -1241,7 +1226,10 @@ export function GameProvider({
             if (needAdapter) {
               useGameStore.setState({ adapter: wsAdapter });
             }
-            processRemoteUpdate(event.snapshot, event.events, event.logEntries, event.rewindTargets);
+            processRemoteUpdate(event.snapshot, event.events, event.logEntries, event.rewindTargets).catch((err) => {
+              debugLog(`remote update failed: ${err instanceof Error ? err.message : String(err)}`);
+              resyncFromAdapterSafely("delivery rejected");
+            });
             useMultiplayerStore.getState().setConnectionStatus("connected");
             const wsState = event.snapshot.state;
             if (
@@ -1463,6 +1451,11 @@ export function GameProvider({
           player: ExpandedDeck;
           opponent: ExpandedDeck;
           ai_decks: ExpandedDeck[];
+          // CR 903.13f(3): every set the draft contained, written by
+          // `podCommanderDeckPayload`.  Stated here because the payload
+          // carries it; it is passed through opaquely to the engine, so this
+          // annotation documents the contract rather than changing behaviour.
+          draft_set_codes?: string[] | null;
         };
         try {
           await initGame(gameId, adapter, deckList, formatConfig, playerCount, matchConfig, firstPlayer);
@@ -1677,7 +1670,10 @@ export function GameProvider({
               if (!useGameStore.getState().adapter && adapter) {
                 useGameStore.setState({ adapter });
               }
-              processRemoteUpdate(event.snapshot, event.events, event.logEntries, event.rewindTargets);
+              processRemoteUpdate(event.snapshot, event.events, event.logEntries, event.rewindTargets).catch((err) => {
+                debugLog(`remote update failed: ${err instanceof Error ? err.message : String(err)}`);
+                resyncFromAdapterSafely("delivery rejected");
+              });
             }
             if (event.type === "gameOver") {
               useGameStore.setState({

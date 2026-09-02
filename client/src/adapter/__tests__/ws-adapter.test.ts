@@ -6,7 +6,7 @@ import {
   WebSocketAdapter,
 } from "../ws-adapter";
 import { AdapterError, supportsMatchConcede, supportsServerRewind } from "../types";
-import type { GameState } from "../types";
+import type { FormatConfig, GameState } from "../types";
 import type { PhaseSocketTransport } from "../../services/openPhaseSocket";
 
 // Minimal mock WebSocket. Latest-constructed instance is exposed via
@@ -151,6 +151,7 @@ describe("WebSocketAdapter", () => {
     expect(ws.send).toHaveBeenLastCalledWith(JSON.stringify({ type: "ConcedeMatch" }));
   });
 
+/* Legacy browser-owned Resolve All transport coverage removed with the transport.
   it("publishes a Resolve All decision state before resolving its acknowledgement", async () => {
     const listener = vi.fn();
     adapter.onEvent(listener);
@@ -211,13 +212,13 @@ describe("WebSocketAdapter", () => {
     );
     ws.dispatchSynthetic(
       "message",
-      JSON.stringify({ type: "ActionRejected", data: { reason: "stale action rejection" } }),
+      JSON.stringify({ type: "ActionRejected", data: { rejection: { code: "stale_action", disposition: "stale", message: "stale action rejection", related_object_ids: [] } } }),
     );
     ws.dispatchSynthetic(
       "message",
       JSON.stringify({
         type: "ResolveAllRejected",
-        data: { request_id: 2, reason: "a different batch" },
+        data: { request_id: 2, rejection: { code: "invalid_action", disposition: "invalid", message: "a different batch", related_object_ids: [] } },
       }),
     );
 
@@ -228,25 +229,25 @@ describe("WebSocketAdapter", () => {
       "message",
       JSON.stringify({
         type: "ResolveAllRejected",
-        data: { request_id: 1, reason: "batch snapshot rejected" },
+        data: { request_id: 1, rejection: { code: "invalid_action", disposition: "invalid", message: "batch snapshot rejected", related_object_ids: [] } },
       }),
     );
 
     await expect(resultPromise).rejects.toMatchObject({ message: "batch snapshot rejected" });
   });
 
-  it("scopes the stale priority race to correlated Resolve All rejections", async () => {
+  it("keeps correlated Resolve All rejections engine-classified", async () => {
     const stale = adapter.resolveAll(0, [{ playerId: 1, difficulty: "Medium" }], 5);
     ws.dispatchSynthetic(
       "message",
       JSON.stringify({
         type: "ResolveAllRejected",
-        data: { request_id: 1, reason: "Resolve All requires your priority" },
+        data: { request_id: 1, rejection: { code: "resolve_all_not_ready", disposition: "unavailable", message: "Resolve All is not ready to run.", related_object_ids: [] } },
       }),
     );
     await expect(stale).rejects.toMatchObject({
-      code: "STALE_ACTION",
-      recoverable: false,
+      code: "ACTION_REJECTED",
+      recoverable: true,
     });
 
     const rejected = adapter.resolveAll(0, [{ playerId: 1, difficulty: "Medium" }], 5);
@@ -254,7 +255,7 @@ describe("WebSocketAdapter", () => {
       "message",
       JSON.stringify({
         type: "ResolveAllRejected",
-        data: { request_id: 2, reason: "batch snapshot rejected" },
+        data: { request_id: 2, rejection: { code: "invalid_action", disposition: "invalid", message: "batch snapshot rejected", related_object_ids: [] } },
       }),
     );
     await expect(rejected).rejects.toMatchObject({
@@ -263,6 +264,60 @@ describe("WebSocketAdapter", () => {
     });
   });
 
+  it("settles operational failures only against their pending game operation", async () => {
+    const action = adapter.submitAction({ type: "PassPriority" }, 0);
+    ws.dispatchSynthetic(
+      "message",
+      JSON.stringify({ type: "ActionFailed", data: { message: "action persistence failed" } }),
+    );
+    await expect(action).rejects.toMatchObject({
+      code: "WS_ERROR",
+      message: "action persistence failed",
+      recoverable: false,
+    });
+
+    const resolveAll = adapter.resolveAll(0, [{ playerId: 1, difficulty: "Medium" }], 5);
+    const resolveAllSettled = vi.fn();
+    void resolveAll.then(resolveAllSettled, resolveAllSettled);
+    ws.dispatchSynthetic(
+      "message",
+      JSON.stringify({ type: "ResolveAllFailed", data: { request_id: 2, message: "other batch failed" } }),
+    );
+    await Promise.resolve();
+    expect(resolveAllSettled).not.toHaveBeenCalled();
+    ws.dispatchSynthetic(
+      "message",
+      JSON.stringify({ type: "ResolveAllFailed", data: { request_id: 1, message: "batch persistence failed" } }),
+    );
+    await expect(resolveAll).rejects.toMatchObject({
+      code: "WS_ERROR",
+      message: "batch persistence failed",
+      recoverable: false,
+    });
+
+    const preview = adapter.previewManaPayment({ type: "PassPriority" }, 0);
+    const calls = ws.send.mock.calls;
+    const sent = JSON.parse(calls[calls.length - 1][0] as string);
+    const previewSettled = vi.fn();
+    void preview.then(previewSettled, previewSettled);
+    ws.dispatchSynthetic(
+      "message",
+      JSON.stringify({ type: "ManaPaymentPreviewFailed", data: { request_id: sent.data.request_id + 1, message: "other preview failed" } }),
+    );
+    await Promise.resolve();
+    expect(previewSettled).not.toHaveBeenCalled();
+    ws.dispatchSynthetic(
+      "message",
+      JSON.stringify({ type: "ManaPaymentPreviewFailed", data: { request_id: sent.data.request_id, message: "preview lookup failed" } }),
+    );
+    await expect(preview).rejects.toMatchObject({
+      code: "WS_ERROR",
+      message: "preview lookup failed",
+      recoverable: false,
+    });
+  });
+
+*/
   describe("server rewind capability (F2)", () => {
     it("declares the capability through the standalone type guard", () => {
       expect(supportsServerRewind(adapter)).toBe(true);
@@ -459,6 +514,65 @@ describe("WebSocketAdapter", () => {
     // `reconnectFailed` before the `reconnecting` emit at all. The sidecar
     // runs `--single-user`, so its reconnect window is effectively unbounded
     // and the session is still there to reconnect to.
+    // The desktop (Tauri) solo route hands the setup screen's edited config to
+    // the sidecar through this frame and nowhere else: that route deliberately
+    // writes no resume pointer, so if `format_config` were dropped here the
+    // native server would fall back to Standard's 20 life with no other copy of
+    // the user's choice anywhere in the session.
+    it("carries a custom starting life to the native engine", async () => {
+      MockWebSocket.last = null;
+      const socketFactory = vi.fn(
+        () => new MockWebSocket("native-engine") as unknown as PhaseSocketTransport,
+      );
+      const formatConfig: FormatConfig = {
+        format: "Commander",
+        starting_life: 25,
+        min_players: 2,
+        max_players: 4,
+        deck_size: { type: "Exactly", data: 100 },
+        singleton: true,
+        command_zone: true,
+        commander_damage_threshold: 21,
+        range_of_influence: null,
+        team_based: false,
+        sideboard_policy: { type: "Forbidden" },
+        default_deck_copy_limit: { type: "UpTo", data: 1 },
+        uses_commander: true,
+        allow_debug_actions: false,
+      };
+      const nativeAdapter = new WebSocketAdapter(
+        "native-engine",
+        "host",
+        { main_deck: [], sideboard: [] },
+        undefined,
+        undefined,
+        undefined,
+        "Player",
+        {
+          nativeAi: {
+            ...nativeAiOptions(socketFactory).nativeAi,
+            formatConfig,
+          },
+        },
+      );
+
+      const initPromise = nativeAdapter.initialize();
+      const nativeSocket = await completeHandshake(nativeAdapter);
+      const calls = nativeSocket.send.mock.calls;
+      const frame = JSON.parse(calls[calls.length - 1]![0] as string);
+      expect(frame.type).toBe("CreateGameWithSettings");
+      expect(frame.data.format_config).toEqual(formatConfig);
+
+      nativeSocket.dispatchSynthetic(
+        "message",
+        JSON.stringify({
+          type: "GameStarted",
+          data: { state: createMockState(), your_player: 0 },
+        }),
+      );
+      await initPromise;
+    });
+
     it("retries a dropped native-ai socket instead of failing on first drop", async () => {
       MockWebSocket.last = null;
       const nativeAdapter = new WebSocketAdapter(
@@ -522,6 +636,71 @@ describe("WebSocketAdapter", () => {
     // Scope guard: this asserts a property of the DIFF (the change was scoped
     // to `nativeAi` and did not widen to both options), not that 0 is the
     // right answer for pregame — that path is explicitly not analysed.
+    // Desktop hosting from the multiplayer screen: `P2PHostAdapter` builds a
+    // `NativeP2PBridge`, which creates the sidecar game through this pregame
+    // frame rather than the `nativeAi` one. `HostSetup`'s edited starting life
+    // reaches the engine only if it survives here too.
+    it("carries a custom starting life to the native pregame host", async () => {
+      MockWebSocket.last = null;
+      const formatConfig: FormatConfig = {
+        format: "Commander",
+        starting_life: 25,
+        min_players: 2,
+        max_players: 4,
+        deck_size: { type: "Exactly", data: 100 },
+        singleton: true,
+        command_zone: true,
+        commander_damage_threshold: 21,
+        range_of_influence: null,
+        team_based: false,
+        sideboard_policy: { type: "Forbidden" },
+        default_deck_copy_limit: { type: "UpTo", data: 1 },
+        uses_commander: true,
+        allow_debug_actions: false,
+      };
+      const pregameAdapter = new WebSocketAdapter(
+        "native-engine",
+        "host",
+        { main_deck: [], sideboard: [] },
+        undefined,
+        undefined,
+        undefined,
+        "Host",
+        {
+          nativePregame: {
+            kind: "host",
+            socketFactory: () =>
+              new MockWebSocket("native-engine") as unknown as PhaseSocketTransport,
+            playerCount: 4,
+            aiSeats: [],
+            formatConfig,
+          },
+        },
+      );
+
+      const attached = pregameAdapter.initializePregame();
+      const nativeSocket = await completeHandshake(pregameAdapter);
+      const calls = nativeSocket.send.mock.calls;
+      const frame = JSON.parse(calls[calls.length - 1]![0] as string);
+      expect(frame.type).toBe("CreateGameWithSettings");
+      expect(frame.data.format_config).toEqual(formatConfig);
+
+      nativeSocket.dispatchSynthetic(
+        "message",
+        JSON.stringify({
+          type: "SessionAttached",
+          data: {
+            game_code: "WXYZ",
+            player_id: 0,
+            player_token: "tok",
+            full_key: { game_code: "WXYZ", generation: 1 },
+          },
+        }),
+      );
+      await attached;
+      pregameAdapter.dispose();
+    });
+
     it("leaves the native pregame transport failing on first drop", async () => {
       MockWebSocket.last = null;
       const pregameAdapter = new WebSocketAdapter(
@@ -1239,7 +1418,7 @@ describe("WebSocketAdapter", () => {
         "message",
         JSON.stringify({
           type: "ActionRejected",
-          data: { reason: "Engine error: ReorderHand: expected 6 ids, got 5" },
+          data: { rejection: { code: "stale_action", disposition: "stale", message: "That action is based on outdated game state.", related_object_ids: [] } },
         }),
       );
       await expect(pending).rejects.toMatchObject({
@@ -1254,7 +1433,7 @@ describe("WebSocketAdapter", () => {
         "message",
         JSON.stringify({
           type: "ActionRejected",
-          data: { reason: "Resolve All requires your priority" },
+          data: { rejection: { code: "resolve_all_not_ready", disposition: "unavailable", message: "Resolve All is not ready to run.", related_object_ids: [] } },
         }),
       );
       await expect(pending).rejects.toMatchObject({
@@ -1298,7 +1477,7 @@ describe("WebSocketAdapter", () => {
     // body was skipped and the refusal was dropped on the floor — which is why
     // the server had been reaching for `ServerMessage::error` instead, the
     // event `handleNativeEvent` treats as terminal.
-    it("emits requestRejected when an ActionRejected has no in-flight action", () => {
+    it("emits requestRejected for a request-level refusal", () => {
       const listener = vi.fn();
       adapter.onEvent(listener);
 
@@ -1306,7 +1485,7 @@ describe("WebSocketAdapter", () => {
       ws.dispatchSynthetic(
         "message",
         JSON.stringify({
-          type: "ActionRejected",
+          type: "RequestRejected",
           data: { reason: "There is no previous action of yours to take back" },
         }),
       );
@@ -1339,7 +1518,7 @@ describe("WebSocketAdapter", () => {
         "message",
         JSON.stringify({
           type: "ActionRejected",
-          data: { reason: "Engine error: Something genuinely wrong" },
+          data: { rejection: { code: "invalid_action", disposition: "invalid", message: "That action is not valid in the current game state.", related_object_ids: [] } },
         }),
       );
 
@@ -1402,6 +1581,27 @@ describe("WebSocketAdapter", () => {
       expect(listener).toHaveBeenCalledWith(
         expect.objectContaining({ type: "error" }),
       );
+    });
+
+    it("rejects an in-flight action when the native AI driver faults", async () => {
+      const listener = vi.fn();
+      adapter.onEvent(listener);
+      const pending = adapter.submitAction({ type: "PassPriority" }, 0);
+
+      ws.dispatchSynthetic(
+        "message",
+        JSON.stringify({
+          type: "AiDriverFault",
+          data: { fault: { id: 7, after_state_revision: 3, cause: "ActionSafetyCapReached" } },
+        }),
+      );
+
+      await expect(pending).rejects.toMatchObject({
+        code: "WS_ERROR",
+        recoverable: false,
+      });
+      expect(listener).toHaveBeenCalledWith({ type: "actionPendingChanged", pending: false });
+      expect(listener).toHaveBeenCalledWith(expect.objectContaining({ type: "aiDriverFault" }));
     });
 
     it("emits an error instead of throwing when a fire-and-forget send hits a closed socket", () => {

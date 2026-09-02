@@ -6,7 +6,7 @@ use crate::types::ability::{
 };
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::counter::{CounterMatch, CounterType};
-use crate::types::game_state::{BattlefieldEntryRecord, CastingVariant};
+use crate::types::game_state::{BattlefieldEntryRecord, CastOccurrence, CastingVariant};
 use crate::types::keywords::Keyword;
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::phase::Phase;
@@ -203,14 +203,39 @@ pub fn record_spell_cast(
     player: PlayerId,
     obj: &GameObject,
     cast_variant: crate::types::game_state::CastingVariant,
-) {
+) -> Result<CastOccurrence, crate::types::resolved_commands::ResolvedLedgerEditReplayInvariantError>
+{
     record_spell_cast_from_zone(
         state,
         player,
         obj,
         obj.cast_from_zone.unwrap_or(Zone::Hand),
         cast_variant,
-    );
+    )
+}
+
+/// CR 708.4: Project a spell-cast record for a LIVE per-spell filter seam, which
+/// has no announced cast variant to record.
+///
+/// The ledger writes the variant its caller announced (`record_spell_cast_from_zone`).
+/// The live seams — cost modifiers (CR 601.2f) and per-turn cast limits — filter a
+/// spell mid-cast and can only state what the object itself evidences, so they
+/// asked for `CastingVariant::Normal` and `FilterProp::FaceDown` had nothing to
+/// read. A face-down cast is the one variant the object does evidence before it
+/// is filtered: `apply_face_down_entry_profile` has already blanked it
+/// (CR 708.2), which is what [`GameObject::spell_is_cast_face_down`] reads. Every
+/// other variant stays `Normal` here — this states a fact, it does not guess one.
+pub(crate) fn live_spell_cast_record_for(
+    obj: &GameObject,
+    from_zone: Zone,
+    fused_hint: bool,
+) -> SpellCastRecord {
+    let cast_variant = if obj.spell_is_cast_face_down() {
+        crate::types::game_state::CastingVariant::FaceDown
+    } else {
+        crate::types::game_state::CastingVariant::Normal
+    };
+    spell_cast_record_for(obj, from_zone, cast_variant, fused_hint)
 }
 
 /// The single fuse-aware authority for spell-cast record projection. `fused_hint` is the caller's
@@ -240,6 +265,11 @@ pub(crate) fn spell_cast_record_for(
         // trigger-filter evaluation (e.g. "your first spell with {X} in its
         // mana cost each turn") does not need to re-examine the spell object.
         has_x_in_cost: crate::game::casting_costs::cost_has_x(&obj.mana_cost),
+        // CR 715.2a: Capture whether the cast-time object has Adventure
+        // characteristics; this is distinct from casting the Adventure face.
+        has_adventure: obj.back_face.as_ref().is_some_and(|face| {
+            face.layout_kind == Some(crate::types::card::LayoutKind::Adventure)
+        }),
         from_zone,
         // CR 702.185c: Capture the alternative-cast variant so per-turn
         // spell-history conditions ("a spell was warped this turn") can
@@ -260,11 +290,11 @@ pub fn record_spell_cast_from_zone(
     obj: &GameObject,
     from_zone: Zone,
     cast_variant: crate::types::game_state::CastingVariant,
-) {
+) -> Result<CastOccurrence, crate::types::resolved_commands::ResolvedLedgerEditReplayInvariantError>
+{
     // CR 117.1: Record spell characteristics for general-purpose filtered counting.
     let record = spell_cast_record_for(obj, from_zone, cast_variant, false);
     crate::game::ledger::record_spell_cast(state, player, record)
-        .expect("finalized spell cast must have a valid ledger prefix");
 }
 
 /// CR 702.185c: True when any player cast a spell using `variant` this turn.
@@ -3783,6 +3813,7 @@ mod tests {
                 colors: Vec::new(),
                 mana_value: 1,
                 has_x_in_cost: false,
+                has_adventure: false,
                 from_zone: Zone::Hand,
                 cast_variant: crate::types::game_state::CastingVariant::Normal,
                 was_kicked: false,
@@ -3819,6 +3850,7 @@ mod tests {
                     colors: Vec::new(),
                     mana_value: 1,
                     has_x_in_cost: false,
+                    has_adventure: false,
                     from_zone: Zone::Hand,
                     cast_variant: crate::types::game_state::CastingVariant::Normal,
                     was_kicked: false,
@@ -3833,6 +3865,7 @@ mod tests {
                     colors: Vec::new(),
                     mana_value: 2,
                     has_x_in_cost: false,
+                    has_adventure: false,
                     from_zone: Zone::Hand,
                     cast_variant: crate::types::game_state::CastingVariant::Normal,
                     was_kicked: false,
@@ -3847,6 +3880,7 @@ mod tests {
                     colors: Vec::new(),
                     mana_value: 3,
                     has_x_in_cost: false,
+                    has_adventure: false,
                     from_zone: Zone::Hand,
                     cast_variant: crate::types::game_state::CastingVariant::Normal,
                     was_kicked: false,
@@ -4553,7 +4587,8 @@ mod tests {
             caster,
             &approach,
             crate::types::game_state::CastingVariant::Normal,
-        );
+        )
+        .expect("test spell-cast ledger is valid");
         let history = state
             .spells_cast_this_game_by_player
             .get(&caster)
@@ -4576,7 +4611,8 @@ mod tests {
             caster,
             &approach,
             crate::types::game_state::CastingVariant::Normal,
-        );
+        )
+        .expect("test spell-cast ledger is valid");
         assert_eq!(
             resolve_quantity(&state, &approach_count, caster, ObjectId(10)),
             2,
@@ -4591,7 +4627,8 @@ mod tests {
             opponent,
             &approach,
             crate::types::game_state::CastingVariant::Normal,
-        );
+        )
+        .expect("test spell-cast ledger is valid");
         assert_eq!(
             resolve_quantity(&state, &approach_count, caster, ObjectId(10)),
             2,
@@ -4626,7 +4663,8 @@ mod tests {
         ));
 
         // A normal cast records `CastingVariant::Normal` → warp query still false.
-        record_spell_cast(&mut state, caster, &spell, CastingVariant::Normal);
+        record_spell_cast(&mut state, caster, &spell, CastingVariant::Normal)
+            .expect("test spell-cast ledger is valid");
         assert_eq!(
             state.spells_cast_this_turn_by_player[&caster][0].cast_variant,
             CastingVariant::Normal
@@ -4637,7 +4675,8 @@ mod tests {
         ));
 
         // A warp cast records `CastingVariant::Warp` → warp query becomes true.
-        record_spell_cast(&mut state, caster, &spell, CastingVariant::Warp);
+        record_spell_cast(&mut state, caster, &spell, CastingVariant::Warp)
+            .expect("test spell-cast ledger is valid");
         assert_eq!(
             state.spells_cast_this_turn_by_player[&caster][1].cast_variant,
             CastingVariant::Warp

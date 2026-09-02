@@ -10,7 +10,7 @@ use crate::types::ability::{
     ManaProduction, ManaSpendRestriction, ManaTargetRole, ModalSelectionConstraint,
     OutsideGameSourcePool, PlayerFilter, PtStat, PtValue, QuantityExpr, SearchDestinationSplit,
     SearchSelectionConstraint, SpellStackToGraveyardReplacement, StaticCondition, StaticDefinition,
-    SubAbilityLink, TargetFilter,
+    SubAbilityLink, TargetFilter, ThisWayCause,
 };
 use crate::types::card_type::Supertype;
 use crate::types::counter::CounterType;
@@ -457,6 +457,11 @@ pub(crate) enum ContinuationAst {
         /// cards route to a fixed library position (Fertile Thicket).
         #[serde(default)]
         reveal_verb: bool,
+        /// CR 608.2c: The producer action named by an explicit tracked-set suffix
+        /// such as "milled this way". Generic "from among" selection remains
+        /// action-agnostic (`None`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caused_by: Option<ThisWayCause>,
     },
     /// CR 708.2a + CR 205.1a: "They're N/M [types] [subtypes] creatures." after a
     /// put-face-down clause — refines the preceding face-down move's profile.
@@ -520,6 +525,19 @@ pub(crate) enum ContinuationAst {
     /// and Destroy the Evidence where "those cards" refers to all cards revealed
     /// during the RevealUntil resolution, not only the non-matching ones.
     RevealUntilAllToZone { destination: Zone },
+    /// CR 202.3 + CR 608.2c: "If its mana value is <comparator> <dynamic
+    /// quantity>, put it onto <zone>[. Otherwise, put it into <zone>]." after
+    /// RevealUntil — a card-property branch on the hit card's own mana value
+    /// (Part in Friendship), distinct from the player-choice `RevealUntilKept
+    /// { optional_decline }` shape. Absorbs into `kept_destination_if`
+    /// (the `if_true` branch) and, when the trailing "otherwise" clause is
+    /// present in the same sentence, `kept_destination` (the "otherwise"
+    /// branch) as well.
+    RevealUntilConditionalKept {
+        filter: Box<TargetFilter>,
+        if_true_destination: Zone,
+        otherwise_destination: Option<Zone>,
+    },
     /// CR 406.3 + CR 701.20e: "[then] exile it/them [face down]" after a private
     /// `Dig` (the "look at the top N cards of <player>'s library" look step).
     /// Rewrites the preceding `Dig` into an `Effect::ExileTop` so the looked-at
@@ -747,6 +765,13 @@ pub(crate) enum ImperativeFamilyAst {
     Manifest {
         target: TargetFilter,
         count: QuantityExpr,
+        /// CR 701.40a: Source discriminant, mirroring `Cloak.from_zone`:
+        /// `None` manifests the top `count` cards of `target`'s library;
+        /// `Some(zone)` manifests a card the controller chooses from that zone
+        /// (Scroll of Fate's "manifest a card from your hand"), which lowers
+        /// to a `ChooseFromZone` parent + `Manifest { object_source }`
+        /// sub-chain.
+        from_zone: Option<Zone>,
         /// CR 110.2a: Direct imperative manifest defaults to the instruction's
         /// controller; subject-predicate forms leave this unset so the subject's
         /// library owner controls the manifested card.
@@ -1497,7 +1522,9 @@ pub(crate) enum ChooseImperativeAst {
     /// sub_ability lattice.
     TwoTargets {
         target_a: TargetFilter,
-        target_b: TargetFilter,
+        target_a_multi_target: Option<MultiTargetSpec>,
+        target_b: Box<TargetFilter>,
+        target_b_multi_target: Option<MultiTargetSpec>,
     },
     /// CR 608.2d + CR 122.1: "choose a counter on it / that permanent" — pick one
     /// of the distinct counter kinds present on the anaphoric object (The Caves
@@ -1919,6 +1946,9 @@ pub(crate) fn with_clause_duration(
     // Leading duration from Oracle text (e.g., "Until end of turn, ...") is authoritative —
     // it overrides any default injected by sub-parsers (e.g., build_become_clause's Permanent).
     clause.duration = Some(duration.clone());
+    // CR 608.2c: set by the `CastFromZone` arm when the duration-selected
+    // lingering mechanism cannot carry the window's printed bound.
+    let mut refused_bound: Option<crate::types::ability::ResolutionCastWindow> = None;
     match &mut clause.effect {
         Effect::GenericEffect {
             duration: ref mut effect_duration,
@@ -1937,9 +1967,31 @@ pub(crate) fn with_clause_duration(
         }
         Effect::CastFromZone {
             duration: ref mut effect_duration,
+            ref mut driver,
             ..
         } => {
             *effect_duration = Some(duration);
+            // CR 611.2a + CR 608.2g: a LEADING duration ("Until end of turn, you
+            // may cast spells from among them" — Apex of Power, Narset, Dream
+            // Pillager, Commander Liara Portyr) states that the permission is
+            // exercised at a later priority window. That is the defining
+            // property of a lingering permission, so a resolution-scoped
+            // free-cast window the clause body lowered (it cannot see this
+            // stripped prefix) is reconciled back to one here.
+            //
+            // CR 608.2c: the degrade is REFUSABLE. Aminatou's Augury prints
+            // "Until end of turn, … you may cast A spell of that type from among
+            // the exiled cards without paying its mana cost": the body lowers to
+            // a window bounded at one cast, and the per-object lingering
+            // permission this leading duration selects has no shared budget to
+            // hold that bound. Dropping it granted an UNCAPPED free cast over
+            // the whole exiled set. Refuse the clause instead — the refusal is
+            // applied after the match so the borrow of `clause.effect` ends
+            // first.
+            match driver.with_lingering_duration() {
+                Some(reconciled) => *driver = reconciled,
+                None => refused_bound = Some(driver.window_bounds().unwrap_or_default()),
+            }
         }
         Effect::BecomeCopy {
             duration: ref mut effect_duration,
@@ -1966,11 +2018,132 @@ pub(crate) fn with_clause_duration(
         }
         _ => {}
     }
+    if let Some(bounds) = refused_bound {
+        clause.effect = cast_bound_lost_to_duration_gap(bounds);
+    }
     clause
 }
 
-fn normalize_play_from_exile_duration(duration: Duration) -> Duration {
-    match duration {
+/// CR 608.2c + CR 611.2a: The honest gap a duration reconciliation emits when it
+/// would otherwise drop a printed batch bound.
+///
+/// Every reconciliation seam (`with_clause_duration`, `reconcile_coordinated_cast`,
+/// and the trailing-duration fixup in `oracle_effect/mod.rs`) builds its refusal
+/// here, so all three name the same gap and carry the same diagnostic. The
+/// description records the bound that was about to be lost rather than an Oracle
+/// fragment, because these seams run after lowering and no longer hold the source
+/// text — and the bound is the load-bearing fact for anyone auditing the gap.
+pub(crate) fn cast_bound_lost_to_duration_gap(
+    bounds: crate::types::ability::ResolutionCastWindow,
+) -> Effect {
+    Effect::unimplemented(
+        crate::types::ability::CAST_BOUND_LOST_TO_DURATION_GAP,
+        format!(
+            "cast bound the duration-scoped lingering permission cannot carry: {}",
+            bounds.describe_bound()
+        ),
+    )
+}
+
+/// CR 611.2a + CR 608.2g + CR 608.2c: Carry a sentence's LEADING duration onto a
+/// later coordinated clause of that same sentence.
+///
+/// A leading duration scopes the whole coordinated predicate it introduces, not
+/// just its first conjunct. Magus of the Mind prints "Until end of turn, you may
+/// play lands **and** cast spells from among cards exiled this way without paying
+/// their mana costs": one duration, two coordinated instructions.
+/// `split_clause_sequence` cuts that sentence into the chunks
+/// `"Until end of turn, you may play lands"` (boundary `Comma`) and
+/// `"cast spells from among cards exiled this way without paying their mana
+/// costs"`, so `with_clause_duration` — which only ever sees the chunk the
+/// duration was printed on — reconciles the FIRST of the two and nothing else.
+/// The cast half was then lowered from a fragment in which no duration token is
+/// visible at any position, so `from_among_batch_cast_driver`'s in-clause scan
+/// could not see one either, and the card became a resolution-scoped window
+/// although its own rulings state the opposite ("You must follow the normal
+/// timing permissions and restrictions for cards you cast this way" / "Any of the
+/// cards you don't play will remain in exile") — the lingering signature.
+///
+/// The sentence-scoped grouping is the same one CR 107.3i's `where X is` binding
+/// uses (`compute_sentence_leading_duration` / `compute_sentence_where_x`), so
+/// the two cannot drift apart on what "the same sentence" means.
+///
+/// Scoped narrowly to `Effect::CastFromZone`, because that is the only effect
+/// whose *mechanism* (`CastFromZoneDriver`) is decided from the local clause
+/// fragment and therefore cannot see the sentence head. Every other effect either
+/// carries its own duration slot (stamped by `with_clause_duration` on the chunk
+/// that printed the duration) or is instantaneous, and blanket-stamping a
+/// duration onto arbitrary later chunks would change effects the coordination
+/// does not scope.
+pub(crate) fn apply_sentence_duration_to_coordinated_casts(
+    clause: &mut ParsedEffectClause,
+    duration: &Duration,
+) {
+    reconcile_coordinated_cast(&mut clause.effect, &mut clause.duration, duration);
+    if let Some(sub) = clause.sub_ability.as_deref_mut() {
+        apply_sentence_duration_to_coordinated_cast_defs(sub, duration);
+    }
+}
+
+/// The `AbilityDefinition` half of the walk: a clause's compound-"and" remainder
+/// belongs to the same printed sentence, so the same duration scopes it.
+fn apply_sentence_duration_to_coordinated_cast_defs(
+    def: &mut AbilityDefinition,
+    duration: &Duration,
+) {
+    let (effect, def_duration) = (def.effect.as_mut(), &mut def.duration);
+    reconcile_coordinated_cast(effect, def_duration, duration);
+    if let Some(next) = def.sub_ability.as_deref_mut() {
+        apply_sentence_duration_to_coordinated_cast_defs(next, duration);
+    }
+    if let Some(alt) = def.else_ability.as_deref_mut() {
+        apply_sentence_duration_to_coordinated_cast_defs(alt, duration);
+    }
+}
+
+/// CR 611.2a: stamp the sentence's duration on one cast grant and reconcile its
+/// mechanism with it. A duration the clause stated for ITSELF always wins.
+fn reconcile_coordinated_cast(
+    effect: &mut Effect,
+    node_duration: &mut Option<Duration>,
+    duration: &Duration,
+) {
+    let Effect::CastFromZone {
+        duration: effect_duration,
+        driver,
+        ..
+    } = effect
+    else {
+        return;
+    };
+    // CR 611.2a: the permission expires with the stated duration rather than
+    // standing indefinitely (`duration: None` on this grant means "castable until
+    // the cards leave exile").
+    if effect_duration.is_none() {
+        *effect_duration = Some(duration.clone());
+    }
+    if node_duration.is_none() {
+        *node_duration = Some(duration.clone());
+    }
+    // CR 611.2a + CR 608.2g: a stated duration means the controller casts at a
+    // LATER priority window, which is the defining property of a lingering
+    // permission — so a resolution-scoped window degrades back to one. Same
+    // authority `with_clause_duration` uses for the single-chunk case, including
+    // its refusal: a sentence-leading duration that reaches a coordinated cast
+    // conjunct whose window printed a cast cap or a CR 202.3 running-total
+    // budget cannot silently drop it into a countless per-object permission.
+    match driver.with_lingering_duration() {
+        Some(reconciled) => *driver = reconciled,
+        None => {
+            let bounds = driver.window_bounds().unwrap_or_default();
+            *effect = cast_bound_lost_to_duration_gap(bounds);
+        }
+    }
+}
+
+pub(crate) fn is_play_from_exile_lifetime_duration(duration: &Duration) -> bool {
+    matches!(
+        duration,
         Duration::ForAsLongAs {
             condition: StaticCondition::Unrecognized { text },
         } if matches!(
@@ -1979,8 +2152,13 @@ fn normalize_play_from_exile_duration(duration: Duration) -> Duration {
                 | "that card remains exiled"
                 | "those cards remain exiled"
                 | "they remain exiled"
-        ) =>
-        {
+        )
+    )
+}
+
+fn normalize_play_from_exile_duration(duration: Duration) -> Duration {
+    match duration {
+        duration if is_play_from_exile_lifetime_duration(&duration) => {
             // CR 400.7i + CR 611.2a: exile-play permissions persist until the
             // referenced object leaves exile; zone-exit cleanup removes the
             // object-tagged permission.

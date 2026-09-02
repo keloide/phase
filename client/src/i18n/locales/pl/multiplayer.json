@@ -81,6 +81,12 @@
   "joinErrorDialog": {
     "dismiss": "Zamknij"
   },
+  "reconnectRejected": {
+    "firstMessageInvalid": "Host odrzucił połączenie przed konfiguracją. Odśwież oba okna i spróbuj ponownie.",
+    "versionRequired": "Ten host wymaga protokołu połączenia v{{version}}. Odśwież oba okna i spróbuj ponownie.",
+    "versionMismatch": "Niezgodność protokołu połączenia: klient wysłał v{{guestVersion}}, ale host używa v{{hostVersion}}. Odśwież oba okna.",
+    "malformedAuthority": "Host odrzucił nieprawidłowe uprawnienia połączenia. Dołącz ponownie, używając nowego kodu pokoju."
+  },
   "serverOfflinePrompt": {
     "title": "Dobieranie graczy nieosiągalne",
     "message": "Nie udało się połączyć z serwerem gry, więc publiczna poczekalnia jest teraz niedostępna. Nadal możesz grać, udostępniając bezpośredni kod znajomemu.",
@@ -214,7 +220,17 @@
     "back": "Wstecz",
     "opening": "Otwieranie…",
     "hostP2PGame": "Hostuj grę P2P",
-    "hostGame": "Hostuj grę"
+    "hostGame": "Hostuj grę",
+    "savedFormats": "Zapisane formaty niestandardowe",
+    "saveAsCustomFormat": "Zapisz format",
+    "customFormatNamePlaceholder": "Nazwij ten format",
+    "useCustomFormat": "Użyj",
+    "customFormatInUse": "W użyciu",
+    "deleteCustomFormat": "Usuń",
+    "loadingCustomFormat": "Wczytywanie formatu…",
+    "noSavedCustomFormats": "Brak zapisanych formatów niestandardowych.",
+    "customFormatResolveFailed": "Nie udało się wczytać zapisanego formatu.",
+    "customFormatHostingUnavailable": "Hostowanie z formatem niestandardowym nie jest jeszcze obsługiwane — legalność talii nie może zostać dla niego sprawdzona. Na razie zapisz i tylko podglądaj."
   },
   "page": {
     "deckRejected": "Talia została odrzucona przez gospodarza.",

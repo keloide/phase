@@ -36,6 +36,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{- define "phase-server.logsImage" -}}
+{{- $img := .Values.logging.server.image -}}
+{{- if $img.digest -}}
+{{- printf "%s:%s@%s" $img.repository $img.tag $img.digest -}}
+{{- else -}}
+{{- printf "%s:%s" $img.repository $img.tag -}}
+{{- end -}}
+{{- end -}}
+
 {{/* PUBLIC_URL is what the server advertises to clients, so it is never
      guessed. Deriving it from ingress.host is only sound when that host is
      actually serving: with the ingress off it yields the values.yaml
@@ -61,15 +70,28 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-%s-%s@kubernetescrd" .ctx.Release.Namespace (include "phase-server.fullname" .ctx) .suffix -}}
 {{- end -}}
 
-{{/* Middlewares applied to every public route */}}
+{{/* Middlewares applied to every public route, in Traefik's Ingress
+     *annotation* syntax (<ns>-<name>@kubernetescrd).
+
+     Takes dict "ctx" $ "excludeCompress" true|false. Pass true for the /ws
+     route: this mirrors the split `build_router` makes in
+     crates/phase-server/src/main.rs, which keeps `CompressionLayer` off
+     `/ws`'s sub-router because a WebSocket upgrade's 101 response carries no
+     body for it to compress. Traefik's compress middleware is documented to
+     no-op on such a response too, but running it there is still pure
+     overhead (buffering/negotiation work with nothing to show for it), so
+     both layers of this stack make the same exclusion for the same reason. */}}
 {{- define "phase-server.commonMiddlewares" -}}
 {{- $list := list -}}
-{{- if .Values.traefik.middlewares.enabled -}}
-{{- $list = append $list (include "phase-server.crdRef" (dict "ctx" . "suffix" "ratelimit")) -}}
-{{- $list = append $list (include "phase-server.crdRef" (dict "ctx" . "suffix" "inflight")) -}}
-{{- $list = append $list (include "phase-server.crdRef" (dict "ctx" . "suffix" "headers")) -}}
+{{- if .ctx.Values.traefik.middlewares.enabled -}}
+{{- $list = append $list (include "phase-server.crdRef" (dict "ctx" .ctx "suffix" "ratelimit")) -}}
+{{- $list = append $list (include "phase-server.crdRef" (dict "ctx" .ctx "suffix" "inflight")) -}}
+{{- $list = append $list (include "phase-server.crdRef" (dict "ctx" .ctx "suffix" "headers")) -}}
+{{- if not .excludeCompress -}}
+{{- $list = append $list (include "phase-server.crdRef" (dict "ctx" .ctx "suffix" "compress")) -}}
 {{- end -}}
-{{- $list = concat $list (default (list) .Values.traefik.middlewares.extra) -}}
+{{- end -}}
+{{- $list = concat $list (default (list) .ctx.Values.traefik.middlewares.extra) -}}
 {{- join "," $list -}}
 {{- end -}}
 
@@ -92,4 +114,365 @@ requestHeaderName: CF-Connecting-IP
 {{- if .Values.cloudflare.authenticatedOriginPulls.enabled }}
 traefik.ingress.kubernetes.io/router.tls.options: {{ include "phase-server.crdRef" (dict "ctx" . "suffix" "cf-origin-pull") | quote }}
 {{- end }}
+{{- end -}}
+
+{{/* Pod annotations: the operator's own, plus the prometheus.io/* trio when
+     metrics.annotations is set (for scrapers that discover by annotation
+     rather than by PodMonitor/ServiceMonitor), plus a checksum of the logs
+     sidecar's ConfigMap so editing it (e.g. logging.server.port) rolls the
+     pod — Kubernetes does not restart pods on ConfigMap changes on its own. */}}
+{{- define "phase-server.podAnnotations" -}}
+{{- $annotations := default (dict) .Values.podAnnotations -}}
+{{- if and .Values.metrics.enabled .Values.metrics.annotations -}}
+{{- $annotations = merge (dict
+      "prometheus.io/scrape" "true"
+      "prometheus.io/port" (printf "%v" .Values.metrics.port)
+      "prometheus.io/path" .Values.metrics.path) $annotations -}}
+{{- end -}}
+{{- if .Values.logging.enabled -}}
+{{- $annotations = merge (dict
+      "checksum/logs-config" (include (print $.Template.BasePath "/logs-configmap.yaml") . | sha256sum)) $annotations -}}
+{{- end -}}
+{{- with $annotations }}
+{{- toYaml . }}
+{{- end }}
+{{- end -}}
+
+{{/* `logging.dir` as a path relative to PHASE_DATA_DIR, i.e. the
+     `subPath:` the `logs` sidecar mounts from the shared `data` volume.
+     Enforced (not just documented) because there is no other writable
+     volume for logs to land on — a value outside PHASE_DATA_DIR would mount
+     an empty, unrelated subtree into the sidecar and it would serve nothing.
+
+     Must be a STRICT, traversal-free descendant, not the PVC root itself:
+     `logging.dir: /var/lib/phase-server/` string-prefix-matches but trims to
+     an empty subPath, which mounts the *entire* volume — games.db and its
+     WAL included — into the read-only autoindexed sidecar. A `.` or `..`
+     path segment is rejected for the same reason: the check below is a
+     string prefix, not a filesystem walk, so `/var/lib/phase-server/../etc`
+     would otherwise also match, and kubelet's subPath join treats a bare
+     `.` segment as the volume root too (`logging.dir:
+     /var/lib/phase-server/.` trims to subPath `"."`, exactly as exposed as
+     the empty-subPath case this guard exists for). */}}
+{{- define "phase-server.logSubPath" -}}
+{{- $prefix := "/var/lib/phase-server/" -}}
+{{- if not (hasPrefix $prefix .Values.logging.dir) -}}
+{{- fail (printf "logging.dir %q must be a subdirectory of %s (the data PVC mount point) so the logs sidecar can mount it from the same volume." .Values.logging.dir $prefix) -}}
+{{- end -}}
+{{- $sub := trimPrefix $prefix .Values.logging.dir -}}
+{{- if or (eq $sub "") (regexMatch "(^|/)\\.{1,2}($|/)" $sub) -}}
+{{- fail (printf "logging.dir %q must be a strict, traversal-free descendant of %s -- the PVC root itself (or a path containing '..') would mount the whole data volume, games.db included, into the read-only autoindexed logs sidecar, not just logs." .Values.logging.dir $prefix) -}}
+{{- end -}}
+{{- $sub -}}
+{{- end -}}
+
+{{/* Middleware references for an IngressRoute.
+
+     NOT interchangeable with `phase-server.commonMiddlewares`: that helper emits
+     Traefik's *annotation* syntax (`<ns>-<name>@kubernetescrd`), which the CRD
+     provider rejects — `@` is not legal in `routes[].middlewares[].name`, and a
+     namespace-qualified reference additionally needs `allowCrossNamespace` on
+     the Traefik install. A bad reference does not fail loudly: Traefik drops the
+     whole route, so the host simply stops answering.
+
+     Same namespace as the IngressRoute, so `namespace:` is left off.
+
+     Takes dict "ctx" $ "excludeCompress" true|false — see
+     `phase-server.commonMiddlewares` for why the /ws route passes true. */}}
+{{- define "phase-server.middlewareRefs" -}}
+{{- $fullname := include "phase-server.fullname" .ctx -}}
+{{- if .ctx.Values.traefik.middlewares.enabled }}
+- name: {{ $fullname }}-ratelimit
+- name: {{ $fullname }}-inflight
+- name: {{ $fullname }}-headers
+{{- if not .excludeCompress }}
+- name: {{ $fullname }}-compress
+{{- end }}
+{{- end }}
+{{- range .ctx.Values.scaleOut.extraMiddlewareRefs }}
+- name: {{ .name }}
+  {{- with .namespace }}
+  namespace: {{ . }}
+  {{- end }}
+{{- end }}
+{{- end -}}
+
+{{/* The resolved per-ordinal hostname template, containing {ordinal} once.
+
+     The default keeps ordinals at the SAME DNS level as the entry host
+     (`phase-1.example.com`, not `1.phase.example.com`). A wildcard edge
+     certificate covers exactly one label, so a proxied second-level name would
+     be served a certificate that does not match it. */}}
+{{- define "phase-server.ordinalHostTemplate" -}}
+{{- $tmpl := .Values.scaleOut.ordinalHostTemplate -}}
+{{- if not $tmpl -}}
+{{- $host := required "ingress.host is required for scaleOut: it is the entry hostname the ordinal hostnames are derived from." .Values.ingress.host -}}
+{{- if not (contains "." $host) -}}
+{{- fail (printf "ingress.host %q has a single label, so no ordinal hostname can be derived from it (the result would be %q, which nothing resolves and no certificate covers). Give ingress.host a domain, or set scaleOut.ordinalHostTemplate explicitly." $host (printf "%s-0." $host)) -}}
+{{- end -}}
+{{- $parts := splitn "." 2 $host -}}
+{{- $tmpl = printf "%s-{ordinal}.%s" $parts._0 $parts._1 -}}
+{{- end -}}
+{{- if ne (len (splitList "{ordinal}" $tmpl)) 2 -}}
+{{- fail (printf "scaleOut.ordinalHostTemplate must contain the literal {ordinal} placeholder exactly once; got %q" $tmpl) -}}
+{{- end -}}
+{{- $tmpl -}}
+{{- end -}}
+
+{{/* Hostname for one ordinal: dict "ctx" $ "ordinal" <n> */}}
+{{- define "phase-server.ordinalHost" -}}
+{{- $split := splitList "{ordinal}" (include "phase-server.ordinalHostTemplate" .ctx) -}}
+{{- printf "%s%v%s" (index $split 0) .ordinal (index $split 1) -}}
+{{- end -}}
+
+{{/* Every hostname this release answers on: entry host plus one per ordinal. */}}
+{{- define "phase-server.allHosts" -}}
+{{- $ctx := . -}}
+{{- $hosts := list (required "ingress.host is required for scaleOut." .Values.ingress.host) -}}
+{{- range $i := until (int .Values.scaleOut.replicaMax) -}}
+{{- $hosts = append $hosts (include "phase-server.ordinalHost" (dict "ctx" $ctx "ordinal" $i)) -}}
+{{- end -}}
+{{- toYaml $hosts -}}
+{{- end -}}
+
+{{/* The pod spec, shared by the Deployment (scaleOut off) and the StatefulSet
+     (scaleOut on) so the two cannot drift. The differences are real and few:
+     the StatefulSet derives PUBLIC_URL and PHASE_REPLICA_ORDINAL from its pod
+     ordinal at start-up, and takes its data volume from volumeClaimTemplates
+     instead of a single shared claim. */}}
+{{- define "phase-server.podSpec" -}}
+{{- $scaleOut := .Values.scaleOut.enabled -}}
+serviceAccountName: default
+automountServiceAccountToken: false
+terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+securityContext:
+  {{- toYaml .Values.podSecurityContext | nindent 2 }}
+{{- with .Values.dnsConfig }}
+dnsConfig:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+containers:
+  - name: phase-server
+    image: {{ include "phase-server.image" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    # Bypass the image's root entrypoint (mkdir/chown + gosu); the pod
+    # securityContext already runs us as the `phase` uid with fsGroup.
+    {{- if $scaleOut }}
+    # Each ordinal advertises its OWN hostname: a game's share string is
+    # CODE@<public_url host>, which is what lets a friend joining by code reach
+    # the pod that actually holds the game. `--` is $0 so the chart's flags in
+    # `args` arrive as "$@".
+    {{- $split := splitList "{ordinal}" (include "phase-server.ordinalHostTemplate" .) }}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        ordinal="${POD_NAME##*-}"
+        case "$ordinal" in
+          ''|*[!0-9]*)
+            echo "cannot derive a StatefulSet ordinal from POD_NAME=$POD_NAME" >&2
+            exit 1
+            ;;
+        esac
+        export PHASE_REPLICA_ORDINAL="$ordinal"
+        export PUBLIC_URL="${PHASE_ORDINAL_URL_PREFIX}${ordinal}${PHASE_ORDINAL_URL_SUFFIX}"
+        echo "phase-server ordinal ${ordinal}, advertising ${PUBLIC_URL}"
+        exec phase-server "$@"
+      - --
+    {{- else }}
+    command: ["phase-server"]
+    {{- end }}
+    {{- /* Emitted even when empty, matching the pre-scaleOut template byte for
+         byte. Under the scaleOut shell wrapper an absent list is still correct:
+         `$@` expands to nothing and the exec runs with no extra flags. */}}
+    args:
+      {{- if .Values.server.allowedOrigin }}
+      - --allowed-origin
+      - {{ .Values.server.allowedOrigin | quote }}
+      {{- end }}
+      {{- if .Values.server.noDataDownload }}
+      - --no-data-download
+      {{- end }}
+    securityContext:
+      {{- toYaml .Values.securityContext | nindent 6 }}
+    env:
+      - name: PORT
+        value: {{ .Values.service.port | quote }}
+      - name: PHASE_DATA_DIR
+        value: /var/lib/phase-server
+      - name: PHASE_LOBBY_ONLY
+        value: {{ .Values.server.lobbyOnly | quote }}
+      - name: PHASE_CORS_ORIGIN
+        value: {{ .Values.server.corsOrigin | quote }}
+      - name: PHASE_LOG_JSON
+        value: {{ .Values.server.logJson | quote }}
+      {{- if .Values.logging.enabled }}
+      - name: PHASE_LOG_DIR
+        value: {{ .Values.logging.dir | quote }}
+      {{- end }}
+      - name: RUST_LOG
+        value: {{ .Values.server.rustLog | quote }}
+      {{- if $scaleOut }}
+      - name: POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+      {{- /* The two halves of the ordinal URL arrive as env values, not spliced
+           into the shell above: a value carrying a quote or `$(...)` would
+           otherwise land inside a double-quoted string and be parsed as shell.
+           Env values are plain YAML, so the shell never parses them. */}}
+      {{- $split := splitList "{ordinal}" (include "phase-server.ordinalHostTemplate" .) }}
+      - name: PHASE_ORDINAL_URL_PREFIX
+        value: {{ printf "%s://%s" (.Values.scaleOut.scheme | default "https") (index $split 0) | quote }}
+      - name: PHASE_ORDINAL_URL_SUFFIX
+        value: {{ index $split 1 | quote }}
+      {{- else }}
+      - name: PUBLIC_URL
+        value: {{ include "phase-server.publicUrl" . | quote }}
+      {{- end }}
+      {{- if .Values.metrics.enabled }}
+      {{- if eq (int .Values.metrics.port) (int .Values.service.port) }}
+      {{- fail "metrics.port must differ from service.port: they are two listeners in one pod, and the loser gets \"address in use\"." }}
+      {{- end }}
+      - name: PHASE_METRICS_PORT
+        value: {{ .Values.metrics.port | quote }}
+      {{- end }}
+      {{- with .Values.server.maxConnections }}
+      - name: PHASE_MAX_CONNECTIONS
+        value: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.server.maxGames }}
+      - name: PHASE_MAX_GAMES
+        value: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.server.dataManifestUrl }}
+      - name: PHASE_DATA_MANIFEST_URL
+        value: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.server.adminTokenSecret }}
+      - name: PHASE_ADMIN_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: {{ . }}
+            key: {{ $.Values.server.adminTokenSecretKey }}
+      {{- end }}
+      {{- with .Values.server.extraEnv }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+    ports:
+      - name: http
+        containerPort: {{ .Values.service.port }}
+        protocol: TCP
+      {{- if .Values.metrics.enabled }}
+      - name: metrics
+        containerPort: {{ .Values.metrics.port }}
+        protocol: TCP
+      {{- end }}
+    startupProbe:
+      httpGet:
+        path: /health
+        port: http
+      periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+      failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: http
+      periodSeconds: 10
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: http
+      periodSeconds: 30
+    resources:
+      {{- toYaml .Values.resources | nindent 6 }}
+    volumeMounts:
+      - name: data
+        mountPath: /var/lib/phase-server
+  {{- if .Values.logging.enabled }}
+  - name: logs
+    image: {{ include "phase-server.logsImage" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    # Read-only static file server for `logging.dir`, diagnosis only — never
+    # write access, and only the logs subtree of `data` (not games.db).
+    securityContext:
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: {{ .Values.logging.server.runAsUser }}
+      runAsGroup: {{ .Values.logging.server.runAsGroup }}
+      capabilities:
+        drop: ["ALL"]
+    ports:
+      - name: logs
+        containerPort: {{ .Values.logging.server.port }}
+        protocol: TCP
+    resources:
+      {{- toYaml .Values.logging.server.resources | nindent 6 }}
+    volumeMounts:
+      - name: data
+        mountPath: {{ .Values.logging.dir }}
+        subPath: {{ include "phase-server.logSubPath" . }}
+        readOnly: true
+      - name: logs-conf
+        mountPath: /etc/nginx/nginx.conf
+        subPath: nginx.conf
+        readOnly: true
+      - name: logs-tmp
+        mountPath: /tmp
+  {{- end }}
+{{- if or (not $scaleOut) .Values.logging.enabled }}
+volumes:
+{{- if not $scaleOut }}
+  - name: data
+    {{- if .Values.persistence.enabled }}
+    persistentVolumeClaim:
+      claimName: {{ default (printf "%s-data" (include "phase-server.fullname" .)) .Values.persistence.existingClaim }}
+    {{- else }}
+    emptyDir: {}
+    {{- end }}
+{{- end }}
+{{- if .Values.logging.enabled }}
+  - name: logs-conf
+    configMap:
+      name: {{ include "phase-server.fullname" . }}-logs-conf
+  - name: logs-tmp
+    emptyDir: {}
+{{- end }}
+{{- end }}
+{{- with .Values.nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Whether each monitor will actually render: the value asks for it AND the cluster
+can hold the kind.
+
+Single authority on purpose. `prometheusrule.yaml` fails the render unless a
+scrape target exists, and testing only the value there let a cluster with the
+PrometheusRule CRD but neither monitor CRD render the rule and the HPA with
+nothing scraping the raw gauges. Empty string is false, so callers can use
+`if (include ...)`.
+*/}}
+{{- define "phase-server.podMonitorRenders" -}}
+{{- if and .Values.metrics.enabled .Values.metrics.podMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PodMonitor") -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{- define "phase-server.serviceMonitorRenders" -}}
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") -}}
+true
+{{- end -}}
 {{- end -}}

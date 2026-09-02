@@ -5,6 +5,10 @@
     "close": "Fermer",
     "closeNamed": "Fermer {{name}}"
   },
+  "debug": {
+    "exportAuthoritative": "Exporter l’état de jeu faisant autorité",
+    "exportAuthoritativeTitle": "Télécharge l’état détenu par le moteur, utilisé pour diagnostiquer et restaurer cette partie"
+  },
   "quantityRef": {
     "highestNumber": "le nombre le plus élevé",
     "lowestNumber": "le nombre le plus bas",
@@ -19,7 +23,8 @@
     "defaultEyebrow": "Outil d'espace de travail"
   },
   "pausedBanner": {
-    "message": "Partie en pause — {{reason}}"
+    "message": "Partie en pause — {{reason}}",
+    "resume": "Reprendre la partie"
   },
   "fullscreen": {
     "enter": "Passer en plein écran",
@@ -60,7 +65,6 @@
   "comboDetector": {
     "label": "Détecteur de combos (expérimental)",
     "title": "Détecter les boucles infinies : terminer automatiquement les boucles obligatoires et afficher les ressources ∞ (désactivé par défaut)",
-    "on": "Activé",
     "off": "Désactivé",
     "interactive": "Interactif"
   },
@@ -84,6 +88,11 @@
     "boardLayoutLegacy": "Legacy",
     "switchToSplitView": "Passer à la vue table divisée",
     "switchToLegacyView": "Passer à la vue legacy focalisée",
+    "multiplayerSplitLayoutNudge": {
+      "message": "Voyez tous les adversaires à la fois avec la vue table divisée.",
+      "trySplit": "Essayer la vue divisée",
+      "dismiss": "Pas maintenant"
+    },
     "helpShortcuts": "Aide et raccourcis",
     "showAiHand": "Afficher la main de l'IA",
     "hideAiHand": "Masquer la main de l'IA",
@@ -289,7 +298,15 @@
     "back": "Retour",
     "settings": "Paramètres",
     "languageSettings": "Langue ({{lang}}) — ouvrir les paramètres",
-    "languageTitle": "Langue : {{lang}}"
+    "languageTitle": "Langue : {{lang}}",
+    "statusBanner": {
+      "dismiss": "Ignorer ce message",
+      "severity": {
+        "info": "Information",
+        "warning": "Attention",
+        "critical": "Important"
+      }
+    }
   },
   "errorBoundary": {
     "heading": "Une erreur est survenue",

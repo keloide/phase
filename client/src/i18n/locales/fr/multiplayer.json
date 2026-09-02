@@ -81,6 +81,12 @@
   "joinErrorDialog": {
     "dismiss": "Ignorer"
   },
+  "reconnectRejected": {
+    "firstMessageInvalid": "L’hôte a refusé la connexion avant la configuration. Actualisez les deux fenêtres puis réessayez.",
+    "versionRequired": "Cet hôte nécessite le protocole de connexion v{{version}}. Actualisez les deux fenêtres puis réessayez.",
+    "versionMismatch": "Les protocoles de connexion ne correspondent pas : votre client a envoyé v{{guestVersion}}, mais l’hôte utilise v{{hostVersion}}. Actualisez les deux fenêtres.",
+    "malformedAuthority": "L’hôte a refusé une autorisation de connexion non valide. Rejoignez avec un nouveau code de salon."
+  },
   "serverOfflinePrompt": {
     "title": "Matchmaking injoignable",
     "message": "Nous n'avons pas pu joindre le serveur de jeu, donc le salon public est indisponible pour le moment. Vous pouvez toujours jouer en partageant un code direct avec un ami.",
@@ -214,7 +220,17 @@
     "back": "Retour",
     "opening": "Ouverture…",
     "hostP2PGame": "Héberger une partie P2P",
-    "hostGame": "Héberger une partie"
+    "hostGame": "Héberger une partie",
+    "savedFormats": "Formats personnalisés enregistrés",
+    "saveAsCustomFormat": "Enregistrer le format",
+    "customFormatNamePlaceholder": "Nommez ce format",
+    "useCustomFormat": "Utiliser",
+    "customFormatInUse": "Utilisé",
+    "deleteCustomFormat": "Supprimer",
+    "loadingCustomFormat": "Chargement du format…",
+    "noSavedCustomFormats": "Aucun format personnalisé enregistré.",
+    "customFormatResolveFailed": "Impossible de charger ce format enregistré.",
+    "customFormatHostingUnavailable": "Héberger avec un format personnalisé n'est pas encore pris en charge — la légalité du deck ne peut pas être vérifiée pour ce format. Enregistrez-le et prévisualisez-le pour l'instant."
   },
   "page": {
     "deckRejected": "Le deck a été refusé par l'hôte.",

@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
+use crate::game::ability_utils::{choose_target_for_ability, TargetSelectionAdvance};
 use crate::game::casting;
 use crate::game::casting_costs;
 use crate::game::layers;
@@ -21,7 +22,9 @@ use crate::game::mana_abilities;
 use crate::game::mana_payment;
 use crate::game::mana_sources;
 use crate::game::triggers;
-use crate::types::ability::{AbilityKind, CounterCostSelection, TargetRef, TriggerDefinition};
+use crate::types::ability::{
+    AbilityKind, CounterCostSelection, TapCreaturesSelectionMode, TargetRef, TriggerDefinition,
+};
 use crate::types::actions::GameAction;
 use crate::types::card_type::CoreType;
 use crate::types::events::{GameEvent, ManaTapState};
@@ -58,9 +61,15 @@ pub use filter::{
     BasicLegalityFilter, CandidateFilter, FilterCost, FilterPipeline, SimulationFilter,
 };
 pub use payment_continuation::{
-    classify_payment_continuation, witness_payment_continuation, AcceptedPaymentSuccessor,
-    PaymentContinuationRoot, PaymentContinuationState, PaymentContinuationUnsupported,
-    PAYMENT_CONTINUATION_MAX_REDUCER_ATTEMPTS,
+    classify_payment_continuation, witness_payment_continuation, witness_payment_continuations,
+    AcceptedPaymentSuccessor, PaymentContinuationBatch, PaymentContinuationBatchStatus,
+    PaymentContinuationIndeterminate, PaymentContinuationRoot, PaymentContinuationState,
+    PaymentContinuationUnsupported, PAYMENT_CONTINUATION_MAX_REDUCER_ATTEMPTS,
+    PAYMENT_CONTINUATION_MAX_ROOTS,
+};
+#[cfg(feature = "test-support")]
+pub use payment_continuation::{
+    witness_payment_continuations_with_counters, PaymentContinuationWitnessCounters,
 };
 pub use prospective_mana::{
     certify_fetch_then_cast, certify_pact_plan, is_pact_payment_ability, is_pact_payment_cast,
@@ -717,12 +726,13 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
         // whose summed CURRENT positive power satisfies the advertised comparator
         // — not a fixed cardinality. Evaluates through the same `satisfied_by`
         // the payment validator (`handle_tap_creatures_for_spell_cost`) uses, so
-        // both seams agree on which subsets are legal.
+        // both seams agree on which subsets are legal. The `Fixed`/`VariableX`
+        // forms are handled by the range arm immediately below.
         (
             WaitingFor::PayCost {
                 kind:
                     PayCostKind::TapCreatures {
-                        aggregate: Some(aggregate),
+                        mode: TapCreaturesSelectionMode::Aggregate(aggregate),
                     },
                 choices,
                 ..
@@ -731,6 +741,28 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
         ) => {
             let total = crate::game::casting_costs::tap_creatures_total_power(state, chosen);
             selection_mismatch(chosen, choices, None) || !aggregate.satisfied_by(total)
+        }
+        // CR 107.3a + CR 118.3: the Fixed/VariableX tap-creatures forms honor the
+        // [min_count, count] range exactly like the Sacrifice/ExileFromZone arm
+        // above — a fixed (non-X) requirement has min_count == count, so this
+        // subsumes the exact-match case unchanged; the X-sentinel form additionally
+        // permits any count in between, letting the AI consider a non-maximal X.
+        (
+            WaitingFor::PayCost {
+                kind:
+                    PayCostKind::TapCreatures {
+                        mode: TapCreaturesSelectionMode::Fixed | TapCreaturesSelectionMode::VariableX,
+                    },
+                choices,
+                count,
+                min_count,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => {
+            selection_mismatch(chosen, choices, None)
+                || chosen.len() < *min_count
+                || chosen.len() > *count
         }
         // CR 118.3 + CR 605.3b: every other PayCost kind selects exactly `count`.
         (WaitingFor::PayCost { choices, count, .. }, GameAction::SelectCards { cards: chosen }) => {
@@ -1270,6 +1302,7 @@ fn classify_flat_priority_action(action: &GameAction) -> FlatPriorityActionClass
         | GameAction::CastSpellAsMiracle { .. }
         | GameAction::CastSpellAsMadness { .. }
         | GameAction::DecideOptionalEffect { .. }
+        | GameAction::ChooseResolutionOptionalPaymentBranch { .. }
         | GameAction::RespondToSpliceOffer { .. }
         | GameAction::DecideOptionalEffectAndRemember { .. }
         | GameAction::PayUnlessCost { .. }
@@ -2160,6 +2193,46 @@ fn target_selection_actions_without_simulation(state: &GameState) -> Option<Vec<
     Some(actions)
 }
 
+/// Returns target choices that cannot complete target declaration without
+/// cloning the game state. Terminal choices and cancellation remain on the
+/// validation pipeline because they can immediately advance into cost payment.
+fn target_selection_actions_with_nonterminal_fast_path(
+    state: &GameState,
+) -> Option<Vec<GameAction>> {
+    let WaitingFor::TargetSelection {
+        pending_cast,
+        target_slots,
+        selection,
+        ..
+    } = &state.waiting_for
+    else {
+        return None;
+    };
+
+    let pipeline = FilterPipeline::default_pipeline();
+    let mut actions = Vec::new();
+    for candidate in candidate_actions(state) {
+        let advances_without_completion = match &candidate.action {
+            GameAction::ChooseTarget { target } => matches!(
+                choose_target_for_ability(
+                    state,
+                    &pending_cast.ability,
+                    target_slots,
+                    &pending_cast.target_constraints,
+                    selection,
+                    target.clone(),
+                ),
+                Ok(TargetSelectionAdvance::InProgress(_))
+            ),
+            _ => false,
+        };
+        if advances_without_completion || pipeline.accepts(state, &candidate) {
+            actions.push(candidate.action);
+        }
+    }
+    Some(actions)
+}
+
 /// The flat priority-action list: validated candidate actions minus mana
 /// abilities. This is the single authority for the non-target-selection action
 /// body so the auto-pass probe (`priority_player_has_meaningful_action`) and
@@ -2219,10 +2292,12 @@ pub fn legal_actions_full(state: &GameState) -> LegalActionsFull {
 
     let mut actions: Vec<GameAction> =
         if context::target_selection_requires_reducer_validation(state) {
-            validated_candidate_actions(state)
-                .into_iter()
-                .map(|candidate| candidate.action)
-                .collect()
+            target_selection_actions_with_nonterminal_fast_path(state).unwrap_or_else(|| {
+                validated_candidate_actions(state)
+                    .into_iter()
+                    .map(|candidate| candidate.action)
+                    .collect()
+            })
         } else {
             target_selection_actions_without_simulation(state)
                 .unwrap_or_else(|| flat_priority_actions_with_probe(state, priority_probe))
@@ -2242,11 +2317,31 @@ pub fn legal_actions_full(state: &GameState) -> LegalActionsFull {
         actions.extend([
             GameAction::DecideOptionalEffectAndRemember {
                 choice: AutoMayChoice::Accept,
+                scope: crate::types::game_state::MayTriggerAutoChoiceScope::ExactInstance,
             },
             GameAction::DecideOptionalEffectAndRemember {
                 choice: AutoMayChoice::Decline,
+                scope: crate::types::game_state::MayTriggerAutoChoiceScope::ExactInstance,
             },
         ]);
+        if matches!(
+            &state.waiting_for,
+            WaitingFor::OptionalEffectChoice {
+                same_card_may_trigger_choice_available: true,
+                ..
+            }
+        ) {
+            actions.extend([
+                GameAction::DecideOptionalEffectAndRemember {
+                    choice: AutoMayChoice::Accept,
+                    scope: crate::types::game_state::MayTriggerAutoChoiceScope::SameCard,
+                },
+                GameAction::DecideOptionalEffectAndRemember {
+                    choice: AutoMayChoice::Decline,
+                    scope: crate::types::game_state::MayTriggerAutoChoiceScope::SameCard,
+                },
+            ]);
+        }
     }
 
     // Build spell costs map. The frontend display layer needs the
@@ -2511,15 +2606,16 @@ mod tests {
     use crate::types::ability::{
         AbilityCost, AbilityDefinition, AbilityKind, ChoiceType, ContinuousModification,
         ControllerRef, Effect, FilterProp, ManaContribution, ManaProduction, QuantityExpr,
-        ResolvedAbility, SacrificeCost, SearchSelectionConstraint, StaticDefinition, TargetFilter,
-        TargetRef, TriggerDefinition, TypeFilter, TypedFilter,
+        ResolvedAbility, SacrificeCost, SearchSelectionConstraint, StaticDefinition,
+        TapCreaturesSelectionMode, TargetFilter, TargetRef, TriggerDefinition, TypeFilter,
+        TypedFilter,
     };
     use crate::types::actions::GameAction;
     use crate::types::card_type::CoreType;
     use crate::types::game_state::{
-        CastingVariant, ConvokeMode, DistributionUnit, EndEffectGroupId, GameState,
-        MulliganDecisionEntry, MulliganDecisionPhase, PendingCast, PendingMulliganAction,
-        PriorityPassingMode, StackEntry, StackEntryKind, WaitingFor,
+        CastingVariant, ConvokeMode, CostResume, DistributionUnit, EndEffectGroupId, GameState,
+        MulliganDecisionEntry, MulliganDecisionPhase, PayCostKind, PendingCast,
+        PendingMulliganAction, PriorityPassingMode, StackEntry, StackEntryKind, WaitingFor,
     };
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::keywords::{Keyword, KeywordKind};
@@ -3792,6 +3888,98 @@ mod tests {
         assert!(!cheap_reject_candidate(
             &state,
             &GameAction::SelectCards { cards: choices }
+        ));
+    }
+
+    /// CR 107.3a: X=0 through X=count are all legal announcements for an
+    /// X-sentinel tap-creatures cost, so the AI's cheap rejection filter must
+    /// admit every count in `[min_count, count]`. Without the Fixed/VariableX
+    /// range arm this falls through to the generic exact-`count` PayCost arm,
+    /// which rejects every non-maximal X — the AI can never even consider
+    /// announcing a smaller X.
+    #[test]
+    fn cheap_reject_candidate_honors_variable_x_tap_creatures_range() {
+        let mut state = GameState::new_two_player(42);
+        let choices = vec![ObjectId(1), ObjectId(2), ObjectId(3)];
+        state.waiting_for = WaitingFor::PayCost {
+            player: PlayerId(0),
+            kind: PayCostKind::TapCreatures {
+                mode: TapCreaturesSelectionMode::VariableX,
+            },
+            choices: choices.clone(),
+            count: 2,
+            min_count: 0,
+            resume: CostResume::Resolution,
+        };
+
+        // X = 0, 1, 2 are all inside the advertised [0, 2] window.
+        assert!(!cheap_reject_candidate(
+            &state,
+            &GameAction::SelectCards { cards: vec![] }
+        ));
+        assert!(!cheap_reject_candidate(
+            &state,
+            &GameAction::SelectCards {
+                cards: vec![choices[0]]
+            }
+        ));
+        assert!(!cheap_reject_candidate(
+            &state,
+            &GameAction::SelectCards {
+                cards: vec![choices[0], choices[1]]
+            }
+        ));
+        // A third id exceeds the ceiling even though every id is eligible.
+        assert!(cheap_reject_candidate(
+            &state,
+            &GameAction::SelectCards {
+                cards: choices.clone()
+            }
+        ));
+        // The shared `selection_mismatch` dedup still rejects a repeated id.
+        assert!(cheap_reject_candidate(
+            &state,
+            &GameAction::SelectCards {
+                cards: vec![choices[0], choices[0]]
+            }
+        ));
+    }
+
+    /// Non-regression pin: a FIXED tap-creatures requirement has
+    /// `min_count == count`, so routing it through the new range arm must stay
+    /// behaviorally identical to the old exact-`count` fallback.
+    #[test]
+    fn cheap_reject_candidate_preserves_exact_fixed_tap_creatures_count() {
+        let mut state = GameState::new_two_player(42);
+        let choices = vec![ObjectId(1), ObjectId(2), ObjectId(3)];
+        state.waiting_for = WaitingFor::PayCost {
+            player: PlayerId(0),
+            kind: PayCostKind::TapCreatures {
+                mode: TapCreaturesSelectionMode::Fixed,
+            },
+            choices: choices.clone(),
+            count: 2,
+            min_count: 2,
+            resume: CostResume::Resolution,
+        };
+
+        assert!(!cheap_reject_candidate(
+            &state,
+            &GameAction::SelectCards {
+                cards: vec![choices[0], choices[1]]
+            }
+        ));
+        assert!(cheap_reject_candidate(
+            &state,
+            &GameAction::SelectCards {
+                cards: vec![choices[0]]
+            }
+        ));
+        assert!(cheap_reject_candidate(
+            &state,
+            &GameAction::SelectCards {
+                cards: choices.clone()
+            }
         ));
     }
 

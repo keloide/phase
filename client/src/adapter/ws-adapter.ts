@@ -1,7 +1,6 @@
 import type {
   EngineAdapter,
   EngineSnapshot,
-  BatchResolveResult,
   GameAction,
   GameEvent,
   GameLogEntry,
@@ -18,7 +17,7 @@ import type {
   FormatConfig,
 } from "./types";
 import type { InteractionSubmission } from "./generated/interaction";
-import { AdapterError, AdapterErrorCode, EMPTY_LEGAL_ACTIONS, actionRejectionError, nextSnapshotSeq, resolveAllRejectionError } from "./types";
+import { AdapterError, AdapterErrorCode, EMPTY_LEGAL_ACTIONS, actionRejectionError, isActionRejection, nextSnapshotSeq } from "./types";
 import type { BracketDeckRequest, BracketEstimate } from "../types/bracketEstimate";
 import {
   HandshakeError,
@@ -203,6 +202,126 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 54 — CreateDraftWithSettings now carries a tagged DraftSourceIntent. A
+ *      Chaos client sends candidate set codes only; the Full server resolves
+ *      and persists the private seat-by-round assignment matrix. The full
+ *      handshake refuses stale peers. Lobby messages are unchanged.
+ * 53 — DraftPlayerView.launch_capability publishes the engine-authorized
+ *      post-draft multiplayer launch. The client renders this procedure-owned
+ *      capability instead of inferring it from DraftKind; an older server
+ *      would omit it and silently hide a completed Commander pod's launch.
+ *      The full-game handshake refuses that capability mismatch. Lobby
+ *      messages are unchanged.
+ * 52 — DerivedViews.storm_count publishes the engine-owned number of copies a
+ *      current Storm trigger will create, or a newly cast Storm spell would
+ *      create. The field is serde-additive, but this client renders that
+ *      scalar directly rather than deriving Storm from raw state; a v51 host
+ *      would silently omit the HUD status. The full-game handshake refuses
+ *      that capability mismatch. Lobby messages are unchanged.
+ * 51 — Casting permissions gained a typed lifetime: ExileWithAltAbilityCost
+ *      gained duration and source_id, ExileWithAltCost gained source_id beside
+ *      the duration it already had (additive, serde
+ *      defaults), and Duration gained the WhileControllingHost and
+ *      WhileHostOnBattlefield variants (CR 611.2b). Each new Duration tag is a
+ *      one-way parse break — a v50 peer cannot deserialize a snapshot
+ *      containing it — so the handshake refuses the pairing instead of
+ *      degrading.
+ * 50 — FormatConfig gained default_deck_copy_limit, the resolved per-format
+ *      deck-copy ceiling (CR 100.2a / CR 100.2b / CR 903.5b) max_deck_copies
+ *      and the deck-compatibility admission path now both read, replacing
+ *      per-function hardcoded literals and bare-GameFormat-derived defaults
+ *      so the two authorities can't disagree. A CAPABILITY bump like 24: the
+ *      field is serde-optional (fail-closed UpTo(1), the tightest possible
+ *      cap), so a peer missing it still deserializes GameState cleanly — but
+ *      silently loses the format's real declared limit and falls back to the
+ *      singleton cap, wrongly rejecting a legal 4-of deck rather than
+ *      admitting one it shouldn't. Symmetric in both directions. See
+ *      PROTOCOL_VERSION in crates/lobby-broker/src/protocol.rs for the full
+ *      entry; lobby carriers move too, see LOBBY_PROTOCOL_VERSION 3 below.
+ * 49 — Full-server DraftPlayerView payloads require public-seat
+ *      active_pack_count. An older v48 server can complete the handshake yet
+ *      omit that additive field while this client accepts the JSON, leaving it
+ *      unable to render a seat's active-pack presence. The Full handshake
+ *      refuses that capability mismatch. Lobby messages are unchanged.
+ * 48 — Full-server DraftPlayerView payloads require the engine-owned
+ *      pick_selection_mode. An older server can omit it while this client
+ *      accepts the JSON, then silently treats an ordered Commander Draft pick
+ *      as direct selection. Lobby messages are unchanged.
+ * 47 — Resolution-time optional fixed sacrifice payments add a typed
+ *      replacement-resumable continuation to GameState.
+ * 46 — QuantityRef.Aggregate and QuantityRef.TrackedSetAggregate were
+ *      replaced in serialized GameState payloads by the canonical
+ *      QuantityRef.PropertyAggregate tag with a validated source object. New
+ *      peers migrate both old input tags, but a v45 peer cannot deserialize
+ *      the canonical tag emitted by v46, so the full-game handshake refuses
+ *      that one-way parse mismatch. Lobby messages are unchanged.
+ * 45 — GameState gained serialized cast-occurrence provenance and prepared-copy links.
+ * 44 — Resolution-time optional PayCost(OneOf) branch choice added a
+ *      serialized WaitingFor/GameAction pair.
+ * 43 — Engine-owned stack-resolution automation retired the legacy native
+ *      Resolve All request/result wire messages.
+ * 42 — FormatConfig.deck_size changed from a bare u16 to the adjacently
+ *      tagged DeckSizeRule enum (Minimum(u16) / Exactly(u16)), because
+ *      CR 903.13f(1) makes Commander Draft a command-zone format with a
+ *      minimum rather than an exact size, and GameFormat gained a
+ *      CommanderDraft variant (CR 903.13a). A PARSE bump like 23 and 36, not a
+ *      capability bump like 24: FormatConfig::deck_size carries neither a
+ *      serde default nor a deserialize_with, so a v41 peer's "deck_size": 60
+ *      fails against the adjacently tagged enum and a v42 peer's
+ *      {"type":"Minimum","data":60} fails against a v41 u16 — the break is
+ *      unconditional and runs in BOTH directions, for every format.
+ *      GameState.format_config's serde default does NOT rescue it: a
+ *      field-level default applies only when the key is ABSENT, and an old
+ *      peer sends the key present with the old inner shape, so the default
+ *      never runs. The GameFormat::CommanderDraft variant is the second and
+ *      narrower half — it breaks only when that variant is actually
+ *      serialized.
+ * 41 — Operational failure responses are correlated to their pending action.
+ * 40 — Action rejection responses carry engine-owned structured context.
+ * 39 — ManaRestriction.CannotCastSpellFromZone adds a serialized
+ *      GameState/ManaUnit restriction used by Karolina Dean. Older peers
+ *      cannot deserialize that externally tagged enum variant.
+ * 38 — WaitingFor.ChooseObjectsSelection publishes the resolving effect's
+ *      min and optional max bounds. Older clients silently ignore these
+ *      additive fields and offer selections outside the engine-authoritative
+ *      range, so the full-game handshake refuses that capability mismatch.
+ * 37 — PayCostKind::TapCreatures changed from { aggregate:
+ *      Option<TapCreaturesAggregate> } to a required { mode:
+ *      TapCreaturesSelectionMode } (Fixed/VariableX/Aggregate) — the fix that
+ *      also unlocks the u32::MAX X-sentinel tap-cost form (Glacian,
+ *      Powerstone Engineer + 8 sibling cards, #7799). mode carries no serde
+ *      default: a GameState snapshot paused mid-TapCreatures payment
+ *      (Crew/Saddle/Teamwork/Conspire, or the newly-unlocked X-sentinel form)
+ *      under the old aggregate shape now fails deserialization rather than
+ *      risk silently misclassifying an aggregate payment as fixed-count (or
+ *      vice versa) — exactly the ambiguity TapCreaturesSelectionMode exists to
+ *      make unrepresentable. Old and new peers can't parse each other's
+ *      serialized snapshots while such a payment is in flight.
+ * 36 — WaitingFor.ChooseDungeon.options changed from DungeonId[] to
+ *      DungeonPreview[], and ChooseDungeonRoom dropped option_names, gained a
+ *      required dungeon_name, and changed options from number[] to
+ *      RoomPreview[], so each option carries the room's printed name and
+ *      room-ability text (CR 309.4b-c). A PARSE bump like 23, not a capability
+ *      bump like 24: none of the new fields carry a serde default, so a v35
+ *      peer fails deserialization on a dungeon-choice GameState outright
+ *      rather than degrading silently. DerivedViews.dungeon_rooms rides along
+ *      in the same bump — it IS serde-optional, but this client deleted its
+ *      dungeon_progress room-index derivation, so a v35 server that omits it
+ *      would leave this client rendering no dungeon badge at all.
+ * 35 — DerivedViews.current_target_kind publishes the engine's CR 115.1
+ *      classification of the live target announcement. A CAPABILITY bump like
+ *      24 and 32, not a parse bump: the field is serde-optional, but this
+ *      client deleted inferTargetNoun, so a v34 server that omits it would
+ *      leave this client naming no target at all — silently, with no parse
+ *      error to catch it. The handshake is the only place that pairing is
+ *      refusable.
+ * 34 — DraftKind.CommanderDraft (CR 903.13a) is serialized by draft WebSocket
+ *      messages, and DraftAction::Pick renamed card_instance_id to
+ *      card_instance_ids: Vec<String> for a whole CR 903.13b pick step. A
+ *      PARSE bump, not a capability bump — the renamed field carries no serde
+ *      default. See PROTOCOL_VERSION in crates/lobby-broker/src/protocol.rs
+ *      for the full entry, including what it does and does not gate on the
+ *      lobby.
  * 33 — LegendCandidateIdentity adds Unknown so face-down legend candidates do
  *      not publish an affirmative original/copy identity.
  * 32 — DerivedViews.legend_candidate_identities publishes the engine-authored
@@ -229,8 +348,6 @@ export class NativeEngineVersionMismatchError extends Error {
  *      answers under ServerMode::LobbyOnly with an explicit rejection rather
  *      than a silent drop.
  * 30 — Serialized player-action completion provenance and modal continuations.
- * 29 — Added requester-correlated ResolveAllRejected response frames.
- * 28 — Added native ResolveAll request/result frames.
  * 27 — Added DraftKind.Sealed, serialized by draft WebSocket messages.
  * 26 — Added ActionNoOp acknowledgement for accepted transport no-ops.
  * 25 — DebugCardEntries added a serialized, private resolution frame for
@@ -262,12 +379,12 @@ export class NativeEngineVersionMismatchError extends Error {
  *      into a MulliganDecisionPhase::BottomCards sub-phase on
  *      WaitingFor::MulliganDecision.
  */
-export const PROTOCOL_VERSION = 33;
+export const PROTOCOL_VERSION = 54;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.
- * Planechase changed the wire message surface in a non-backward-compatible way,
- * so this release only accepts the current protocol.
+ * Engine-owned presentation fields may parse when absent but still need an
+ * exact full-game match when the client no longer derives a raw-state fallback.
  */
 export const MIN_SUPPORTED_SERVER_PROTOCOL = PROTOCOL_VERSION;
 
@@ -292,10 +409,28 @@ export const LOBBY_MIN_SUPPORTED_SERVER_PROTOCOL = PROTOCOL_VERSION - 1;
  * twice for GameState-only changes and the derived lobby window went disjoint
  * from the deployed broker's.
  *
+ * 4 — The tournament-organizer message set: seven LobbyClientMessage variants
+ *     and five LobbyServerMessage variants. Purely ADDITIVE, so
+ *     MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL below deliberately stays at 2 — no
+ *     existing variant changed shape, so nothing this client already parses
+ *     can break against a version-2 broker.
+ * 3 — FormatConfig gained default_deck_copy_limit (see PROTOCOL_VERSION 50
+ *     above for the full entry). Same three carriers as 2:
+ *     CreateGameWithSettings, JoinTargetInfo, PeerInfo. Unlike 2, this is a
+ *     CAPABILITY bump, not a parse bump — the field is serde-optional and
+ *     still deserializes cleanly on either side — so
+ *     MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL below does NOT move: a v2 broker
+ *     can still create/join a game, it just can't declare or observe a
+ *     non-default deck-copy-limit override, silently getting the fail-closed
+ *     UpTo(1) fallback instead of the format's real default.
+ * 2 — FormatConfig.deck_size retyped from a bare integer to the adjacently
+ *     tagged DeckSizeRule, carried by CreateGameWithSettings, JoinTargetInfo
+ *     and PeerInfo. See LOBBY_PROTOCOL_VERSION in
+ *     crates/lobby-broker/src/protocol.rs for what the floor move evicts.
  * 1 — Initial lobby-owned version, covering the lobby variant set unchanged
  *     since #1880.
  */
-export const LOBBY_PROTOCOL_VERSION = 1;
+export const LOBBY_PROTOCOL_VERSION = 4;
 
 /**
  * Lowest broker LOBBY_PROTOCOL_VERSION this client accepts.
@@ -307,7 +442,7 @@ export const LOBBY_PROTOCOL_VERSION = 1;
  * new variant it may never need — which is precisely how a protocol-bumping
  * release used to strand every older desktop build.
  */
-export const MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL = 1;
+export const MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL = 2;
 
 /** Identity advertised by the server in its `ServerHello`. */
 export interface ServerInfo {
@@ -325,7 +460,20 @@ export interface ServerInfo {
 }
 
 /**
- * Why this client cannot talk to `info`, or `null` when it can.
+ * Which protocol surface a socket is opened for.
+ *
+ * The surface is a property of the CALLER's intent, not of the server: a `Full`
+ * server serves both. `ClientMessage::SubscribeLobby` and friends are "always
+ * allowed" in either server mode (`reject_if_disabled` in
+ * `crates/phase-server/src/main.rs`), and the whole lobby frame set —
+ * `LobbyClientMessage` / `LobbyServerMessage` in
+ * `crates/lobby-broker/src/protocol.rs` — carries no `GameState` and no
+ * `GameAction`. That is what lets the two surfaces version independently.
+ */
+export type ProtocolSurface = "full" | "lobby";
+
+/**
+ * Why this client cannot talk to `info` on `surface`, or `null` when it can.
  *
  * SINGLE AUTHORITY for the protocol window. The handshake in
  * `openPhaseSocket.ts` and the compatibility badge in `multiplayerStore.ts`
@@ -333,24 +481,37 @@ export interface ServerInfo {
  * as usable by the other.
  *
  * Three policies, by surface:
- *  - Full servers: exact match. GameState/GameAction payloads are neither
+ *  - Full-game surface: exact match. GameState/GameAction payloads are neither
  *    forward- nor backward-compatible across a bump.
- *  - Lobby brokers advertising a lobby version: floor only, NO CEILING. See
- *    {@link MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL}.
- *  - Lobby brokers that predate the field: the legacy one-version window on
- *    `protocolVersion`, unchanged, so already-deployed brokers stay reachable.
+ *  - Lobby surface, server advertising a lobby version: floor only, NO CEILING.
+ *    See {@link MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL}.
+ *  - Lobby surface, server predating the field: the legacy one-version window
+ *    on `protocolVersion`, unchanged, so already-deployed brokers stay
+ *    reachable.
+ *
+ * The surface comes from the caller, never from `info.mode`. A `Full` server
+ * serves the lobby too, so reading the mode alone refuses a lobby socket to a
+ * server whose `lobbyProtocolVersion` matches and whose only incompatibility is
+ * with a game that socket will never carry — which a browser can only report as
+ * "unreachable", not as "a version you cannot play on".
  */
-export function serverProtocolRejection(info: ServerInfo): string | null {
-  if (info.mode === "LobbyOnly" && info.lobbyProtocolVersion !== undefined) {
+export function serverProtocolRejection(
+  info: ServerInfo,
+  surface: ProtocolSurface = "full",
+): string | null {
+  // A `LobbyOnly` server has no full-game surface at all, so every socket to
+  // one is a lobby socket whatever the caller asked for.
+  const onLobbySurface = surface === "lobby" || info.mode === "LobbyOnly";
+
+  if (onLobbySurface && info.lobbyProtocolVersion !== undefined) {
     return info.lobbyProtocolVersion < MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL
       ? `Lobby protocol version ${info.lobbyProtocolVersion} is older than supported (client speaks ${LOBBY_PROTOCOL_VERSION}, min ${MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL}).`
       : null;
   }
 
-  const minAccepted =
-    info.mode === "LobbyOnly"
-      ? LOBBY_MIN_SUPPORTED_SERVER_PROTOCOL
-      : MIN_SUPPORTED_SERVER_PROTOCOL;
+  const minAccepted = onLobbySurface
+    ? LOBBY_MIN_SUPPORTED_SERVER_PROTOCOL
+    : MIN_SUPPORTED_SERVER_PROTOCOL;
   if (info.protocolVersion < minAccepted) {
     return `Server protocol version ${info.protocolVersion} is older than supported (client speaks ${PROTOCOL_VERSION}, min ${minAccepted}). Please wait for the lobby to finish rolling out.`;
   }
@@ -380,6 +541,7 @@ export type WsAdapterEvent =
   | { type: "playerEliminated"; playerId: PlayerId; becameSpectator: boolean }
   | { type: "spectatorJoined"; name: string }
   | { type: "gameOver"; winner: PlayerId | null; reason: string }
+  | { type: "aiDriverFault"; id: number; revision: number; message: string }
   | { type: "error"; message: string }
   | { type: "deckRejected"; reason: string }
   | { type: "reconnecting"; attempt: number; maxAttempts: number }
@@ -424,7 +586,6 @@ function playerNamesFromWire(names: string[]): Record<number, string> {
 export class WebSocketAdapter implements EngineAdapter {
   readonly supportsMatchConcede = true;
   readonly supportsServerRewind = true;
-  readonly resolveAllUsesServerAi: true | undefined;
   private ws: PhaseSocketTransport | null = null;
   /**
    * The single cached engine pair, rebuilt (and re-stamped) once per inbound
@@ -439,12 +600,6 @@ export class WebSocketAdapter implements EngineAdapter {
   private fullSessionKey: FullSessionKey | null = null;
   private pendingResolve: ((result: SubmitResult) => void) | null = null;
   private pendingReject: ((error: Error) => void) | null = null;
-  private nextResolveAllRequestId = 1;
-  private pendingResolveAll: {
-    requestId: number;
-    resolve: (result: BatchResolveResult) => void;
-    reject: (error: Error) => void;
-  } | null = null;
   private nextManaPaymentPreviewRequestId = 1;
   private pendingManaPaymentPreviews = new Map<
     number,
@@ -511,7 +666,6 @@ export class WebSocketAdapter implements EngineAdapter {
     private readonly displayName = "Player",
     private readonly options: WebSocketAdapterOptions = {},
   ) {
-    this.resolveAllUsesServerAi = options.nativeAi ? true : undefined;
     // 0 is terminal, not "retry once": `attemptReconnect` compares
     // `reconnectAttempt >= maxReconnectAttempts`, so 0 >= 0 is true on the
     // very first attempt — it emits `reconnectFailed` and returns without
@@ -806,12 +960,6 @@ export class WebSocketAdapter implements EngineAdapter {
         this.pendingResolve = null;
         this.pendingReject = null;
       }
-      if (this.pendingResolveAll) {
-        this.pendingResolveAll.reject(
-          new AdapterError("WS_CLOSED", "Connection closed during Resolve All", true),
-        );
-        this.pendingResolveAll = null;
-      }
       this.rejectPendingManaPaymentPreviews(
         new AdapterError("WS_CLOSED", "Connection closed during mana-payment preview", true),
       );
@@ -896,31 +1044,6 @@ export class WebSocketAdapter implements EngineAdapter {
         this.pendingReject = null;
         this.emit({ type: "actionPendingChanged", pending: false });
         reject(new AdapterError("WS_CLOSED", "Failed to send interaction", true));
-      }
-    });
-  }
-
-  async resolveAll(
-    _requester: PlayerId,
-    _aiSeats: { playerId: number; difficulty: string }[],
-    maxResolutions = 5_000,
-  ): Promise<BatchResolveResult> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new AdapterError("WS_ERROR", "WebSocket not connected", false);
-    }
-    if (this.pendingResolveAll) {
-      throw new AdapterError("WS_ERROR", "Resolve All already pending", false);
-    }
-
-    const requestId = this.nextResolveAllRequestId++;
-    return new Promise<BatchResolveResult>((resolve, reject) => {
-      this.pendingResolveAll = { requestId, resolve, reject };
-      if (!this.send({
-        type: "ResolveAll",
-        data: { request_id: requestId, max_resolutions: maxResolutions },
-      })) {
-        this.pendingResolveAll = null;
-        reject(new AdapterError("WS_CLOSED", "Failed to send Resolve All", true));
       }
     });
   }
@@ -1062,12 +1185,6 @@ export class WebSocketAdapter implements EngineAdapter {
     this.fullSessionKey = null;
     this.pendingResolve = null;
     this.pendingReject = null;
-    if (this.pendingResolveAll) {
-      this.pendingResolveAll.reject(
-        new AdapterError("WS_CLOSED", "Adapter disposed during Resolve All", true),
-      );
-      this.pendingResolveAll = null;
-    }
     this.rejectPendingManaPaymentPreviews(
       new AdapterError("WS_CLOSED", "Adapter disposed during mana-payment preview", true),
     );
@@ -1595,11 +1712,14 @@ export class WebSocketAdapter implements EngineAdapter {
       }
 
       case "ActionRejected": {
-        const data = msg.data as { reason: string };
+        const data = msg.data as { rejection?: unknown };
+        const error = isActionRejection(data.rejection)
+          ? actionRejectionError(data.rejection)
+          : new AdapterError(AdapterErrorCode.WASM_ERROR, "Server sent an invalid action rejection.", false);
         this.emit({ type: "actionPendingChanged", pending: false });
         if (this.pendingReject) {
           this.pendingReject(
-            actionRejectionError(data.reason),
+            error,
           );
           this.pendingResolve = null;
           this.pendingReject = null;
@@ -1615,43 +1735,20 @@ export class WebSocketAdapter implements EngineAdapter {
           // hazard here — rejecting an in-flight ACTION's promise with a
           // TAKEBACK's reason string, which would be a misattribution rather
           // than merely a stale spinner.
-          this.emit({ type: "requestRejected", reason: data.reason });
+          this.emit({ type: "requestRejected", reason: error.message });
         }
         break;
       }
 
-      case "ResolveAllResult": {
-        const data = msg.data as {
-          request_id: number;
-          items_resolved: number;
-          total: number;
-        };
-        if (this.pendingResolveAll?.requestId === data.request_id) {
-          const waitingFor = this.snapshot?.state.waiting_for;
-          if (!waitingFor) {
-            this.pendingResolveAll.reject(
-              new AdapterError("WS_ERROR", "Resolve All result arrived without a state snapshot", false),
-            );
-            this.pendingResolveAll = null;
-            break;
-          }
-          this.pendingResolveAll.resolve({
-            events: [],
-            waitingFor,
-            logEntries: [],
-            itemsResolved: data.items_resolved,
-            total: data.total,
-          });
-          this.pendingResolveAll = null;
-        }
-        break;
-      }
-
-      case "ResolveAllRejected": {
-        const data = msg.data as { request_id: number; reason: string };
-        if (this.pendingResolveAll?.requestId === data.request_id) {
-          this.pendingResolveAll.reject(resolveAllRejectionError(data.reason));
-          this.pendingResolveAll = null;
+      case "ActionFailed": {
+        const data = msg.data as { message: string };
+        if (this.pendingReject) {
+          this.emit({ type: "actionPendingChanged", pending: false });
+          this.pendingReject(new AdapterError("WS_ERROR", data.message, false));
+          this.pendingResolve = null;
+          this.pendingReject = null;
+        } else {
+          this.emit({ type: "error", message: data.message });
         }
         break;
       }
@@ -1677,12 +1774,35 @@ export class WebSocketAdapter implements EngineAdapter {
       }
 
       case "ManaPaymentPreviewRejected": {
-        const data = msg.data as { request_id: number; reason: string };
+        const data = msg.data as { request_id: number; rejection?: unknown };
         const pending = this.pendingManaPaymentPreviews.get(data.request_id);
         if (pending) {
           this.pendingManaPaymentPreviews.delete(data.request_id);
-          pending.reject(actionRejectionError(data.reason));
+          pending.reject(
+            isActionRejection(data.rejection)
+              ? actionRejectionError(data.rejection)
+              : new AdapterError(AdapterErrorCode.WASM_ERROR, "Server sent an invalid mana-payment rejection.", false),
+          );
         }
+        break;
+      }
+
+      case "ManaPaymentPreviewFailed": {
+        const data = msg.data as { request_id: number; message: string };
+        const pending = this.pendingManaPaymentPreviews.get(data.request_id);
+        if (pending) {
+          this.pendingManaPaymentPreviews.delete(data.request_id);
+          pending.reject(new AdapterError("WS_ERROR", data.message, false));
+        }
+        break;
+      }
+
+      case "RequestRejected": {
+        const data = msg.data as { reason?: unknown };
+        this.emit({
+          type: "requestRejected",
+          reason: typeof data.reason === "string" ? data.reason : "Server rejected the request.",
+        });
         break;
       }
 
@@ -1851,6 +1971,27 @@ export class WebSocketAdapter implements EngineAdapter {
         this.rejectPregameMutation(actionRejectionError(data.message));
         this.rejectAbandon(actionRejectionError(data.message));
         this.emit({ type: "error", message: data.message });
+        break;
+      }
+
+      case "AiDriverFault": {
+        const data = msg.data as {
+          fault: { id: number; after_state_revision: number; cause: unknown };
+        };
+        const message = "Native AI driver stopped; this game can no longer advance.";
+        if (this.pendingReject) {
+          this.emit({ type: "actionPendingChanged", pending: false });
+          this.pendingReject(new AdapterError("WS_ERROR", message, false));
+          this.pendingResolve = null;
+          this.pendingReject = null;
+        }
+        this.emit({
+          type: "aiDriverFault",
+          id: data.fault.id,
+          revision: data.fault.after_state_revision,
+          message,
+        });
+        this.emit({ type: "error", message });
         break;
       }
     }

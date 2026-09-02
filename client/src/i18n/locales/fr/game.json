@@ -44,10 +44,11 @@
     "respondSubtitle": "Accept the verified route or stop at one of your issued boundaries.",
     "shortenAtBreakpoint": "Stop at boundary {{breakpointId}}"
   },
-  "resolutionProgress": {
-    "label": "Résolution {{resolved}} / {{total}}",
-    "collapse": "Réduire la progression de résolution",
-    "expand": "Développer la progression de résolution"
+  "restoredAutomation": {
+    "dismiss": "Fermer",
+    "noop": {"title": "Partie sauvegardée chargée", "summary_one": "Aucune automatisation de pile n’était nécessaire pour reprendre.", "summary_other": "Aucune automatisation de pile n’était nécessaire pour reprendre."},
+    "progressed": {"title": "Automatisation de la pile reprise", "summary_one": "Le moteur a effectué {{count}} résolution automatisée.", "summary_other": "Le moteur a effectué {{count}} résolutions automatisées.", "omitted_one": "{{count}} événement intermédiaire a été omis.", "omitted_other": "{{count}} événements intermédiaires ont été omis."},
+    "zeroResolutionRepair": {"title": "Automatisation de la pile réparée", "summary_one": "L’automatisation sauvegardée a été réparée en toute sécurité avant la reprise.", "summary_other": "L’automatisation sauvegardée a été réparée en toute sécurité avant la reprise."}
   },
   "resolveAllConsent": {
     "eyebrow": "Tout résoudre",
@@ -63,6 +64,9 @@
     "tokenPowerPlaceholder": "Power",
     "tokenToughnessPlaceholder": "Toughness",
     "sourceDefinedPtRequired": "Enter power and toughness for this source-defined token."
+  },
+  "debugLibrary": {
+    "openActions": "Ouvrir les actions de débogage pour {{name}}"
   },
   "nextUp": {
     "label": "Suivant",
@@ -460,8 +464,9 @@
     "cityBlessingTooltip": "Bénédiction de la cité — contrôle dix permanents ou plus (Ascension)",
     "enduringStory": "Histoire durable",
     "enduringStoryTooltip": "Histoire durable — obtenue en contrôlant un permanent avec Storied et au moins trois artefacts, permanents légendaires et/ou sagas ; dure pour le reste de la partie",
-    "dungeonAriaLabel": "Aventure dans {{name}}, salle {{room}}",
-    "dungeonTooltip": "Aventure dans {{name}} — salle {{room}}",
+    "dungeonAriaLabel": "Aventure dans {{name}}, {{roomName}}, salle {{room}} sur {{total}}",
+    "dungeonRoomTooltip": "{{roomName}} — salle {{room}} sur {{total}}",
+    "dungeonTooltip": "Aventure dans {{name}}",
     "poisonAriaLabel_one": "{{count}} marqueur poison",
     "poisonAriaLabel_other": "{{count}} marqueurs poison",
     "poisonTooltip": "Marqueurs poison : {{count}}\nUn joueur avec dix marqueurs poison ou plus perd la partie.",
@@ -541,6 +546,7 @@
     "onlyForSpellWithColorCount": "À dépenser uniquement pour lancer des sorts répondant à une condition de nombre de couleurs",
     "onlyForSpellColor": "À dépenser uniquement pour lancer des sorts de la couleur choisie",
     "onlyForSpellFromZone": "À dépenser uniquement pour lancer des sorts depuis une zone autorisée",
+    "cannotCastSpellFromZone": "Ne peut pas être dépensé pour lancer des sorts depuis la zone indiquée",
     "onlyForFaceDownSpell": "À dépenser uniquement pour lancer des sorts face cachée",
     "onlyForActivation": "À dépenser uniquement pour activer des capacités",
     "onlyForXCosts": "À dépenser uniquement pour des coûts incluant {X}",
@@ -599,6 +605,8 @@
     "chooseXInputAria": "Saisir la valeur de X",
     "decreaseX": "Diminuer la valeur de X",
     "increaseX": "Augmenter la valeur de X",
+    "maximum": "Max.",
+    "setXToMaximum": "Définir X au maximum",
     "minMax": "min {{min}} / max {{max}}",
     "maxOnly": "max {{max}}",
     "amountOutOfRange": "Entrez un nombre entier entre {{min}} et {{max}}",
@@ -654,7 +662,9 @@
   },
   "storm": {
     "copies_one": "Déluge : {{count}} copie",
-    "copies_other": "Déluge : {{count}} copies"
+    "copies_other": "Déluge : {{count}} copies",
+    "count_one": "Compteur de déluge : {{count}} copie",
+    "count_other": "Compteur de déluge : {{count}} copies"
   },
   "opponentHud": {
     "ally": "Allié",
@@ -771,19 +781,34 @@
     "tapUntappedCreatures_one": "Engagez {{count}} créature dégagée",
     "tapUntappedCreatures_other": "Engagez {{count}} créatures dégagées",
     "chooseTargetOf": "Choisissez la cible {{current}} sur {{total}}",
+    "slotProgress": "Cible {{current}} sur {{total}}",
+    "choosePlayerTarget": "Choisir : {{name}}",
+    "expandDescription": "Afficher la description complète",
+    "collapseDescription": "Afficher moins",
+    "descriptionDisclosure": "{{action}} : {{description}}",
     "chooseTarget": "Choisissez une cible",
     "triggerDamageAmount": "This trigger: {{amount}} damage",
     "noLegalTargets": "Aucune cible légale disponible",
-    "modeContext": "{{mode}} — {{prompt}}",
-    "upToOne": "jusqu'à un(e) {{target}}",
-    "one": "un(e) {{target}}",
-    "nounPlayer": "joueur",
-    "nounNonlandPermanent": "permanent non-terrain",
-    "nounSpell": "sort",
-    "nounCreature": "créature",
-    "nounPlaneswalker": "planeswalker",
-    "nounTargetPermanent": "permanent ciblé",
-    "nounTarget": "cible",
+    "one": {
+      "player": "un joueur",
+      "spell": "un sort",
+      "creature": "une créature",
+      "planeswalker": "un planeswalker",
+      "nonlandPermanent": "un permanent non-terrain",
+      "targetPermanent": "un permanent ciblé",
+      "target": "une cible",
+      "orPlayer": "{{noun}} ou un joueur"
+    },
+    "upToOne": {
+      "player": "jusqu'à un joueur",
+      "spell": "jusqu'à un sort",
+      "creature": "jusqu'à une créature",
+      "planeswalker": "jusqu'à un planeswalker",
+      "nonlandPermanent": "jusqu'à un permanent non-terrain",
+      "targetPermanent": "jusqu'à un permanent ciblé",
+      "target": "jusqu'à une cible",
+      "orPlayer": "{{noun}} ou un joueur"
+    },
     "confirmTap": "Confirmer l'engagement ({{selected}}/{{count}})",
     "keepCurrentTargets": "Conserver les cibles actuelles",
     "skip": "Ignorer",
@@ -801,6 +826,8 @@
   },
   "log": {
     "title": "Journal de partie",
+    "dockLeft": "Ancrer le journal à gauche",
+    "dockRight": "Ancrer le journal à droite",
     "noEvents": "Aucun événement pour l'instant",
     "closeLog": "Fermer le journal de partie",
     "verbosityFull": "complet",
@@ -1105,6 +1132,7 @@
       "onlyForSpellWithColorCount": "Uniquement pour les sorts avec {{comparator}} {{count}} couleurs.",
       "onlyForSpellColor": "Uniquement pour les sorts de la couleur {{color}}.",
       "onlyForSpellFromZone": "Uniquement pour les sorts {{polarity}} {{zone}}.",
+      "cannotCastSpellFromZone": "Ne peut pas être dépensé pour lancer des sorts depuis {{zone}}.",
       "onlyForFaceDownSpell": "Uniquement pour les sorts face cachée.",
       "onlyForAny": "Uniquement pour l'un de ces usages : {{restrictions}}",
       "onlyForSpecialAction": "Uniquement pour l'action spéciale {{action}}.",
@@ -1594,6 +1622,9 @@
       "selectAll": "Tout sélectionner",
       "invert": "Inverser",
       "clear": "Effacer",
+      "searchLabel": "Filtrer",
+      "searchPlaceholder": "Nom de la carte",
+      "searchCardsAria": "Filtrer les cartes par nom",
       "sortLabel": "Trier",
       "groupLabel": "Grouper",
       "optNone": "Aucun",
@@ -1922,6 +1953,7 @@
     "title": "Lancez un sort gratuitement",
     "subtitle": "Choisissez un sort à lancer sans payer son coût de mana ({{remaining}} restant(s)). Valeur de mana totale restante : {{budget}}.",
     "subtitleNoBudget": "Choisissez un sort à lancer sans payer son coût de mana ({{remaining}} restant(s)).",
+    "remainingAny": "n'importe quel nombre",
     "castNamed": "Lancer {{name}}",
     "castSuffix": "(sans payer son coût de mana)",
     "done": "Terminé",
@@ -2018,6 +2050,7 @@
     "diagnostic": "diagnostic : {{reason}}",
     "showDetails": "Afficher les détails",
     "exportGameState": "Exporter l'état de la partie",
+    "exportClientSnapshot": "Exporter l’instantané du client",
     "exported": "Exporté",
     "exportFailed": "Échec de l'exportation",
     "copyDiagnostic": "Copier le diagnostic",
@@ -2122,7 +2155,28 @@
     "title": "{{name}} - Effet facultatif",
     "yes": "Oui",
     "no": "Non",
-    "dontAskAgain": "Ne plus demander pendant cette partie"
+    "dontAskAgain": "Ne plus demander pendant cette partie",
+    "dontAskAgainForSameCard": "Appliquer à chaque exemplaire de cette carte"
+  },
+  "resolutionOptionalPayment": {
+    "title": "Choisissez un paiement optionnel",
+    "pay": "Payer {{cost}}",
+    "decline": "Refuser",
+    "cost": {
+      "card": "carte",
+      "cards": "cartes",
+      "filteredCard": "carte {{types}}",
+      "filteredCards": "cartes {{types}}",
+      "nonType": "non-{{type}}",
+      "orSeparator": " ou ",
+      "zoneBattlefield": "le champ de bataille",
+      "zoneGraveyard": "votre cimetière",
+      "zoneLibrary": "votre bibliothèque",
+      "zoneExile": "l’exil",
+      "zoneHand": "votre main",
+      "discard": "Défaussez-vous de {{count}} {{cards}}",
+      "exile": "Exilez {{count}} {{cards}} depuis {{zone}}"
+    }
   },
   "topOrBottom": {
     "cardFallback": "Card",
