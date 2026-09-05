@@ -6882,6 +6882,7 @@ fn devourer_of_destiny_opening_hand_reveal_creates_first_upkeep_dig() {
             phase: Phase::Upkeep,
             player: PlayerId(0),
             gate: crate::types::ability::TurnGate::None,
+            binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
         }
     );
 
@@ -20675,7 +20676,7 @@ fn untargeted_become_monarch_keeps_the_controller_default_cr_109_5() {
 
 /// CR 508.5: the rebind is gated on the trigger clause naming an attacked
 /// PLAYER. `Planeswalker` / `Battle` attack scopes name no player antecedent
-/// (a battle's anaphor would be its protector, CR 310.8d — a different
+/// (a battle's anaphor would be its protector, CR 310.9d — a different
 /// reference), so a `ScopedPlayer` anchor must survive unchanged there.
 ///
 /// There are two distinct noun sources, and each is asserted in the shape the

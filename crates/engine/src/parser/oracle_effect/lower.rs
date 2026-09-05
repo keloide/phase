@@ -4970,6 +4970,50 @@ fn parse_excluded_player_anchor(i: &str) -> OracleResult<'_, PlayerFilter> {
     .parse(i)
 }
 
+/// CR 102.2 + CR 102.3 + CR 603.2: Parse the possessive subject
+/// `each of ⟨anchor⟩'s opponents ` into
+/// [`PlayerFilter::OpponentOfTriggeringPlayer`] — the opponents of the player the
+/// TRIGGER EVENT names, which in general is NOT the ability's controller.
+///
+/// Two independent axes, one `alt()` each, nested under the shared `each of `
+/// prefix rather than enumerated as whole phrases:
+///
+/// 1. **Possessive anchor.** Every member names the player that one runtime seam,
+///    `targeting::extract_player_from_event`, reads off the trigger event, so they
+///    share a single `PlayerFilter`:
+///    - `that player` — the acting player of the triggering event: the caster for
+///      a `SpellCast` trigger (Heartwood Storyteller, Standstill, Checks and
+///      Balances) and the mana-loser for Mana Max, Afterburner.
+///    - `its controller` — CR 603.10a + CR 109.4: the controller of the triggering
+///      OBJECT, taken from the `ZoneChangeRecord` look-back snapshot made as the
+///      object left the battlefield, so a dies trigger still names the seat that
+///      controlled the creature (Bounty Board, issue #8440).
+/// 2. **Apostrophe form.** Curly U+2019 and ASCII `'`.
+///
+/// NOT `PlayerFilter::Opponent`: that is the opponents of the ABILITY's controller.
+/// A bounty creature can die under any seat, so in a multiplayer game the two sets
+/// differ — and the Bounty Board controller is themselves a recipient whenever an
+/// opponent's bounty creature dies.
+///
+/// NOT `PlayerFilter::ParentObjectTargetController` either, which is what
+/// `parse_excluded_player_anchor` above maps a bare `its controller` to: that anchor
+/// reads the resolving ability's first OBJECT TARGET (Fractured Identity's exiled
+/// permanent). A dies trigger declares no targets, so it would resolve to no player.
+pub(crate) fn parse_each_of_triggering_players_opponents(
+    i: &str,
+) -> OracleResult<'_, PlayerFilter> {
+    value(
+        PlayerFilter::OpponentOfTriggeringPlayer,
+        (
+            tag("each of "),
+            alt((tag("that player"), tag("its controller"))),
+            alt((tag("\u{2019}s "), tag("'s "))),
+            tag("opponents "),
+        ),
+    )
+    .parse(i)
+}
+
 pub(super) fn strip_each_player_subject(text: &str) -> (Option<PlayerFilter>, String) {
     // CR 701.9a + CR 608.2c: Reserve only the exact Kroxa/Strongarm
     // mandatory-FILTERED decline-tail grammar for its dedicated dispatcher.
@@ -4988,17 +5032,11 @@ pub(super) fn strip_each_player_subject(text: &str) -> (Option<PlayerFilter>, St
                 tag("each player with the highest speed among players "),
             ),
             value(PlayerFilter::Opponent, tag("each other player ")),
-            // CR 102.2 + CR 603.2: "each of that player's opponents" — the
-            // caster's opponents (mandatory variant), fanned out per-player.
-            // Apostrophe variants: ASCII ' and curly U+2019 '.
-            value(
-                PlayerFilter::OpponentOfTriggeringPlayer,
-                tag("each of that player's opponents "),
-            ),
-            value(
-                PlayerFilter::OpponentOfTriggeringPlayer,
-                tag("each of that player\u{2019}s opponents "),
-            ),
+            // CR 102.2 + CR 603.2: "each of ⟨that player | its controller⟩'s
+            // opponents" — the TRIGGERING player's opponents (mandatory variant),
+            // fanned out per-player. Must precede the bare "each opponent " arm,
+            // which scopes to the ABILITY CONTROLLER's opponents instead.
+            parse_each_of_triggering_players_opponents,
             value(PlayerFilter::Opponent, tag("each opponent ")),
             // CR 608.2c + CR 109.4 + CR 608.2h: "each player other than <ref>" —
             // all players except the anchor's player (resolved with last-known
@@ -6094,11 +6132,11 @@ fn chosen_number_extremum_of(amount: &QuantityExpr) -> Option<AggregateFunction>
     }
 }
 
-/// CR 120.2b + CR 120.3 + CR 102.2: leading "each opponent/player/foe/other
-/// opponent/other player" damage scope, returning the matched filter AND the
-/// unconsumed remainder. Unlike `parse_damage_each_player_scope` it is NOT
-/// all-consuming — used only by the multi-target damage CHAIN primary, which
-/// hands the trailing " and M damage to ..." segment back to the loop.
+/// CR 102.2 + CR 102.3: leading "each opponent/player/foe/other opponent/other
+/// player" damage scope, returning the matched filter AND the unconsumed
+/// remainder. Unlike `parse_damage_each_player_scope` it is NOT all-consuming —
+/// used only by the multi-target damage CHAIN primary, which hands the trailing
+/// " and M damage to ..." segment back to the loop.
 fn parse_damage_each_player_scope_with_remainder(text: &str) -> Option<(PlayerFilter, &str)> {
     let (rest, filter) = preceded(
         tag("each "),
@@ -6111,7 +6149,26 @@ fn parse_damage_each_player_scope_with_remainder(text: &str) -> Option<(PlayerFi
                 )),
             ),
             value(PlayerFilter::Opponent, tag("other player")),
-            parse_damage_player_scope,
+            // CR 109.5: "your" on an object refers to the object's controller, so
+            // "each of your opponents" is the PARTITIVE spelling of the same
+            // player scope as "each opponent" — a surface variant, not a new
+            // scope.
+            //
+            // Only the FIRST-PERSON partitive is accepted. "of their opponents"
+            // would bind an anaphor to some antecedent player rather than to the
+            // controller, so mapping it onto the static `PlayerFilter::Opponent`
+            // would install a wrong-referent rule; no live card carries it, so
+            // the arm is omitted rather than guessed.
+            //
+            // `parse_damage_player_scope` matches the SINGULAR stem ("opponent"
+            // is a prefix of "opponents") and the enclosing
+            // `parse_damage_each_player_scope` is all-consuming over
+            // whitespace/punctuation, so the trailing plural "s" must be consumed
+            // here or the scope would decline on its own remainder.
+            terminated(
+                preceded(opt(tag("of your ")), parse_damage_player_scope),
+                opt(tag("s")),
+            ),
         )),
     )
     .parse(text)
@@ -6470,6 +6527,7 @@ pub(super) fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerC
                 phase: Phase::PreCombatMain,
                 player: crate::types::player::PlayerId(0),
                 gate: crate::types::ability::TurnGate::None,
+                binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
             },
         ),
         // CR 505.1 + CR 603.7a: Symmetric to the prefix form at
@@ -6483,6 +6541,26 @@ pub(super) fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerC
                 phase: Phase::End,
                 player: crate::types::player::PlayerId(0),
                 gate: crate::types::ability::TurnGate::None,
+                binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
+            },
+        ),
+        // CR 608.2c: anaphoric "that player's next end step" — "that player"
+        // refers to a chained effect's target's OWNER, not the ability's
+        // controller (The Eternal Wanderer's +1: "Return that card to the
+        // battlefield under its owner's control at the beginning of that
+        // player's next end step"; Faramir, Prince of Ithilien uses the same
+        // surface phrase for a DIFFERENT referent — a chosen player — and
+        // remains its own unimplemented gap, not covered by this arm). Must
+        // precede the bare "your next end step" arm textually distinct
+        // (neither is a suffix of the other), so ordering here is not
+        // load-bearing, but is kept adjacent for readability.
+        (
+            " at the beginning of that player's next end step",
+            DelayedTriggerCondition::AtNextPhaseForPlayer {
+                phase: Phase::End,
+                player: crate::types::player::PlayerId(0),
+                gate: crate::types::ability::TurnGate::None,
+                binding: crate::types::ability::DelayedTriggerPlayerBinding::ParentTargetOwner,
             },
         ),
         // CR 513.2 + CR 603.7a: reordered "…, sacrifice that token at the
@@ -6497,6 +6575,7 @@ pub(super) fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerC
                 phase: Phase::End,
                 player: crate::types::player::PlayerId(0),
                 gate: crate::types::ability::TurnGate::AfterCreationTurn,
+                binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
             },
         ),
         // CR 603.7a + CR 104.3e: anaphoric "that turn's end step" — the extra
@@ -6510,6 +6589,7 @@ pub(super) fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerC
                 phase: Phase::End,
                 player: crate::types::player::PlayerId(0),
                 gate: crate::types::ability::TurnGate::None,
+                binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
             },
         ),
         (
@@ -6518,6 +6598,7 @@ pub(super) fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerC
                 phase: Phase::Upkeep,
                 player: crate::types::player::PlayerId(0),
                 gate: crate::types::ability::TurnGate::None,
+                binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
             },
         ),
         // CR 514.3a + CR 603.7a: "at the beginning of the next cleanup step"
@@ -6562,6 +6643,7 @@ pub(crate) fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerC
                     phase: Phase::Upkeep,
                     player: crate::types::player::PlayerId(0),
                     gate: crate::types::ability::TurnGate::None,
+                    binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
                 },
                 tag("at the beginning of your next upkeep, "),
             ),
@@ -6570,6 +6652,7 @@ pub(crate) fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerC
                     phase: Phase::End,
                     player: crate::types::player::PlayerId(0),
                     gate: crate::types::ability::TurnGate::None,
+                    binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
                 },
                 tag("at the beginning of your next end step, "),
             ),
@@ -6586,6 +6669,7 @@ pub(crate) fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerC
                     phase: Phase::End,
                     player: crate::types::player::PlayerId(0),
                     gate: crate::types::ability::TurnGate::AfterCreationTurn,
+                    binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
                 },
                 tag("at the beginning of the end step on your next turn, "),
             ),
@@ -6603,6 +6687,7 @@ pub(crate) fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerC
                     phase: Phase::End,
                     player: crate::types::player::PlayerId(0),
                     gate: crate::types::ability::TurnGate::None,
+                    binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
                 },
                 tag("at the beginning of that turn's end step, "),
             ),
@@ -6614,6 +6699,7 @@ pub(crate) fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerC
                     phase: Phase::PreCombatMain,
                     player: crate::types::player::PlayerId(0),
                     gate: crate::types::ability::TurnGate::None,
+                    binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
                 },
                 tag("at the beginning of your next main phase, "),
             ),
@@ -8392,7 +8478,10 @@ pub(super) fn try_parse_damage(lower: &str, text: &str, ctx: &mut ParseContext) 
 }
 
 /// CR 608.2c: Bind a bare "those cards" aggregate only to its typed chain antecedent.
-fn parse_contextual_bare_card_aggregate(text: &str, ctx: &ParseContext) -> Option<QuantityExpr> {
+pub(super) fn parse_contextual_bare_card_aggregate(
+    text: &str,
+    ctx: &ParseContext,
+) -> Option<QuantityExpr> {
     let source = ctx.bare_card_aggregate_source?;
     let (rest, qty) = nom_quantity::parse_contextual_bare_card_aggregate_ref(text, source).ok()?;
     rest.trim().is_empty().then_some(QuantityExpr::Ref { qty })
@@ -13085,6 +13174,7 @@ mod tests {
             phase: Phase::End,
             player: crate::types::player::PlayerId(0),
             gate: crate::types::ability::TurnGate::None,
+            binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
         };
 
         let (rest, cond) =

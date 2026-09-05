@@ -1838,6 +1838,10 @@ export interface StackEntryDisplay {
   paid?: StackPaidFactView[];
   trigger_context?: TriggerContextDisplay[];
   provenance?: SyntheticTriggerProvenance;
+  /** The live controller (CR 112.2 + CR 613.1b). `StackEntry.controller` stays the
+   * by-default caster; optional because `PlayerId::default()` is a real seat rather
+   * than a sentinel, so a missing value must fall back to `entry.controller`, not seat 0. */
+  controller?: PlayerId;
 }
 
 // ── Pending Cast (for target selection) ──────────────────────────────────
@@ -1968,6 +1972,22 @@ export interface ReplacementCandidateSummary {
   description: string;
 }
 
+// CR 616.1: which kind of decision a ReplacementChoice is asking for. One
+// WaitingFor serves three structurally different prompts and the candidate list
+// alone cannot distinguish them (an accept/decline pair and a two-effect
+// ordering prompt are both "two candidates"). Engine-owned — never infer this
+// from label text.
+//   Order                  - CR 616.1e: arrange competing effects. CR 616.1f
+//                            applies them in sequence, so the LAST one applied
+//                            is the one whose write survives.
+//   OptionalBranch         - CR 614.1: a "you may" yes/no; index 0 accepts,
+//                            index 1 declines. Never a sortable list.
+//   SearchFoundDestination - alternative destinations for a found card.
+export type ReplacementChoiceKind =
+  | { type: "Order" }
+  | { type: "OptionalBranch" }
+  | { type: "SearchFoundDestination" };
+
 export type EmergeSacrificeQuality =
   | { type: "Artifact" }
   | { type: "Battle" }
@@ -2080,7 +2100,7 @@ export type WaitingFor =
   | { type: "DeclareAttackers"; data: { player: PlayerId; valid_attacker_ids: ObjectId[]; valid_attack_targets?: AttackTarget[]; valid_attack_targets_by_attacker?: Record<string, AttackTarget[]>; attacker_constraints?: Record<string, CombatRequirement> } }
   | { type: "DeclareBlockers"; data: { player: PlayerId; valid_blocker_ids: ObjectId[]; valid_block_targets: Record<string, ObjectId[]>; block_requirements?: Record<string, BlockRequirementInfo>; blocker_constraints?: Record<string, CombatRequirement> } }
   | { type: "GameOver"; data: { winner: PlayerId | null } }
-  | { type: "ReplacementChoice"; data: { player: PlayerId; candidate_count: number; candidates?: ReplacementCandidateSummary[] } }
+  | { type: "ReplacementChoice"; data: { player: PlayerId; candidate_count: number; candidates?: ReplacementCandidateSummary[]; kind?: ReplacementChoiceKind; last_applied_decides?: boolean } }
   | { type: "EntryControllerChoice"; data: { player: PlayerId; candidates: PlayerId[] } }
   | { type: "OrderTriggers"; data: { player: PlayerId; triggers: PendingTriggerSummary[] } }
   | { type: "CopyTargetChoice"; data: { player: PlayerId; source_id: ObjectId; valid_targets: ObjectId[]; max_mana_value?: number | null; purpose?: { type: "BecomeCopy" | "PersistChosenAttribute" } } }
@@ -2091,6 +2111,8 @@ export type WaitingFor =
   | { type: "StationTarget"; data: { player: PlayerId; spacecraft_id: ObjectId; eligible_creatures: ObjectId[] } }
   | { type: "SaddleMount"; data: { player: PlayerId; mount_id: ObjectId; saddle_power: number; eligible_creatures: ObjectId[]; contributions?: number[] } }
   | { type: "ScryChoice"; data: { player: PlayerId; cards: ObjectId[] } }
+  | { type: "RippleRevealChoice"; data: { player: PlayerId; source_id: ObjectId; count: number } }
+  | { type: "RippleBottomOrder"; data: { player: PlayerId; source_id: ObjectId; cards: ObjectId[]; final_cast?: ObjectId | null } }
   | { type: "ArrangePlanarDeckTopChoice"; data: { player: PlayerId; cards: ObjectId[]; keep_on_top: number } }
   | { type: "RedistributeLifeTotals"; data: { player: PlayerId; options: { assignment: [PlayerId, number][] }[] } }
   | { type: "CoinFlipKeepChoice"; data: { player: PlayerId; results: boolean[]; keep_count: number } }
@@ -2226,7 +2248,7 @@ export type WaitingFor =
       track_exiled_by_source?: boolean;
     } }
   | { type: "DrawnThisTurnTopdeckChoice"; data: { player: PlayerId; cards: ObjectId[]; count: number; min_count: number; life_payment: number; source_id: ObjectId } }
-  | { type: "RetargetChoice"; data: { player: PlayerId; stack_entry_index: number; scope: RetargetScope; current_targets: TargetRef[]; legal_new_targets: TargetRef[] } }
+  | { type: "RetargetChoice"; data: { player: PlayerId; stack_entry_index: number; scope: RetargetScope; current_targets: TargetRef[]; slots: RetargetSlotAddress[]; slot_pools: TargetRef[][]; legal_new_targets: TargetRef[] } }
   | { type: "ProliferateChoice"; data: { player: PlayerId; eligible: TargetRef[] } }
   | { type: "TimeTravelChoice"; data: { player: PlayerId; eligible: TargetRef[]; phase: "Remove" | "Add" } }
   | { type: "AssistChoosePlayer"; data: { player: PlayerId; candidates: PlayerId[]; max_generic: number; convoke_mode?: ConvokeMode } }
@@ -2422,6 +2444,19 @@ export type RetargetScope =
   | { type: "Single" }
   | { type: "All" }
   | { type: "ForcedTo"; data: TargetRef };
+
+// CR 601.2c: one descent step from a stack entry's root ResolvedAbility
+// toward a node that owns declared targets. Mirrors `ChainStep`
+// (crates/engine/src/types/game_state.rs).
+export type ChainStep = "SubAbility" | "ElseAbility";
+
+// CR 115.7d: the address of ONE declared-target slot inside a resolved
+// chain. Mirrors `RetargetSlotAddress`
+// (crates/engine/src/types/game_state.rs).
+export interface RetargetSlotAddress {
+  path: ChainStep[];
+  slot: number;
+}
 
 // ── Log Types ────────────────────────────────────────────────────────────
 
