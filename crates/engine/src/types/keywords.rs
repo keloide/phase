@@ -2347,17 +2347,21 @@ fn parse_affinity_type(s: &str) -> Option<TypedFilter> {
             // subtype parser first so irregular plurals such as "Elves" are
             // canonicalized to their rules name ("Elf"). Unknown names are still
             // valid subtypes (for example, Daleks), so retain the generic fallback.
-            let capitalized = crate::parser::oracle_util::parse_subtype(s)
+            let subtype = crate::parser::oracle_util::parse_subtype(s)
                 .filter(|(_, consumed)| *consumed == s.len())
                 .map(|(subtype, _)| subtype)
-                .unwrap_or_else(|| format!("{}{}", &s[..1].to_uppercase(), &s[1..]));
-            // Strip trailing 's' for plural subtype words (e.g., "Daleks" →
-            // "Dalek", "Islands" → "Island"; "Plains" stays "Plains").
-            let subtype = if capitalized.ends_with('s') && capitalized != "Plains" {
-                capitalized[..capitalized.len() - 1].to_string()
-            } else {
-                capitalized
-            };
+                .unwrap_or_else(|| {
+                    let capitalized = format!("{}{}", &s[..1].to_uppercase(), &s[1..]);
+                    // Unknown plural subtype words retain the legacy fallback
+                    // ("Daleks" → "Dalek"), while values returned by
+                    // `parse_subtype` above are already canonical and must not be
+                    // singularized again ("Fungus" and "Locus" stay unchanged).
+                    if capitalized.ends_with('s') && capitalized != "Plains" {
+                        capitalized[..capitalized.len() - 1].to_string()
+                    } else {
+                        capitalized
+                    }
+                });
             Some(TypedFilter::default().subtype(subtype))
         }
     }
@@ -4264,6 +4268,24 @@ mod tests {
             vec![TypeFilter::Subtype("Island".to_string())],
             "land subtype affinity still matches by subtype without requiring an explicit Land conjunct"
         );
+
+        for (input, expected) in [
+            ("Affinity for Elves", "Elf"),
+            ("Affinity:for Allies", "Ally"),
+            ("Affinity:for Fungus", "Fungus"),
+            ("Affinity for Locus", "Locus"),
+            ("Affinity:for Plains", "Plains"),
+            ("Affinity for Sphinxes", "Sphinx"),
+        ] {
+            let Keyword::Affinity(filter) = Keyword::from_str(input).unwrap() else {
+                panic!("expected Affinity keyword for {input}");
+            };
+            assert_eq!(
+                filter.type_filters,
+                vec![TypeFilter::Subtype(expected.to_string())],
+                "Affinity subtype must use the canonical rules name: {input}"
+            );
+        }
     }
 
     #[test]
