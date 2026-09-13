@@ -229,7 +229,7 @@ fn warrior_mobilize_mutates_attackers_before_imperial_trigger_resolves() {
             .state()
             .stack
             .iter()
-            .last()
+            .next_back()
             .map(|entry| entry.source_id),
         Some(mobilizer),
         "Mobilize must be the top stack entry before resolution"
