@@ -1,9 +1,13 @@
+use std::borrow::Cow;
 use std::str::FromStr;
 
 use crate::parser::oracle_nom::error::OracleError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
-use nom::combinator::{all_consuming, opt, rest, value};
+use nom::character::complete::anychar;
+use nom::combinator::{all_consuming, eof, opt, peek, recognize, rest, value};
+use nom::multi::many_till;
+use nom::sequence::preceded;
 use nom::Parser;
 
 use crate::parser::oracle_ir::context::{ParseContext, TokenPtFollowup};
@@ -681,8 +685,8 @@ fn parse_token_description_with_context(
     // token each of the five colors. Strip the clause before keyword parsing so
     // the trailing keyword ("... and haste that's all colors") still survives,
     // then set the colors.
-    let saved_all_colors_where_x_expr = extract_token_where_x_expression(suffix);
-    let (suffix, is_all_colors) = strip_token_all_colors_suffix(suffix);
+    let saved_all_colors_where_x_expr = extract_token_where_x_expression(&suffix);
+    let (suffix, is_all_colors) = strip_token_all_colors_suffix(&suffix);
     if is_all_colors {
         colors = ManaColor::ALL.to_vec();
     }
@@ -1161,31 +1165,72 @@ fn split_token_head(text: &str) -> Option<(&str, &str)> {
     Some((head, suffix.trim()))
 }
 
-fn parse_token_name_clause(text: &str) -> (Option<String>, &str) {
+/// Parse the text of a token `named <name>` clause without consuming the
+/// clause terminator.
+///
+/// CR 111.4: A token-creating effect sets its name, so a late name clause must
+/// override the descriptor-derived fallback while leaving the remaining token
+/// characteristics available to their existing parsers.
+fn parse_token_name_text(input: &str) -> OracleResult<'_, &str> {
+    recognize(many_till(
+        anychar,
+        peek(alt((
+            value((), tag(" with ")),
+            value((), tag(" attached ")),
+            value((), tag(",")),
+            value((), tag(".")),
+            value((), eof),
+        ))),
+    ))
+    .parse(input)
+}
+
+fn parse_token_name_clause(text: &str) -> (Option<String>, Cow<'_, str>) {
     let trimmed = text.trim_start();
     let trimmed_lower = trimmed.to_lowercase();
-    let Some((_, after_named)) = nom_on_lower(trimmed, &trimmed_lower, |i| {
-        value((), tag("named ")).parse(i)
-    }) else {
-        return (None, trimmed);
-    };
 
-    let after_named_lower = after_named.to_lowercase();
-    let after_named_tp = TextPair::new(after_named, &after_named_lower);
-    let mut end = after_named.len();
-    for needle in [" with ", " attached ", ",", "."] {
-        if let Some(pos) = after_named_tp.find(needle) {
-            end = end.min(pos);
+    // Preserve the long-supported leading form (`token named <name> with …`).
+    if let Some((_, after_named)) = nom_on_lower(trimmed, &trimmed_lower, |i| {
+        value((), tag("named ")).parse(i)
+    }) {
+        let after_named_lower = after_named.to_lowercase();
+        if let Ok((lower_rest, _)) = parse_token_name_text(&after_named_lower) {
+            let name_end = after_named_lower.len() - lower_rest.len();
+            let name = after_named[..name_end].trim().trim_matches('"');
+            let suffix = &after_named[name_end..];
+            return if name.is_empty() {
+                (None, Cow::Borrowed(suffix.trim_start()))
+            } else {
+                (Some(name.to_string()), Cow::Borrowed(suffix.trim_start()))
+            };
         }
     }
 
-    let name = after_named[..end].trim().trim_matches('"');
-    let rest = after_named[end..].trim_start();
+    // `scan_preceded` only visits word boundaries. Mask quoted static abilities
+    // first so their prose cannot supply a token name; the ASCII lowercase view
+    // and mask both preserve byte offsets into `trimmed`.
+    let ascii_lower = trimmed.to_ascii_lowercase();
+    let masked_lower = nom_primitives::mask_double_quoted_spans_preserving_len(&ascii_lower);
+    let Some((before, _name, lower_rest)) = nom_primitives::scan_preceded(&masked_lower, |input| {
+        preceded(tag("named "), parse_token_name_text).parse(input)
+    }) else {
+        return (None, Cow::Borrowed(trimmed));
+    };
+
+    let name_start = before.len() + "named ".len();
+    let name_end = masked_lower.len() - lower_rest.len();
+    let name = trimmed[name_start..name_end].trim().trim_matches('"');
     if name.is_empty() {
-        (None, rest)
-    } else {
-        (Some(name.to_string()), rest)
+        return (None, Cow::Borrowed(trimmed));
     }
+
+    let mut suffix = String::with_capacity(trimmed.len() - (name_end - before.len()));
+    suffix.push_str(&trimmed[..before.len()]);
+    suffix.push_str(&trimmed[name_end..]);
+    (
+        Some(name.to_string()),
+        Cow::Owned(suffix.trim().to_string()),
+    )
 }
 
 /// Extract quoted static abilities from token suffix text.
@@ -2774,6 +2819,88 @@ mod tests {
     fn keyword_clause_with_named_suffix() {
         let kws = parse_token_keyword_clause("with flying named storm crow");
         assert_eq!(kws, vec![Keyword::Flying]);
+    }
+
+    /// CR 111.3 + CR 111.4: Crow Storm defines all of this token's
+    /// characteristics, including a name distinct from its Bird subtype.
+    #[test]
+    fn late_named_token_clause_overrides_descriptor_name() {
+        let text = "Create a 1/2 blue Bird creature token with flying named Storm Crow.";
+        let effect = try_parse_token(&text.to_lowercase(), text, &mut ParseContext::default())
+            .expect("Crow Storm's token clause must parse");
+        let Effect::Token {
+            name,
+            power,
+            toughness,
+            types,
+            colors,
+            keywords,
+            ..
+        } = effect
+        else {
+            panic!("expected Token effect, got {effect:?}");
+        };
+
+        assert_eq!(name, "Storm Crow");
+        assert_eq!(power, PtValue::Fixed(1));
+        assert_eq!(toughness, PtValue::Fixed(2));
+        assert_eq!(colors, vec![ManaColor::Blue]);
+        assert!(
+            types.iter().any(|token_type| token_type == "Creature")
+                && types.iter().any(|token_type| token_type == "Bird"),
+            "Crow Storm token must be a Bird creature, got {types:?}"
+        );
+        assert_eq!(keywords, vec![Keyword::Flying]);
+    }
+
+    #[test]
+    fn leading_named_token_clause_keeps_keyword_suffix() {
+        let text = "Create a 1/2 blue Bird creature token named Storm Crow with flying.";
+        let effect = try_parse_token(&text.to_lowercase(), text, &mut ParseContext::default())
+            .expect("leading named token clause must parse");
+        let Effect::Token { name, keywords, .. } = effect else {
+            panic!("expected Token effect, got {effect:?}");
+        };
+
+        assert_eq!(name, "Storm Crow");
+        assert_eq!(keywords, vec![Keyword::Flying]);
+    }
+
+    #[test]
+    fn late_named_token_clause_keeps_multiple_keywords_and_attachment() {
+        let text = "Create a 1/2 blue Bird creature token with flying and haste named Storm Crow attached to target creature.";
+        let effect = try_parse_token(&text.to_lowercase(), text, &mut ParseContext::default())
+            .expect("late named attached token clause must parse");
+        let Effect::Token {
+            name,
+            keywords,
+            attach_to,
+            ..
+        } = effect
+        else {
+            panic!("expected Token effect, got {effect:?}");
+        };
+
+        assert_eq!(name, "Storm Crow");
+        assert_eq!(keywords, vec![Keyword::Flying, Keyword::Haste]);
+        assert!(
+            attach_to.is_some(),
+            "attachment target must survive name parsing"
+        );
+    }
+
+    #[test]
+    fn quoted_named_text_does_not_override_token_name() {
+        let text =
+            r#"Create a 1/2 blue Bird creature token with flying and "This token is named Decoy.""#;
+        let effect = try_parse_token(&text.to_lowercase(), text, &mut ParseContext::default())
+            .expect("quoted token text must not prevent the token clause from parsing");
+        let Effect::Token { name, keywords, .. } = effect else {
+            panic!("expected Token effect, got {effect:?}");
+        };
+
+        assert_eq!(name, "Bird", "quoted text must not supply a token name");
+        assert_eq!(keywords, vec![Keyword::Flying]);
     }
 
     /// Hornet Cannon: "with flying and haste named hornet" must keep BOTH.
