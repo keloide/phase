@@ -1171,18 +1171,26 @@ fn split_token_head(text: &str) -> Option<(&str, &str)> {
 /// CR 111.4: A token-creating effect sets its name, so a late name clause must
 /// override the descriptor-derived fallback while leaving the remaining token
 /// characteristics available to their existing parsers.
-fn parse_token_name_text(input: &str) -> OracleResult<'_, &str> {
-    recognize(many_till(
-        anychar,
-        peek(alt((
-            value((), tag(" with ")),
-            value((), tag(" attached ")),
-            value((), tag(",")),
-            value((), tag(".")),
-            value((), eof),
-        ))),
+fn parse_token_name_comma_clause(input: &str) -> OracleResult<'_, ()> {
+    preceded(tag(", "), value((), tag("where "))).parse(input)
+}
+
+fn parse_token_name_terminator(input: &str) -> OracleResult<'_, ()> {
+    alt((
+        value((), tag(" with ")),
+        value((), tag(" attached ")),
+        // A comma belongs to a token name unless it introduces a distinct
+        // token clause. For example, `Osgood, Operation Double` is a complete
+        // supported token name, while `, where X is …` remains a suffix.
+        value((), parse_token_name_comma_clause),
+        value((), tag(".")),
+        value((), eof),
     ))
     .parse(input)
+}
+
+fn parse_token_name_text(input: &str) -> OracleResult<'_, &str> {
+    recognize(many_till(anychar, peek(parse_token_name_terminator))).parse(input)
 }
 
 fn parse_token_name_clause(text: &str) -> (Option<String>, Cow<'_, str>) {
@@ -2864,6 +2872,31 @@ mod tests {
 
         assert_eq!(name, "Storm Crow");
         assert_eq!(keywords, vec![Keyword::Flying]);
+    }
+
+    #[test]
+    fn comma_bearing_token_name_keeps_keyword_suffix_in_both_positions() {
+        for text in [
+            "Create a 2/2 blue Human Alien Shapeshifter creature token named Osgood, Operation Double with flying.",
+            "Create a 2/2 blue Human Alien Shapeshifter creature token with flying named Osgood, Operation Double.",
+        ] {
+            let effect =
+                try_parse_token(&text.to_lowercase(), text, &mut ParseContext::default())
+                    .expect("comma-bearing named token clause must parse");
+            let Effect::Token { name, keywords, .. } = effect else {
+                panic!("expected Token effect, got {effect:?}");
+            };
+
+            assert_eq!(name, "Osgood, Operation Double", "in {text:?}");
+            assert_eq!(keywords, vec![Keyword::Flying], "in {text:?}");
+        }
+    }
+
+    #[test]
+    fn comma_where_clause_remains_a_token_suffix() {
+        let (name, suffix) = parse_token_name_clause("named Example, where X is your life total");
+        assert_eq!(name.as_deref(), Some("Example"));
+        assert_eq!(suffix.as_ref(), ", where X is your life total");
     }
 
     #[test]

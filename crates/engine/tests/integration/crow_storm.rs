@@ -13,6 +13,9 @@ const CROW_STORM_ORACLE: &str =
     "Create a 1/2 blue Bird creature token with flying named Storm Crow.\n\
 Storm (When you cast this spell, copy it for each spell cast before it this turn.)";
 
+const OSGOOD_TOKEN_ORACLE: &str =
+    "Create a 2/2 blue Human Alien Shapeshifter creature token named Osgood, Operation Double with flying.";
+
 const PRIOR_SPELL_ORACLE: &str = "You gain 1 life.";
 
 fn spells_cast_by(runner: &GameRunner, player: PlayerId) -> usize {
@@ -32,7 +35,8 @@ fn crow_storm_creates_correctly_named_tokens_for_original_and_storm_copy() {
         .add_spell_to_hand_from_oracle(P0, "Prior Spell", true, PRIOR_SPELL_ORACLE)
         .id();
     let crow_storm = scenario
-        .add_spell_to_hand_from_oracle(P0, "Crow Storm", false, CROW_STORM_ORACLE)
+        .add_spell_to_hand(P0, "Crow Storm", false)
+        .from_oracle_text_with_keywords(&["Storm"], CROW_STORM_ORACLE)
         .id();
     let mut runner = scenario.build();
 
@@ -97,4 +101,49 @@ fn crow_storm_creates_correctly_named_tokens_for_original_and_storm_copy() {
             .all(|id| runner.state().objects[id].name != "Bird"),
         "the positive two-token assertion above prevents this default-name regression check from passing vacuously"
     );
+}
+
+#[test]
+fn comma_bearing_token_name_survives_the_cast_pipeline_with_its_keyword_suffix() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Comma Token Spell", false, OSGOOD_TOKEN_ORACLE)
+        .id();
+    let mut runner = scenario.build();
+
+    runner.state_mut().turn_number = 1;
+    runner.state_mut().active_player = P0;
+    runner.state_mut().priority_player = P0;
+    runner.state_mut().waiting_for = WaitingFor::Priority { player: P0 };
+    runner.cast(spell).resolve();
+
+    let token_ids: Vec<_> = runner
+        .state()
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|id| runner.state().objects[id].is_token)
+        .collect();
+    assert_eq!(token_ids.len(), 1, "the spell must create its token");
+
+    // CR 111.3 + CR 111.4: a comma is part of this token's name, while the
+    // following `with flying` remains a separate defining characteristic.
+    let token = &runner.state().objects[&token_ids[0]];
+    assert_eq!(token.name, "Osgood, Operation Double");
+    assert_eq!(token.color, vec![ManaColor::Blue]);
+    assert_eq!((token.power, token.toughness), (Some(2), Some(2)));
+    assert!(token.card_types.core_types.contains(&CoreType::Creature));
+    assert!(
+        ["Human", "Alien", "Shapeshifter"]
+            .into_iter()
+            .all(|subtype| token
+                .card_types
+                .subtypes
+                .iter()
+                .any(|actual| actual == subtype)),
+        "token must retain each subtype: {:?}",
+        token.card_types.subtypes
+    );
+    assert!(token.keywords.contains(&Keyword::Flying));
 }
