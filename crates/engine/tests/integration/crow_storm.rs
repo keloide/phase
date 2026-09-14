@@ -8,6 +8,7 @@ use engine::types::keywords::Keyword;
 use engine::types::mana::ManaColor;
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
+use engine::types::zones::Zone;
 
 const CROW_STORM_ORACLE: &str =
     "Create a 1/2 blue Bird creature token with flying named Storm Crow.\n\
@@ -15,6 +16,13 @@ Storm (When you cast this spell, copy it for each spell cast before it this turn
 
 const OSGOOD_TOKEN_ORACLE: &str =
     "Create a 2/2 blue Human Alien Shapeshifter creature token named Osgood, Operation Double with flying.";
+
+const GOBLIN_GATHERING_ORACLE: &str = "Create a number of 1/1 red Goblin creature tokens \
+equal to two plus the number of cards named Goblin Gathering in your graveyard.";
+
+const SANGUINE_BRUSHSTROKE_ORACLE: &str = "When Sanguine Brushstroke enters the battlefield, \
+create a Blood token and conjure a card named Blood Artist onto the battlefield.\n\
+Whenever you sacrifice a Blood token, each opponent loses 1 life and you gain 1 life.";
 
 const PRIOR_SPELL_ORACLE: &str = "You gain 1 life.";
 
@@ -146,4 +154,67 @@ fn comma_bearing_token_name_survives_the_cast_pipeline_with_its_keyword_suffix()
         token.card_types.subtypes
     );
     assert!(token.keywords.contains(&Keyword::Flying));
+}
+
+#[test]
+fn named_count_operand_does_not_override_goblin_token_names_when_cast() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Goblin Gathering", false, GOBLIN_GATHERING_ORACLE)
+        .id();
+    let mut runner = scenario.build();
+
+    runner.state_mut().turn_number = 1;
+    runner.state_mut().active_player = P0;
+    runner.state_mut().priority_player = P0;
+    runner.state_mut().waiting_for = WaitingFor::Priority { player: P0 };
+    let outcome = runner.cast(spell).resolve();
+
+    // CR 111.4: `named Goblin Gathering` identifies cards in the count, not
+    // the tokens' defining name, which remains the Goblin subtype.
+    let token_names: Vec<_> = outcome
+        .state()
+        .battlefield
+        .iter()
+        .map(|id| &outcome.state().objects[id])
+        .filter(|object| object.is_token)
+        .map(|object| object.name.as_str())
+        .collect();
+    assert_eq!(token_names, ["Goblin", "Goblin"]);
+}
+
+#[test]
+fn named_conjure_operand_does_not_override_blood_token_name_when_cast() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let brushstroke = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Sanguine Brushstroke",
+            false,
+            SANGUINE_BRUSHSTROKE_ORACLE,
+        )
+        .as_enchantment()
+        .id();
+    let mut runner = scenario.build();
+
+    runner.state_mut().turn_number = 1;
+    runner.state_mut().active_player = P0;
+    runner.state_mut().priority_player = P0;
+    runner.state_mut().waiting_for = WaitingFor::Priority { player: P0 };
+    let outcome = runner.cast(brushstroke).resolve();
+
+    outcome.assert_zone(&[brushstroke], Zone::Battlefield);
+    // CR 111.4: `named Blood Artist` belongs to the separate conjure action;
+    // it must not become the name of the Blood token from the prior action.
+    let token_names: Vec<_> = outcome
+        .state()
+        .battlefield
+        .iter()
+        .map(|id| &outcome.state().objects[id])
+        .filter(|object| object.is_token)
+        .map(|object| object.name.as_str())
+        .collect();
+    assert_eq!(token_names, ["Blood"]);
 }

@@ -5,7 +5,7 @@ use crate::parser::oracle_nom::error::OracleError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
 use nom::character::complete::anychar;
-use nom::combinator::{all_consuming, eof, opt, peek, recognize, rest, value};
+use nom::combinator::{all_consuming, eof, opt, peek, recognize, rest, value, verify};
 use nom::multi::many_till;
 use nom::sequence::preceded;
 use nom::Parser;
@@ -1193,6 +1193,22 @@ fn parse_token_name_text(input: &str) -> OracleResult<'_, &str> {
     recognize(many_till(anychar, peek(parse_token_name_terminator))).parse(input)
 }
 
+/// Parse the late token-name form after the token's own keyword clause.
+///
+/// `named` also occurs in count filters and follow-up instructions, so the
+/// late form must begin at `with <keyword list>` rather than scanning every
+/// word-boundary `named` occurrence in the token suffix.
+fn parse_late_token_name_clause(input: &str) -> OracleResult<'_, &str> {
+    let (input, _) = tag("with ").parse(input)?;
+    let (input, _keywords) = verify(
+        recognize(many_till(anychar, peek(tag(" named ")))),
+        |keywords: &&str| !parse_token_keyword_list(keywords).is_empty(),
+    )
+    .parse(input)?;
+    let (input, _) = tag(" named ").parse(input)?;
+    parse_token_name_text(input)
+}
+
 fn parse_token_name_clause(text: &str) -> (Option<String>, Cow<'_, str>) {
     let trimmed = text.trim_start();
     let trimmed_lower = trimmed.to_lowercase();
@@ -1219,21 +1235,21 @@ fn parse_token_name_clause(text: &str) -> (Option<String>, Cow<'_, str>) {
     // and mask both preserve byte offsets into `trimmed`.
     let ascii_lower = trimmed.to_ascii_lowercase();
     let masked_lower = nom_primitives::mask_double_quoted_spans_preserving_len(&ascii_lower);
-    let Some((before, _name, lower_rest)) = nom_primitives::scan_preceded(&masked_lower, |input| {
-        preceded(tag("named "), parse_token_name_text).parse(input)
-    }) else {
+    let Some((_before, lower_name, lower_rest)) =
+        nom_primitives::scan_preceded(&masked_lower, parse_late_token_name_clause)
+    else {
         return (None, Cow::Borrowed(trimmed));
     };
 
-    let name_start = before.len() + "named ".len();
     let name_end = masked_lower.len() - lower_rest.len();
+    let name_start = name_end - lower_name.len();
     let name = trimmed[name_start..name_end].trim().trim_matches('"');
     if name.is_empty() {
         return (None, Cow::Borrowed(trimmed));
     }
 
-    let mut suffix = String::with_capacity(trimmed.len() - (name_end - before.len()));
-    suffix.push_str(&trimmed[..before.len()]);
+    let mut suffix = String::with_capacity(trimmed.len() - (name_end - name_start));
+    suffix.push_str(&trimmed[..name_start]);
     suffix.push_str(&trimmed[name_end..]);
     (
         Some(name.to_string()),
@@ -1696,6 +1712,10 @@ pub(super) fn parse_token_keyword_clause(text: &str) -> Vec<Keyword> {
         .trim_end_matches(&['.', ','][..])
         .trim();
 
+    parse_token_keyword_list(raw_clause)
+}
+
+fn parse_token_keyword_list(raw_clause: &str) -> Vec<Keyword> {
     split_token_keyword_list(raw_clause)
         .into_iter()
         .filter_map(map_token_keyword)
@@ -2897,6 +2917,42 @@ mod tests {
         let (name, suffix) = parse_token_name_clause("named Example, where X is your life total");
         assert_eq!(name.as_deref(), Some("Example"));
         assert_eq!(suffix.as_ref(), ", where X is your life total");
+    }
+
+    #[test]
+    fn nonstructural_named_operands_remain_in_the_token_suffix() {
+        for suffix in [
+            "equal to the number of other creatures you control named Hare Apparent",
+            "equal to two plus the number of cards named Goblin Gathering in your graveyard",
+            "and conjure a card named Blood Artist onto the battlefield",
+            "equal to the number of differently named lands you control",
+        ] {
+            let (name, retained_suffix) = parse_token_name_clause(suffix);
+            assert_eq!(name, None, "in {suffix:?}");
+            assert_eq!(retained_suffix.as_ref(), suffix, "in {suffix:?}");
+        }
+    }
+
+    #[test]
+    fn count_and_conjure_named_operands_keep_the_descriptor_name() {
+        for (text, expected_name) in [
+            (
+                "Create a number of 1/1 red Goblin creature tokens equal to two plus the number of cards named Goblin Gathering in your graveyard.",
+                "Goblin",
+            ),
+            (
+                "Create a Blood token and conjure a card named Blood Artist onto the battlefield.",
+                "Blood",
+            ),
+        ] {
+            let effect = try_parse_token(&text.to_lowercase(), text, &mut ParseContext::default())
+                .expect("the token clause must parse");
+            let Effect::Token { name, .. } = effect else {
+                panic!("expected Token effect, got {effect:?}");
+            };
+
+            assert_eq!(name, expected_name, "in {text:?}");
+        }
     }
 
     #[test]
