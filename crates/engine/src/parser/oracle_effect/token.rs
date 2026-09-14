@@ -1193,6 +1193,9 @@ fn parse_token_name_text(input: &str) -> OracleResult<'_, &str> {
     recognize(many_till(anychar, peek(parse_token_name_terminator))).parse(input)
 }
 
+/// CR 111.4: a token-creating effect sets its token's name when it specifies
+/// one, so this late clause overrides the descriptor-derived fallback.
+///
 /// Parse the late token-name form after the token's own keyword clause.
 ///
 /// `named` also occurs in count filters and follow-up instructions, so the
