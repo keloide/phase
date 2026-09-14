@@ -1251,8 +1251,14 @@ fn parse_token_name_clause(text: &str) -> (Option<String>, Cow<'_, str>) {
         return (None, Cow::Borrowed(trimmed));
     }
 
-    let mut suffix = String::with_capacity(trimmed.len() - (name_end - name_start));
-    suffix.push_str(&trimmed[..name_start]);
+    // Retain `with <keywords>` as part of the token suffix.  The late-name
+    // parser consumes it only to prove that this `named` belongs to the token
+    // descriptor; keyword extraction still needs that same clause below.  The
+    // matched grammar guarantees the seven bytes immediately before the name
+    // are exactly `" named "`.
+    let late_name_marker_start = name_start - " named ".len();
+    let mut suffix = String::with_capacity(trimmed.len() - (name_end - late_name_marker_start));
+    suffix.push_str(&trimmed[..late_name_marker_start]);
     suffix.push_str(&trimmed[name_end..]);
     (
         Some(name.to_string()),
