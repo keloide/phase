@@ -3119,13 +3119,15 @@ mod tests {
     }
 
     #[test]
-    fn normalize_mixed_token_keyword_clause_does_not_mask_named_operand() {
+    fn mixed_token_keyword_clause_does_not_mask_the_name_as_a_token() {
+        let input = "token with flying and cards named Goblin Gathering";
         assert_eq!(
-            normalize_card_name_refs(
-                "Create a 1/2 blue Bird creature token with flying and nonsense named Crow Storm.",
-                "Crow Storm",
-            ),
-            "Create a 1/2 blue Bird creature token with flying and nonsense named ~."
+            next_card_named_literal_prefix(input),
+            Some((
+                "token with flying and ".len(),
+                "cards named ".len(),
+                NamedLiteralKind::CardFilter,
+            )),
         );
     }
 
