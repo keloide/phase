@@ -1715,7 +1715,12 @@ pub(super) fn parse_token_keyword_clause(text: &str) -> Vec<Keyword> {
     parse_token_keyword_list(raw_clause)
 }
 
-fn parse_token_keyword_list(raw_clause: &str) -> Vec<Keyword> {
+/// Parse the keyword list that defines a token's inline characteristics.
+///
+/// This is shared with the card-name normalizer so its literal-name masking
+/// recognizes exactly the same late `with <keywords> named <name>` grammar as
+/// token parsing does.
+pub(crate) fn parse_token_keyword_list(raw_clause: &str) -> Vec<Keyword> {
     split_token_keyword_list(raw_clause)
         .into_iter()
         .filter_map(map_token_keyword)
