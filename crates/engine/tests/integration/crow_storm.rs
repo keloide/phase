@@ -20,6 +20,9 @@ const OSGOOD_TOKEN_ORACLE: &str =
 const GOBLIN_GATHERING_ORACLE: &str = "Create a number of 1/1 red Goblin creature tokens \
 equal to two plus the number of cards named Goblin Gathering in your graveyard.";
 
+const MIXED_TOKEN_KEYWORD_CLAUSE_ORACLE: &str = "Create a 1/1 red Goblin creature token \
+with flying and cards named Goblin Gathering in your graveyard.";
+
 const SANGUINE_BRUSHSTROKE_ORACLE: &str = "When Sanguine Brushstroke enters the battlefield, \
 create a Blood token and conjure a card named Blood Artist onto the battlefield.\n\
 Whenever you sacrifice a Blood token, each opponent loses 1 life and you gain 1 life.";
@@ -182,6 +185,48 @@ fn named_count_operand_does_not_override_goblin_token_names_when_cast() {
         .map(|object| object.name.as_str())
         .collect();
     assert_eq!(token_names, ["Goblin", "Goblin"]);
+}
+
+#[test]
+fn mixed_token_keyword_clause_does_not_rebind_the_name_when_cast() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Mixed Keyword Clause Spell",
+            false,
+            MIXED_TOKEN_KEYWORD_CLAUSE_ORACLE,
+        )
+        .id();
+    let mut runner = scenario.build();
+
+    runner.state_mut().turn_number = 1;
+    runner.state_mut().active_player = P0;
+    runner.state_mut().priority_player = P0;
+    runner.state_mut().waiting_for = WaitingFor::Priority { player: P0 };
+    let outcome = runner.cast(spell).resolve();
+
+    let token_ids: Vec<_> = outcome
+        .state()
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|id| outcome.state().objects[id].is_token)
+        .collect();
+    assert_eq!(
+        token_ids.len(),
+        1,
+        "the mixed grammar must still create its token through the cast pipeline"
+    );
+
+    // `cards named Goblin Gathering` is not a complete token keyword clause
+    // and therefore cannot override the descriptor-derived Goblin name. This
+    // assertion fails if late-name parsing returns to its former
+    // nonempty-keyword-list predicate.
+    let token = &outcome.state().objects[&token_ids[0]];
+    assert_eq!(token.name, "Goblin");
+    assert!(token.keywords.contains(&Keyword::Flying));
 }
 
 #[test]
