@@ -1205,7 +1205,7 @@ fn parse_late_token_name_clause(input: &str) -> OracleResult<'_, &str> {
     let (input, _) = tag("with ").parse(input)?;
     let (input, _keywords) = verify(
         recognize(many_till(anychar, peek(tag(" named ")))),
-        |keywords: &&str| !parse_token_keyword_list(keywords).is_empty(),
+        |keywords: &&str| parse_complete_token_keyword_list(keywords).is_some(),
     )
     .parse(input)?;
     let (input, _) = tag(" named ").parse(input)?;
@@ -1734,6 +1734,20 @@ pub(crate) fn parse_token_keyword_list(raw_clause: &str) -> Vec<Keyword> {
         .into_iter()
         .filter_map(map_token_keyword)
         .collect()
+}
+
+/// Parse a token keyword list only when every nonempty fragment is a keyword.
+///
+/// Token suffix extraction intentionally retains recognized keywords around
+/// other defining clauses. Late `with <keywords> named <name>` grammar, on the
+/// other hand, must prove the whole intervening clause is a keyword list before
+/// it can rebind the token name or mask a literal name during normalization.
+pub(crate) fn parse_complete_token_keyword_list(raw_clause: &str) -> Option<Vec<Keyword>> {
+    let fragments = split_token_keyword_list(raw_clause);
+    if fragments.is_empty() {
+        return None;
+    }
+    fragments.into_iter().map(map_token_keyword).collect()
 }
 
 pub(super) fn split_token_keyword_list(text: &str) -> Vec<&str> {
@@ -2863,6 +2877,15 @@ mod tests {
         assert_eq!(kws, vec![Keyword::Flying]);
     }
 
+    #[test]
+    fn complete_token_keyword_list_requires_every_fragment_to_parse() {
+        assert_eq!(
+            parse_complete_token_keyword_list("flying and haste"),
+            Some(vec![Keyword::Flying, Keyword::Haste])
+        );
+        assert_eq!(parse_complete_token_keyword_list("flying and cards"), None);
+    }
+
     /// CR 111.3 + CR 111.4: Crow Storm defines all of this token's
     /// characteristics, including a name distinct from its Bird subtype.
     #[test]
@@ -2945,6 +2968,23 @@ mod tests {
             assert_eq!(name, None, "in {suffix:?}");
             assert_eq!(retained_suffix.as_ref(), suffix, "in {suffix:?}");
         }
+    }
+
+    #[test]
+    fn mixed_keyword_and_nonkeyword_clause_does_not_rebind_the_token_name() {
+        let text =
+            "Create a 1/2 blue Bird creature token with flying and nonsense named Storm Crow.";
+        let effect = try_parse_token(&text.to_lowercase(), text, &mut ParseContext::default())
+            .expect("the token clause must still reach the production token parser");
+        let Effect::Token { name, keywords, .. } = effect else {
+            panic!("expected Token effect, got {effect:?}");
+        };
+
+        assert_eq!(keywords, vec![Keyword::Flying]);
+        assert_eq!(
+            name, "Bird",
+            "a non-keyword clause must not rebind the name"
+        );
     }
 
     #[test]

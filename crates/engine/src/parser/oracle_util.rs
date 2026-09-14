@@ -17,7 +17,7 @@ use nom::combinator::{eof, map_res, opt, peek, recognize, value, verify};
 use nom::multi::many_till;
 use nom::sequence::terminated;
 
-use super::oracle_effect::token::parse_token_keyword_list;
+use super::oracle_effect::token::parse_complete_token_keyword_list;
 
 /// A borrowed pair of `(original, lowercase)` slices kept in lockstep.
 ///
@@ -1828,7 +1828,7 @@ fn parse_late_token_named_literal_prefix(
     let (input, _) = alt((tag("token with "), tag("tokens with "))).parse(input)?;
     let (input, _keywords) = verify(
         recognize(many_till(anychar, peek(tag(" named ")))),
-        |keywords: &&str| !parse_token_keyword_list(keywords).is_empty(),
+        |keywords: &&str| parse_complete_token_keyword_list(keywords).is_some(),
     )
     .parse(input)?;
     let (input, _) = tag(" named ").parse(input)?;
@@ -3080,6 +3080,10 @@ mod tests {
             "token with cards named goblin gathering in your graveyard"
         )
         .is_err());
+        assert!(parse_late_token_named_literal_prefix(
+            "token with flying and cards named goblin gathering"
+        )
+        .is_err());
     }
 
     #[test]
@@ -3111,6 +3115,17 @@ mod tests {
                 "Crow Storm",
             ),
             "Create a 1/2 blue Bird creature token with flying named Storm Crow."
+        );
+    }
+
+    #[test]
+    fn normalize_mixed_token_keyword_clause_does_not_mask_named_operand() {
+        assert_eq!(
+            normalize_card_name_refs(
+                "Create a 1/2 blue Bird creature token with flying and nonsense named Crow Storm.",
+                "Crow Storm",
+            ),
+            "Create a 1/2 blue Bird creature token with flying and nonsense named ~."
         );
     }
 
