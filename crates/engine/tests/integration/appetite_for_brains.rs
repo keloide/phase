@@ -40,7 +40,7 @@ fn appetite_for_brains_skips_choice_when_no_revealed_card_meets_mana_value() {
         .id();
 
     let mut runner = scenario.build();
-    runner.cast(spell).resolve();
+    runner.cast(spell).target_player(P1).resolve();
 
     assert!(
         !matches!(runner.state().waiting_for, WaitingFor::RevealChoice { .. }),
@@ -76,7 +76,7 @@ fn appetite_for_brains_offers_and_exiles_only_mana_value_four_or_greater() {
         .id();
 
     let mut runner = scenario.build();
-    runner.cast(spell).resolve();
+    runner.cast(spell).target_player(P1).resolve();
 
     let eligible = match &runner.state().waiting_for {
         WaitingFor::RevealChoice { cards, .. } => cards,
