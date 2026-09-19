@@ -35,7 +35,7 @@ fn appetite_for_brains_skips_choice_when_no_revealed_card_meets_mana_value() {
     add_black_mana(&mut scenario);
     let spell = add_appetite_for_brains(&mut scenario);
     let mv_three = scenario
-        .add_card_to_hand(P1, "Three-Mana Card")
+        .add_creature_to_hand(P1, "Three-Mana Card", 0, 0)
         .with_mana_cost(ManaCost::generic(3))
         .id();
 
@@ -67,11 +67,11 @@ fn appetite_for_brains_offers_and_exiles_only_mana_value_four_or_greater() {
     add_black_mana(&mut scenario);
     let spell = add_appetite_for_brains(&mut scenario);
     let mv_three = scenario
-        .add_card_to_hand(P1, "Three-Mana Card")
+        .add_creature_to_hand(P1, "Three-Mana Card", 0, 0)
         .with_mana_cost(ManaCost::generic(3))
         .id();
     let mv_four = scenario
-        .add_card_to_hand(P1, "Four-Mana Card")
+        .add_creature_to_hand(P1, "Four-Mana Card", 0, 0)
         .with_mana_cost(ManaCost::generic(4))
         .id();
 
