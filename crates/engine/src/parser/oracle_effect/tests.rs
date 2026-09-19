@@ -30119,6 +30119,68 @@ fn parse_choose_filter_merges_trailing_cmc_suffix() {
 }
 
 #[test]
+fn appetite_for_brains_keeps_bare_card_subject_when_merging_cmc_suffix() {
+    let text = "Target opponent reveals their hand. You choose a card from it with mana value 4 or greater and exile that card.";
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    let Effect::RevealHand {
+        card_filter: TargetFilter::Typed(filter),
+        ..
+    } = def.effect.as_ref()
+    else {
+        panic!(
+            "expected RevealHand with a typed card filter, got {:?}",
+            def.effect
+        );
+    };
+
+    assert!(
+        filter.type_filters.contains(&TypeFilter::Card),
+        "the bare article must retain the card subject, got {filter:?}"
+    );
+    assert!(
+        filter.properties.iter().any(|property| matches!(
+            property,
+            FilterProp::Cmc {
+                comparator: Comparator::GE,
+                value: QuantityExpr::Fixed { value: 4 },
+            }
+        )),
+        "the mana-value restriction must remain reachable, got {filter:?}"
+    );
+    assert!(
+        !filter.type_filters.iter().any(
+            |type_filter| matches!(type_filter, TypeFilter::Subtype(subtype) if subtype == "A")
+        ),
+        "the article must not become subtype A, got {filter:?}"
+    );
+    assert!(
+        matches!(
+            def.sub_ability
+                .as_deref()
+                .map(|ability| ability.effect.as_ref()),
+            Some(Effect::ChangeZone {
+                destination: Zone::Exile,
+                target: TargetFilter::ParentTarget,
+                ..
+            })
+        ),
+        "the chosen card must remain the exile continuation, got {def:?}"
+    );
+}
+
+#[test]
+fn choose_filter_bare_card_from_it_remains_unrestricted() {
+    let mut ctx = ParseContext::default();
+    let filter = parse_choose_filter("you choose a card from it", &mut ctx);
+    assert_eq!(filter, TargetFilter::Any);
+    assert!(
+        ctx.diagnostics.is_empty(),
+        "a bare card choice should not emit target fallback diagnostics: {:?}",
+        ctx.diagnostics
+    );
+}
+
+#[test]
 fn seek_from_among_top_cards_carries_library_limit() {
     let details = parse_seek_details(
         "seek an artifact card from among the top ten cards of your library, then shuffle",

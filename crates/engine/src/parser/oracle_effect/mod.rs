@@ -29452,6 +29452,13 @@ fn parse_choose_filter_leading_body(input: &str) -> &str {
         .unwrap_or(input.trim())
 }
 
+fn is_bare_choose_filter_article(input: &str) -> bool {
+    type E<'a> = OracleError<'a>;
+    all_consuming(alt((tag::<_, _, E>("an"), tag("a"))))
+        .parse(input.trim())
+        .is_ok()
+}
+
 fn trailing_bare_article_only(input: &str) -> bool {
     type E<'a> = OracleError<'a>;
     opt(alt((
@@ -29475,7 +29482,9 @@ fn trailing_bare_article_only(input: &str) -> bool {
 fn combine_choose_filter_parts(filter_part: &str, suffix_part: &str) -> String {
     let filter_part = parse_choose_filter_leading_body(filter_part);
     let suffix = suffix_part.trim();
-    if suffix.is_empty() {
+    if is_bare_choose_filter_article(filter_part) && !suffix.is_empty() {
+        format!("card {suffix}")
+    } else if suffix.is_empty() {
         filter_part.to_string()
     } else if filter_part.is_empty() {
         suffix.to_string()

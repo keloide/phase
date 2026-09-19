@@ -36,6 +36,7 @@ mod angels_grace_2hg;
 mod announce_locked_x_runtime;
 mod another_round_repeat;
 mod anya_merciless_angel_5920;
+mod appetite_for_brains;
 mod april_oneil_card_types_among_spells_cast;
 mod arashin_sovereign_self_tuck;
 mod archdruids_charm_search_destination;
