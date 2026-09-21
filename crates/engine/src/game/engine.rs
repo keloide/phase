@@ -16006,6 +16006,7 @@ pub(super) fn begin_pending_trigger_target_selection(
                 }
                 return Ok(Some(WaitingFor::OptionalEffectChoice {
                     player,
+                    decision_subject_id: None,
                     source_id,
                     description: trigger_description,
                     may_trigger_key,
@@ -22549,6 +22550,7 @@ mod stage2_injector_tests {
         });
         state.waiting_for = WaitingFor::OptionalEffectChoice {
             player: asked,
+            decision_subject_id: None,
             source_id: src,
             description: None,
             may_trigger_key: None,

@@ -359,6 +359,7 @@ fn handle_opponent_may_choice_inner(
     let WaitingFor::OpponentMayChoice {
         player: promptee,
         remaining,
+        decision_subject_id,
         source_id,
         description,
     } = waiting_for
@@ -390,6 +391,7 @@ fn handle_opponent_may_choice_inner(
                 if let Some((&next, rest)) = remaining.split_first() {
                     state.waiting_for = WaitingFor::OpponentMayChoice {
                         player: next,
+                        decision_subject_id,
                         source_id,
                         description,
                         remaining: rest.to_vec(),
@@ -498,6 +500,7 @@ fn handle_opponent_may_choice_inner(
                     let rest = remaining[1..].to_vec();
                     state.waiting_for = WaitingFor::OpponentMayChoice {
                         player: next,
+                        decision_subject_id,
                         source_id,
                         description,
                         remaining: rest,
@@ -533,6 +536,7 @@ fn handle_opponent_may_choice_inner(
         let rest = remaining[1..].to_vec();
         state.waiting_for = WaitingFor::OpponentMayChoice {
             player: next,
+            decision_subject_id,
             source_id,
             description,
             remaining: rest,
@@ -2878,6 +2882,90 @@ mod tests {
         }
     }
 
+    fn opponent_may_state(effect: Effect, remaining: Vec<PlayerId>) -> GameState {
+        let mut state = GameState::new(crate::types::format::FormatConfig::standard(), 3, 42);
+        let mut ability = ResolvedAbility::new(effect, vec![], ObjectId(100), PlayerId(0));
+        ability.optional = true;
+        ability.optional_for = Some(crate::types::ability::OpponentMayScope::AnyPlayer);
+        state.push_optional_effect_frame(OptionalEffectFrame {
+            ability: Box::new(ability),
+            trigger_event: None,
+            trigger_events: Vec::new(),
+            trigger_match_count: None,
+        });
+        state.waiting_for = WaitingFor::OpponentMayChoice {
+            player: PlayerId(0),
+            decision_subject_id: Some(ObjectId(44)),
+            source_id: ObjectId(100),
+            description: Some("optional test effect".to_string()),
+            remaining,
+        };
+        state
+    }
+
+    #[test]
+    fn opponent_may_reprompts_preserve_latched_subject_until_terminal_resolution() {
+        let mut state = opponent_may_state(gain_life(1), vec![PlayerId(1), PlayerId(2)]);
+
+        for (actor, next) in [(PlayerId(0), PlayerId(1)), (PlayerId(1), PlayerId(2))] {
+            crate::game::engine::apply(
+                &mut state,
+                actor,
+                GameAction::DecideOptionalEffect { accept: false },
+            )
+            .expect("decline advances to the next APNAP participant");
+            assert!(matches!(
+                state.waiting_for,
+                WaitingFor::OpponentMayChoice {
+                    player,
+                    decision_subject_id: Some(ObjectId(44)),
+                    ..
+                } if player == next
+            ));
+            assert!(
+                state.active_optional_effect_frame().is_some(),
+                "the parked resolution authority remains until the terminal answer"
+            );
+        }
+
+        crate::game::engine::apply(
+            &mut state,
+            PlayerId(2),
+            GameAction::DecideOptionalEffect { accept: false },
+        )
+        .expect("terminal decline resolves the parked frame");
+        assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
+        assert!(state.active_optional_effect_frame().is_none());
+    }
+
+    #[test]
+    fn opponent_may_infeasible_accept_reprompt_preserves_latched_subject() {
+        let effect = Effect::Sacrifice {
+            target: TargetFilter::Typed(TypedFilter::creature()),
+            count: QuantityExpr::Fixed { value: 1 },
+            min_count: 0,
+        };
+        let mut state = opponent_may_state(effect, vec![PlayerId(1)]);
+
+        crate::game::engine::apply(
+            &mut state,
+            PlayerId(0),
+            GameAction::DecideOptionalEffect { accept: true },
+        )
+        .expect("an accepted choice with no legal object advances to the next player");
+
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::OpponentMayChoice {
+                player: PlayerId(1),
+                decision_subject_id: Some(ObjectId(44)),
+                remaining,
+                ..
+            } if remaining.is_empty()
+        ));
+        assert!(state.active_optional_effect_frame().is_some());
+    }
+
     #[test]
     fn declining_optional_effect_resolves_not_if_you_do_subability() {
         let mut state = GameState::new_two_player(42);
@@ -2898,6 +2986,7 @@ mod tests {
         state.waiting_for = WaitingFor::OptionalEffectChoice {
             player: PlayerId(0),
             source_id: ObjectId(100),
+            decision_subject_id: None,
             description: None,
             may_trigger_key: None,
             same_card_may_trigger_choice_available: false,
@@ -2930,6 +3019,7 @@ mod tests {
         state.waiting_for = WaitingFor::OptionalEffectChoice {
             player: PlayerId(0),
             source_id: ObjectId(100),
+            decision_subject_id: None,
             description: None,
             may_trigger_key: None,
             same_card_may_trigger_choice_available: false,
@@ -2968,6 +3058,7 @@ mod tests {
         state.waiting_for = WaitingFor::OptionalEffectChoice {
             player: PlayerId(0),
             source_id: ObjectId(100),
+            decision_subject_id: None,
             description: None,
             may_trigger_key: None,
             same_card_may_trigger_choice_available: false,
@@ -3003,6 +3094,7 @@ mod tests {
         state.waiting_for = WaitingFor::OptionalEffectChoice {
             player: PlayerId(0),
             source_id: ObjectId(100),
+            decision_subject_id: None,
             description: None,
             may_trigger_key: None,
             same_card_may_trigger_choice_available: false,
@@ -3036,6 +3128,7 @@ mod tests {
         state.waiting_for = WaitingFor::OptionalEffectChoice {
             player: PlayerId(0),
             source_id: ObjectId(100),
+            decision_subject_id: None,
             description: None,
             may_trigger_key: None,
             same_card_may_trigger_choice_available: false,
@@ -3068,6 +3161,7 @@ mod tests {
         state.waiting_for = WaitingFor::OptionalEffectChoice {
             player: PlayerId(0),
             source_id: ObjectId(100),
+            decision_subject_id: None,
             description: None,
             may_trigger_key: None,
             same_card_may_trigger_choice_available: false,
@@ -3100,6 +3194,7 @@ mod tests {
         state.waiting_for = WaitingFor::OptionalEffectChoice {
             player: PlayerId(0),
             source_id,
+            decision_subject_id: None,
             description: None,
             may_trigger_key: Some(key.clone()),
             same_card_may_trigger_choice_available: false,
@@ -3111,6 +3206,7 @@ mod tests {
             WaitingFor::OptionalEffectChoice {
                 player: PlayerId(0),
                 source_id,
+                decision_subject_id: None,
                 description: None,
                 may_trigger_key: Some(key.clone()),
                 same_card_may_trigger_choice_available: false,
@@ -3136,6 +3232,7 @@ mod tests {
             WaitingFor::OptionalEffectChoice {
                 player: PlayerId(0),
                 source_id: ObjectId(100),
+                decision_subject_id: None,
                 description: None,
                 may_trigger_key: None,
                 same_card_may_trigger_choice_available: false,
