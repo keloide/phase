@@ -13,11 +13,12 @@ type OptionalEffectWaitingFor = Extract<
   WaitingFor,
   { type: "OptionalEffectChoice" | "OpponentMayChoice" }
 >;
+type OptionalEffectChoiceWaitingFor = Extract<WaitingFor, { type: "OptionalEffectChoice" }>;
 
 function optionalWaitingFor(
-  mayTriggerKey?: OptionalEffectWaitingFor["data"]["may_trigger_key"],
+  mayTriggerKey?: OptionalEffectChoiceWaitingFor["data"]["may_trigger_key"],
   sameCardAvailable = false,
-): Extract<WaitingFor, { type: "OptionalEffectChoice" }> {
+): OptionalEffectChoiceWaitingFor {
   return optionalEffectChoiceWaitingForFactory
     .withData({
       player: 0,
@@ -189,7 +190,7 @@ describe("OptionalEffectModalContent", () => {
   });
 
   it("resets the same-card checkbox for each prompt", () => {
-    const keyed: NonNullable<OptionalEffectWaitingFor["data"]["may_trigger_key"]> = {
+    const keyed: NonNullable<OptionalEffectChoiceWaitingFor["data"]["may_trigger_key"]> = {
       player: 0,
       source_id: 100,
       origin: { type: "Printed", trigger_index: 0 },

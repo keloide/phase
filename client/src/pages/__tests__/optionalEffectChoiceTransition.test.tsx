@@ -265,7 +265,7 @@ describe("issue #459 — optional + targeted landfall trigger prompt sequence", 
 
     act(() => {
       useGameStore.setState({
-        gameMode: "multiplayer",
+        gameMode: "online",
         gameState: state,
         waitingFor: state.waiting_for,
       });
