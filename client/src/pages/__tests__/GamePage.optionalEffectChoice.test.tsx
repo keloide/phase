@@ -10,11 +10,6 @@ import { gameObjectFactory } from "../../test/factories/gameObjectFactory.ts";
 import { gameStateFactory } from "../../test/factories/gameStateFactory.ts";
 import { GamePage } from "../GamePage.tsx";
 
-const { mockCanActForWaitingState, routedSeat } = vi.hoisted(() => ({
-  mockCanActForWaitingState: vi.fn(() => true),
-  routedSeat: { current: 0 },
-}));
-
 vi.mock("../../providers/GameProvider.tsx", () => ({
   GameProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
@@ -36,13 +31,6 @@ vi.mock("../../hooks/useCardImage.ts", () => ({
     isRotated: false,
     isFlip: false,
   })),
-}));
-
-vi.mock("../../hooks/usePlayerId.ts", () => ({
-  usePlayerId: () => routedSeat.current,
-  usePerspectivePlayerId: () => routedSeat.current,
-  useCanActForWaitingState: mockCanActForWaitingState,
-  waitingPlayer: () => 0,
 }));
 
 vi.mock("../../hooks/useIsMobile.ts", () => ({
@@ -137,8 +125,6 @@ describe("GamePage optional-effect routed player gate", () => {
       .build();
 
     act(() => {
-      routedSeat.current = 0;
-      mockCanActForWaitingState.mockReturnValue(true);
       useGameStore.setState({
         gameId: "optional-choice",
         gameMode: "online",
@@ -166,7 +152,6 @@ describe("GamePage optional-effect routed player gate", () => {
     const view = renderGamePage();
 
     expect(useGameStore.getState().waitingFor?.type).toBe("OptionalEffectChoice");
-    expect(mockCanActForWaitingState).toHaveBeenCalled();
     expect(
       await screen.findByRole("dialog", { name: "Bre of Clan Stoutarm - Optional Effect" }),
     ).toBeInTheDocument();
@@ -175,8 +160,6 @@ describe("GamePage optional-effect routed player gate", () => {
     expect(screen.queryByRole("img", { name: "Bre of Clan Stoutarm" })).not.toBeInTheDocument();
 
     act(() => {
-      routedSeat.current = 1;
-      mockCanActForWaitingState.mockReturnValue(false);
       useMultiplayerStore.setState({ activePlayerId: 1 });
       view.rerender(gamePageTree());
     });
