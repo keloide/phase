@@ -9,6 +9,15 @@ import {
 } from "../../../test/factories/gameStateFactory.ts";
 import { OptionalEffectModalContent } from "../OptionalEffectModal.tsx";
 
+vi.mock("../../../hooks/useCardImage.ts", () => ({
+  useCardImage: vi.fn(() => ({
+    src: null,
+    isLoading: false,
+    isRotated: false,
+    isFlip: false,
+  })),
+}));
+
 type OptionalEffectWaitingFor = Extract<
   WaitingFor,
   { type: "OptionalEffectChoice" | "OpponentMayChoice" }
@@ -72,7 +81,8 @@ describe("OptionalEffectModalContent", () => {
     expect(
       screen.getByRole("dialog", { name: "Bre of Clan Stoutarm - Optional Effect" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Grizzly Bears")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Grizzly Bears" })).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "Bre of Clan Stoutarm" })).not.toBeInTheDocument();
   });
 
   it.each([undefined, 999])(
@@ -90,7 +100,7 @@ describe("OptionalEffectModalContent", () => {
 
       renderModal(waitingFor, { [bre.id]: bre });
 
-      expect(screen.getAllByText("Bre of Clan Stoutarm")).not.toHaveLength(0);
+      expect(screen.getByRole("img", { name: "Bre of Clan Stoutarm" })).toBeInTheDocument();
     },
   );
 

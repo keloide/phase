@@ -27,7 +27,7 @@
  * `OptionalEffectModal` appears. The class under test is "two seats
  * dispatching the same action type across a multi-stage prompt sequence".
  */
-import { act, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -50,6 +50,15 @@ import { usePreferencesStore } from "../../stores/preferencesStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { buildGameObjectWithCoreTypes, buildObjectMap, gameObjectFactory } from "../../test/factories/gameObjectFactory.ts";
 import { buildGameState, buildPlayers, buildPriorityWaitingFor, buildStackEntry, gameStateFactory, optionalEffectChoiceWaitingForFactory } from "../../test/factories/gameStateFactory.ts";
+
+vi.mock("../../hooks/useCardImage.ts", () => ({
+  useCardImage: vi.fn(() => ({
+    src: null,
+    isLoading: false,
+    isRotated: false,
+    isFlip: false,
+  })),
+}));
 
 // ── Engine-shaped fixtures ──────────────────────────────────────────────
 
@@ -203,6 +212,7 @@ describe("issue #459 — optional + targeted landfall trigger prompt sequence", 
   });
 
   afterEach(() => {
+    cleanup();
     act(() => {
       useGameStore.setState({ gameState: null, waitingFor: null, adapter: null });
       useMultiplayerStore.setState({ activePlayerId: null, isSpectator: false });
@@ -274,7 +284,8 @@ describe("issue #459 — optional + targeted landfall trigger prompt sequence", 
     const { rerender } = render(<GameDialogHarness />);
 
     expect(screen.getByRole("button", { name: /yes/i })).toBeInTheDocument();
-    expect(screen.getByText("Grizzly Bears")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Grizzly Bears" })).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "Bre of Clan Stoutarm" })).not.toBeInTheDocument();
 
     act(() => {
       useMultiplayerStore.setState({ activePlayerId: 1 });
@@ -282,6 +293,6 @@ describe("issue #459 — optional + targeted landfall trigger prompt sequence", 
     rerender(<GameDialogHarness />);
 
     expect(screen.queryByRole("button", { name: /yes/i })).not.toBeInTheDocument();
-    expect(screen.queryByText("Grizzly Bears")).not.toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "Grizzly Bears" })).not.toBeInTheDocument();
   });
 });
