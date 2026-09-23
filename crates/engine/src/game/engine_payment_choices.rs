@@ -2977,7 +2977,7 @@ mod tests {
         .expect("an accepted choice with no legal object advances to the next player");
 
         assert!(matches!(
-            state.waiting_for,
+            &state.waiting_for,
             WaitingFor::OpponentMayChoice {
                 player: PlayerId(1),
                 decision_subject_id: Some(ObjectId(44)),
