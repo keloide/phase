@@ -1400,10 +1400,10 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         }
     }
 
-    // Optional prompts transport only a display identity. Apply the same
-    // post-projection identity check used by other interactive payloads so a
-    // private-zone or face-down object cannot leak through the prompt. The
-    // authoritative state's latched ID remains untouched.
+    // CR 400.2 + CR 708.5: Hidden-zone and face-down identities are shown only
+    // to a viewer entitled to look. Optional prompts transport a display
+    // identity, so apply the shared post-projection identity check without
+    // changing the authoritative state's latched ID.
     let optional_decision_subject_id = match &filtered.waiting_for {
         WaitingFor::OptionalEffectChoice {
             decision_subject_id,
