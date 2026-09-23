@@ -2890,6 +2890,7 @@ mod tests {
         ManaContribution, ManaProduction, QuantityExpr, ResolvedAbility, SacrificeCost,
         SubAbilityLink, TriggerDefinition, TypedFilter,
     };
+    use crate::types::actions::GameAction;
     use crate::types::card_type::CoreType;
     use crate::types::game_state::{AutoMayChoice, MayTriggerAutoChoiceKey, MayTriggerOrigin};
     use crate::types::identifiers::{CardId, ObjectId};
