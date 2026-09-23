@@ -26,12 +26,16 @@
 //! are documented at their helpers below.
 
 use engine::game::combat::AttackTarget;
+use engine::game::effects::deal_damage;
+use engine::game::layers::evaluate_layers;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::ability::{
-    AbilityKind, CombatDamageScope, PreventionAmount, ReplacementDefinition, RestrictionExpiry,
-    ShieldKind, TargetFilter,
+    AbilityKind, CombatDamageScope, Effect, PreventionAmount, QuantityExpr, ReplacementDefinition,
+    ResolvedAbility, RestrictionExpiry, ShieldKind, TargetFilter, TargetRef,
 };
 use engine::types::actions::GameAction;
+use engine::types::card_type::CoreType;
+use engine::types::events::GameEvent;
 use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaCost;
@@ -67,6 +71,9 @@ const SEWERS_OF_ESTARK_TEXT: &str = "Choose target creature. If it's attacking, 
 /// Verbatim Awe Strike — a one-shot prevention shield, deliberately never
 /// consumed in T4.
 const AWE_STRIKE_TEXT: &str = "The next time target creature would deal damage this turn, prevent that damage. You gain life equal to the damage prevented this way.";
+
+const ARGIVIAN_BLACKSMITH_TEXT: &str =
+    "{T}: Prevent the next 2 damage that would be dealt to target artifact creature this turn.";
 
 fn free_cost() -> ManaCost {
     ManaCost::Cost {
@@ -105,6 +112,43 @@ fn stock_libraries(scenario: &mut GameScenario) {
         P1,
         &["F1a", "F1b", "F1c", "F1d", "F1e", "F1f", "F1g", "F1h"],
     );
+}
+
+/// `CardBuilder::as_artifact` replaces Creature, so add Artifact directly for
+/// an artifact creature while preserving its creature type and base types.
+fn make_artifact_creature(runner: &mut GameRunner, id: ObjectId) {
+    let object = runner.state_mut().objects.get_mut(&id).unwrap();
+    object.card_types.core_types.push(CoreType::Artifact);
+    object.base_card_types = object.card_types.clone();
+    evaluate_layers(runner.state_mut());
+    let types = &runner.state().objects[&id].card_types.core_types;
+    assert!(types.contains(&CoreType::Creature));
+    assert!(types.contains(&CoreType::Artifact));
+}
+
+/// Deliver a plain noncombat damage event through the production damage and
+/// replacement pipeline, independently of any damage spell's parser.
+fn deal_noncombat_damage(
+    runner: &mut GameRunner,
+    source: ObjectId,
+    recipient: ObjectId,
+    amount: i32,
+) -> Vec<GameEvent> {
+    let ability = ResolvedAbility::new(
+        Effect::DealDamage {
+            amount: QuantityExpr::Fixed { value: amount },
+            target: TargetFilter::Any,
+            damage_source: None,
+            excess: None,
+        },
+        vec![TargetRef::Object(recipient)],
+        source,
+        P0,
+    );
+    let mut events = Vec::new();
+    deal_damage::resolve(runner.state_mut(), &ability, &mut events)
+        .expect("noncombat damage must resolve");
+    events
 }
 
 /// Cross exactly one turn boundary.
@@ -430,6 +474,190 @@ fn oneshot_prevention_shield_expires_at_cleanup() {
         runner.state().players[0].life,
         life_before - 3,
         "the shielded creature's damage must land next turn"
+    );
+}
+
+/// CR 615.3 + CR 615.7: Once Argivian Blacksmith's ability resolves, the
+/// two-point shield protects the chosen object for its stated duration even
+/// if that object ceases to be an artifact. The artifact-creature restriction
+/// determines which object can be targeted, not whether a later damage event
+/// matches the already-created shield.
+#[test]
+fn argivian_blacksmith_shield_tracks_chosen_object_after_type_change() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let blacksmith = scenario
+        .add_creature_from_oracle(P0, "Argivian Blacksmith", 1, 1, ARGIVIAN_BLACKSMITH_TEXT)
+        .id();
+    let chosen = scenario.add_creature(P1, "Chosen Golem", 5, 5).id();
+    let other = scenario.add_creature(P1, "Other Golem", 5, 5).id();
+    let mut runner = scenario.build();
+    make_artifact_creature(&mut runner, chosen);
+    make_artifact_creature(&mut runner, other);
+
+    assert_eq!(runner.state().objects[&blacksmith].abilities.len(), 1);
+    runner
+        .activate(blacksmith, 0)
+        .target_object(chosen)
+        .resolve();
+    let chosen_object = &runner.state().objects[&chosen];
+    assert_eq!(chosen_object.replacement_definitions.len(), 1);
+    assert_eq!(
+        chosen_object.replacement_definitions[0].valid_card,
+        Some(TargetFilter::SelfRef),
+        "the installed shield must bind to its chosen object"
+    );
+    assert_eq!(
+        chosen_object.replacement_definitions[0].shield_kind,
+        ShieldKind::Prevention {
+            amount: PreventionAmount::Next(2)
+        }
+    );
+    assert!(runner.state().objects[&other]
+        .replacement_definitions
+        .is_empty());
+
+    // Model a later type-changing effect and force the same layer reseed that
+    // production actions run. Keep the base type in sync so this controlled
+    // state change persists across the next spell's layer evaluation.
+    let chosen_object = runner.state_mut().objects.get_mut(&chosen).unwrap();
+    chosen_object.card_types.core_types = vec![CoreType::Creature];
+    chosen_object.base_card_types.core_types = vec![CoreType::Creature];
+    evaluate_layers(runner.state_mut());
+    assert_eq!(
+        runner.state().objects[&chosen].card_types.core_types,
+        vec![CoreType::Creature]
+    );
+    assert_eq!(
+        runner.state().objects[&chosen]
+            .replacement_definitions
+            .len(),
+        1
+    );
+
+    let unchosen = deal_noncombat_damage(&mut runner, blacksmith, other, 2);
+    assert!(!unchosen
+        .iter()
+        .any(|event| matches!(event, GameEvent::DamagePrevented { .. })));
+    assert_eq!(runner.state().objects[&other].damage_marked, 2);
+    assert_eq!(
+        runner.state().objects[&chosen].replacement_definitions[0].shield_kind,
+        ShieldKind::Prevention {
+            amount: PreventionAmount::Next(2)
+        },
+        "damage to another object must leave the chosen object's shield intact"
+    );
+
+    let first = deal_noncombat_damage(&mut runner, blacksmith, chosen, 1);
+    assert_eq!(
+        first
+            .iter()
+            .filter(|event| matches!(event, GameEvent::DamagePrevented { amount: 1, .. }))
+            .count(),
+        1,
+        "the first point must be prevented by the live shield"
+    );
+    assert_eq!(runner.state().objects[&chosen].damage_marked, 0);
+    let second = deal_noncombat_damage(&mut runner, blacksmith, chosen, 2);
+    assert_eq!(
+        second
+            .iter()
+            .filter(|event| matches!(event, GameEvent::DamagePrevented { amount: 1, .. }))
+            .count(),
+        1,
+        "one remaining point of the shield must be prevented"
+    );
+    assert_eq!(runner.state().objects[&chosen].damage_marked, 1);
+}
+
+/// CR 514.2: An unused shield from Argivian Blacksmith's "this turn"
+/// ability expires at cleanup even when its host remains on the battlefield.
+#[test]
+fn argivian_blacksmith_unspent_shield_expires_at_cleanup() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    stock_libraries(&mut scenario);
+    let blacksmith = scenario
+        .add_creature_from_oracle(P0, "Argivian Blacksmith", 1, 1, ARGIVIAN_BLACKSMITH_TEXT)
+        .id();
+    let target = scenario.add_creature(P1, "Artifact Bear", 5, 5).id();
+    let mut runner = scenario.build();
+    make_artifact_creature(&mut runner, target);
+
+    runner
+        .activate(blacksmith, 0)
+        .target_object(target)
+        .resolve();
+    assert_eq!(
+        runner.state().objects[&target]
+            .replacement_definitions
+            .len(),
+        1
+    );
+    cross_boundary(&mut runner);
+    assert_eq!(
+        runner.state().active_player,
+        P1,
+        "turn crossing must complete"
+    );
+    assert!(runner.state().objects[&target]
+        .replacement_definitions
+        .is_empty());
+}
+
+/// CR 608.2b: The target restriction still matters while the ability is on
+/// the stack. Losing artifact before resolution makes its sole target illegal.
+#[test]
+fn argivian_blacksmith_illegal_target_gets_no_shield() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let blacksmith = scenario
+        .add_creature_from_oracle(P0, "Argivian Blacksmith", 1, 1, ARGIVIAN_BLACKSMITH_TEXT)
+        .id();
+    let target = scenario.add_creature(P1, "Artifact Bear", 5, 5).id();
+    let mut runner = scenario.build();
+    make_artifact_creature(&mut runner, target);
+
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: blacksmith,
+            ability_index: 0,
+        })
+        .expect("Argivian Blacksmith's ability must activate");
+    let WaitingFor::TargetSelection { target_slots, .. } = &runner.state().waiting_for else {
+        panic!("activation must request its printed target");
+    };
+    assert!(
+        target_slots[0]
+            .legal_targets
+            .contains(&engine::types::ability::TargetRef::Object(target)),
+        "the artifact creature must be legal when the target is chosen"
+    );
+    runner
+        .act(GameAction::ChooseTarget {
+            target: engine::types::ability::TargetRef::Object(target),
+        })
+        .expect("target selection must succeed");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::Priority { .. }
+    ));
+
+    let target_object = runner.state_mut().objects.get_mut(&target).unwrap();
+    target_object.card_types.core_types = vec![CoreType::Creature];
+    target_object.base_card_types.core_types = vec![CoreType::Creature];
+    evaluate_layers(runner.state_mut());
+    assert_eq!(
+        runner.state().objects[&target].card_types.core_types,
+        vec![CoreType::Creature]
+    );
+    runner.advance_until_stack_empty();
+    assert_eq!(runner.state().objects[&target].zone, Zone::Battlefield);
+    assert!(
+        runner.state().objects[&target]
+            .replacement_definitions
+            .is_empty(),
+        "an illegal target must not receive a shield at resolution"
     );
 }
 

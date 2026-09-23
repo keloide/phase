@@ -663,16 +663,14 @@ pub fn resolve(
         for selected_target in &ability.targets {
             match selected_target {
                 TargetRef::Object(obj_id) => {
-                    // CR 614.1a: When the shield is hosted on a specific object,
-                    // scope it via `valid_card: SelfRef` so it only fires on
-                    // damage to its host — not damage to any object on the
-                    // battlefield. Mirrors the inline-test pattern for
-                    // host-bound prevention shields (e.g., Phyrexian Hydra,
-                    // Gatta and Luzzu's chosen creature).
+                    // CR 608.2b + CR 615.3 + CR 615.7: Resolution binds this
+                    // shield to the chosen object. The target's type was
+                    // checked when the ability resolved; retaining that filter
+                    // would make later type changes end a still-live, unspent
+                    // shield. SelfRef matches only the host object and survives
+                    // such changes.
                     let mut object_shield = shield.clone();
-                    if object_shield.valid_card.is_none() {
-                        object_shield.valid_card = Some(TargetFilter::SelfRef);
-                    }
+                    object_shield.valid_card = Some(TargetFilter::SelfRef);
                     if let Some(obj) = state.objects.get_mut(obj_id) {
                         // CR 611.2c + CR 613.1: install through the one
                         // resolution-install authority so the CR 613.1 layer reseed
