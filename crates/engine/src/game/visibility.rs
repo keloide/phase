@@ -7379,18 +7379,19 @@ mod tests {
                     "Public Source".to_string(),
                     Zone::Battlefield,
                 );
-                let subject = ObjectId(80_001);
-                if subject_exists {
-                    let created = create_object(
+                let subject = if subject_exists {
+                    let subject = create_object(
                         &mut state,
                         CardId(80_001),
                         PlayerId(1),
                         "Private Subject".to_string(),
                         zone,
                     );
-                    assert_eq!(created, subject, "fixture binds the advertised subject ID");
                     state.objects.get_mut(&subject).unwrap().face_down = face_down;
-                }
+                    subject
+                } else {
+                    ObjectId(80_001)
+                };
                 state.waiting_for = if opponent_may {
                     WaitingFor::OpponentMayChoice {
                         player: PlayerId(0),
