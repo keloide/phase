@@ -191,7 +191,10 @@ fn hive_activation_grants_menace_and_keeps_land_type() {
 #[test]
 fn malformed_keyword_tail_declines_the_whole_animation() {
     let good = r#"{3}{B}: Until end of turn, this land becomes a 3/3 black Beholder creature with menace and "Whenever this creature attacks, exile target card from defending player's graveyard." It's still a land."#;
-    let bad = r#"{3}{B}: Until end of turn, this land becomes a 3/3 black Beholder creature with menace and gibberish and "Whenever this creature attacks, exile target card from defending player's graveyard." It's still a land."#;
+    let bad_clauses = [
+        r#"{3}{B}: Until end of turn, this land becomes a 3/3 black Beholder creature with menace and gibberish and "Whenever this creature attacks, exile target card from defending player's graveyard." It's still a land."#,
+        r#"{3}{B}: Until end of turn, this land becomes a 3/3 black Beholder creature with vanishing 3 if that creature doesn't have vanishing and "Whenever this creature attacks, exile target card from defending player's graveyard." It's still a land."#,
+    ];
     let parse =
         |text| parse_oracle_text(text, "Animation Test Land", &[], &["Land".to_string()], &[]);
     let good = parse(good);
@@ -207,17 +210,19 @@ fn malformed_keyword_tail_declines_the_whole_animation() {
         ),
         "valid animation must parse"
     );
-    let bad = parse(bad);
-    assert_eq!(
-        bad.abilities.len(),
-        1,
-        "invalid keyword must stay visible: {bad:?}"
-    );
-    assert!(
-        matches!(
-            bad.abilities[0].effect.as_ref(),
-            Effect::Unimplemented { .. }
-        ),
-        "invalid keyword must not leave a type-only animation: {bad:?}"
-    );
+    for clause in bad_clauses {
+        let bad = parse(clause);
+        assert_eq!(
+            bad.abilities.len(),
+            1,
+            "invalid keyword must stay visible: {bad:?}"
+        );
+        assert!(
+            matches!(
+                bad.abilities[0].effect.as_ref(),
+                Effect::Unimplemented { .. }
+            ),
+            "invalid keyword must not leave a type-only animation: {bad:?}"
+        );
+    }
 }

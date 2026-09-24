@@ -3,7 +3,7 @@ use std::str::FromStr;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_till, take_until};
 use nom::character::complete::{multispace0, multispace1, satisfy};
-use nom::combinator::{cut, eof, opt, peek, recognize, value};
+use nom::combinator::{all_consuming, cut, eof, opt, peek, recognize, value};
 use nom::multi::{many0, separated_list1};
 use nom::sequence::{pair, preceded};
 use nom::Parser;
@@ -12,7 +12,7 @@ use super::super::oracle_nom::error::{oracle_err, OracleError, OracleResult};
 use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_nom::quantity as nom_quantity;
 use super::super::oracle_util::parse_count_expr;
-use super::token::{parse_complete_token_keyword_list, push_unique_string, title_case_word};
+use super::token::{push_unique_string, split_token_keyword_list, title_case_word};
 use crate::parser::oracle_ir::ast::*;
 use crate::parser::oracle_ir::context::ParseContext;
 use crate::parser::oracle_nom::bridge::nom_on_lower;
@@ -924,8 +924,9 @@ fn parse_animation_keyword_text(input: &str) -> OracleResult<'_, &str> {
     }
 }
 
-/// CR 613.1f: every nonempty animation keyword list must lower completely.
-/// An empty list is valid only when the following quoted ability is the grant.
+/// CR 613.1f: animation keyword grants apply in layer 6. Reject a list unless
+/// every keyword is modeled completely; an empty list is valid only before a
+/// quoted ability grant.
 fn parse_animation_keywords(raw_clause: &str, remaining: &str) -> Option<Vec<Keyword>> {
     // allow-noncombinator: punctuation and suffix cleanup after nom isolated the clause.
     let keyword_text = raw_clause
@@ -947,7 +948,30 @@ fn parse_animation_keywords(raw_clause: &str, remaining: &str) -> Option<Vec<Key
             .ok()
             .map(|_| Vec::new());
     }
-    parse_complete_token_keyword_list(&keyword_text.to_ascii_lowercase())
+    parse_complete_animation_keyword_list(&keyword_text.to_ascii_lowercase())
+}
+
+/// This grammar owns the entire isolated keyword list. The permissive token
+/// grant parser may discard a host clause, so use the remainder-checking
+/// keyword fragment parser for each comma/conjunction-separated component.
+fn parse_complete_animation_keyword_list(raw_clause: &str) -> Option<Vec<Keyword>> {
+    let fragments = split_token_keyword_list(raw_clause);
+    if fragments.is_empty() {
+        return None;
+    }
+    fragments
+        .into_iter()
+        .map(|fragment| {
+            if all_consuming(tag::<_, _, OracleError<'_>>("all creature types"))
+                .parse(fragment)
+                .is_ok()
+            {
+                Some(Keyword::Changeling)
+            } else {
+                super::super::oracle_keyword::parse_router_keyword_fragment(fragment)
+            }
+        })
+        .collect()
 }
 
 /// Cut a trailing "that's/that is/it's/they're still a[n] <type>" rider off a
@@ -1059,7 +1083,7 @@ pub(crate) fn parse_animation_conjunct_keywords(tail: &str) -> Option<Vec<Keywor
     // The shared splitter recognizes lowercase separators, so normalize the
     // conjunct before asking the strict keyword-list authority to map it.
     let keyword_text = tail.trim_end_matches('.').trim().to_ascii_lowercase();
-    parse_complete_token_keyword_list(&keyword_text)
+    parse_complete_animation_keyword_list(&keyword_text)
 }
 
 #[cfg(test)]
@@ -1087,6 +1111,7 @@ mod test_den_bugbear {
         for text in [
             r#"a 3/3 black Beholder creature with menace and gibberish and "Whenever this creature attacks, exile target card.""#,
             "a 3/3 black Beholder creature with menace and gibberish",
+            "a 3/3 black Beholder creature with vanishing 3 if that creature doesn't have vanishing",
         ] {
             assert!(
                 parse_animation_spec(text, &mut ParseContext::default()).is_none(),
@@ -1113,6 +1138,12 @@ mod test_den_bugbear {
         assert!(matches!(
             parse_animation_base_pt_clause(
                 "Dragon with base power and toughness 4/4, flying and nonsense"
+            ),
+            Err(nom::Err::Failure(_))
+        ));
+        assert!(matches!(
+            parse_animation_base_pt_clause(
+                "Dragon with base power and toughness 4/4, vanishing 3 if that creature doesn't have vanishing"
             ),
             Err(nom::Err::Failure(_))
         ));
