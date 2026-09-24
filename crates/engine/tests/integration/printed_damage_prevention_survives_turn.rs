@@ -635,7 +635,7 @@ fn argivian_blacksmith_illegal_target_gets_no_shield() {
     );
     runner
         .act(GameAction::ChooseTarget {
-            target: engine::types::ability::TargetRef::Object(target),
+            target: Some(engine::types::ability::TargetRef::Object(target)),
         })
         .expect("target selection must succeed");
     assert!(matches!(
