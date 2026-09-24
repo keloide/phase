@@ -1703,6 +1703,7 @@ mod event_deadline_duration;
 mod exchange_control_of_a_spell;
 mod exploit_ceased_exploiter_lki;
 mod extra_turn_quantity;
+mod issue_9214_animation_quoted_keywords;
 mod optional_chain_link_prompt_description;
 mod planeswalker_token;
 mod ripple_reveal_choice_interaction;

@@ -510,34 +510,33 @@ pub(crate) fn parse_collection_counter_play_permission_static(
 fn animated_additive_span_pt_and_keywords(
     span: &str,
     span_lower: &str,
-) -> Vec<ContinuousModification> {
+) -> Option<Vec<ContinuousModification>> {
     // The article belongs to the span ("a 4/4 …"), so peel it with the shared
     // `parse_article` primitive before testing for the leading P/T.
     let after_article_lower =
         nom_primitives::parse_article(span_lower).map_or(span_lower, |(rest, ())| rest);
     if super::oracle_effect::animation::parse_fixed_become_pt_prefix(after_article_lower).is_none()
     {
-        return Vec::new();
+        return Some(Vec::new());
     }
-    let Some(spec) =
-        super::oracle_effect::animation::parse_animation_spec(span, &mut ParseContext::default())
-    else {
-        return Vec::new();
-    };
+    let spec =
+        super::oracle_effect::animation::parse_animation_spec(span, &mut ParseContext::default())?;
     // Keep ONLY the two axes the word-split cannot produce. Types, subtypes,
     // supertypes and color are deliberately left to the word-split, which is the
     // only one of the two that sees a compound span in full.
-    super::oracle_effect::animation::animation_modifications(&spec)
-        .into_iter()
-        .filter(|modification| {
-            matches!(
-                modification,
-                ContinuousModification::SetPower { .. }
-                    | ContinuousModification::SetToughness { .. }
-                    | ContinuousModification::AddKeyword { .. }
-            )
-        })
-        .collect()
+    Some(
+        super::oracle_effect::animation::animation_modifications(&spec)
+            .into_iter()
+            .filter(|modification| {
+                matches!(
+                    modification,
+                    ContinuousModification::SetPower { .. }
+                        | ContinuousModification::SetToughness { .. }
+                        | ContinuousModification::AddKeyword { .. }
+                )
+            })
+            .collect(),
+    )
 }
 
 /// CR 205.1 / CR 205.3a: Extract additive-type modifications from a predicate
@@ -651,7 +650,7 @@ pub(crate) fn parse_additive_type_clause_modifications(
     // the pre-marker keyword tail, which word-classification silently swallows.
     // Additive only — a span with no leading `N/M` contributes nothing here and
     // keeps byte-identical output.
-    for modification in animated_additive_span_pt_and_keywords(type_words, type_words_lower) {
+    for modification in animated_additive_span_pt_and_keywords(type_words, type_words_lower)? {
         if !modifications.contains(&modification) {
             modifications.push(modification);
         }
@@ -1868,7 +1867,14 @@ pub(crate) fn parse_pronoun_becomes_type_static(
             super::oracle_effect::animation::parse_becomes_type_modifications(type_part.original),
         );
         if let Some(tail) = &with_tail {
+            let before_tail = mods.len();
             push_base_pt_mana_value_dynamic_modifications(&mut mods, tail.lower);
+            // A failed animation cannot fall back to a type-only grant while
+            // discarding its `with` tail. The legacy route is valid only when
+            // it actually recognizes the dynamic base-P/T clause it owns.
+            if mods.len() == before_tail {
+                return None;
+            }
         }
         mods
     };
@@ -3233,4 +3239,31 @@ pub(crate) fn parse_creature_type_change_subject(subject: &str) -> Option<Target
     .parse(subject)
     .ok()
     .map(|(_, filter)| filter)
+}
+
+#[cfg(test)]
+mod animation_keyword_tail_tests {
+    use super::*;
+
+    #[test]
+    fn leading_pt_additive_types_preserve_compound_grants_and_decline_invalid_keywords() {
+        let good = parse_additive_type_clause_modifications(
+            "Lands you control are 1/1 green Saproling creatures and Forest lands in addition to their other types",
+        )
+        .expect("compound additive type grant");
+        assert!(good.contains(&ContinuousModification::SetPower { value: 1 }));
+        assert!(good.contains(&ContinuousModification::SetToughness { value: 1 }));
+        assert!(good.contains(&ContinuousModification::AddType {
+            core_type: CoreType::Land,
+        }));
+        assert!(good.contains(&ContinuousModification::AddSubtype {
+            subtype: "Forest".to_string(),
+        }));
+
+        let bad = "Lands you control are 1/1 green Saproling creatures with flying and gibberish in addition to their other types";
+        assert!(
+            parse_additive_type_clause_modifications(bad).is_none(),
+            "an invalid leading-P/T keyword tail must decline the whole additive grant"
+        );
+    }
 }

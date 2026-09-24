@@ -3,7 +3,7 @@ use std::str::FromStr;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_till, take_until};
 use nom::character::complete::{multispace0, multispace1, satisfy};
-use nom::combinator::{eof, opt, peek, recognize, value};
+use nom::combinator::{cut, eof, opt, peek, recognize, value};
 use nom::multi::{many0, separated_list1};
 use nom::sequence::{pair, preceded};
 use nom::Parser;
@@ -11,10 +11,8 @@ use nom::Parser;
 use super::super::oracle_nom::error::{oracle_err, OracleError, OracleResult};
 use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_nom::quantity as nom_quantity;
-use super::super::oracle_util::{parse_count_expr, split_around};
-use super::token::{
-    map_token_keyword, push_unique_string, split_token_keyword_list, title_case_word,
-};
+use super::super::oracle_util::parse_count_expr;
+use super::token::{parse_complete_token_keyword_list, push_unique_string, title_case_word};
 use crate::parser::oracle_ir::ast::*;
 use crate::parser::oracle_ir::context::ParseContext;
 use crate::parser::oracle_nom::bridge::nom_on_lower;
@@ -105,7 +103,9 @@ pub(crate) fn parse_animation_spec(text: &str, _ctx: &mut ParseContext) -> Optio
         }
     }
 
-    if let Some((descriptor, power, toughness, keywords)) = split_animation_base_pt_clause(rest) {
+    if let Some((descriptor, power, toughness, keywords)) =
+        split_animation_base_pt_clause(rest).ok()?
+    {
         spec.power = Some(power);
         spec.toughness = Some(toughness);
         spec.keywords.extend(keywords);
@@ -123,7 +123,7 @@ pub(crate) fn parse_animation_spec(text: &str, _ctx: &mut ParseContext) -> Optio
         }
     }
 
-    let (descriptor, keywords) = split_animation_keyword_clause(rest);
+    let (descriptor, keywords) = split_animation_keyword_clause(rest)?;
     spec.keywords.extend(keywords);
     rest = descriptor;
 
@@ -384,21 +384,32 @@ fn parse_cost_x_become_pt_prefix(text: &str) -> Option<&str> {
 /// CR 613.1d/f/g: animation clauses can simultaneously change types, grant
 /// keyword abilities, and set base P/T. Keep those written components together
 /// so later lowering emits Layer 4, Layer 6, and Layer 7 modifications.
-fn split_animation_base_pt_clause(text: &str) -> Option<(&str, i32, i32, Vec<Keyword>)> {
+fn split_animation_base_pt_clause(
+    text: &str,
+) -> Result<Option<(&str, i32, i32, Vec<Keyword>)>, ()> {
     let lower = text.to_lowercase();
-    let (_, (descriptor_lower, power, toughness, keywords)) =
-        parse_animation_base_pt_clause(&lower).ok()?;
+    let (descriptor_lower, power, toughness, keywords) =
+        match parse_animation_base_pt_clause(&lower) {
+            Ok((_, values)) => values,
+            Err(nom::Err::Failure(_)) => return Err(()),
+            Err(_) => return Ok(None),
+        };
     let descriptor = text[..descriptor_lower.len()].trim_end_matches(',').trim();
-    Some((descriptor, power, toughness, keywords))
+    Ok(Some((descriptor, power, toughness, keywords)))
 }
 
 fn parse_animation_base_pt_clause(input: &str) -> OracleResult<'_, (&str, i32, i32, Vec<Keyword>)> {
     let (rest, descriptor) = take_until(" with base power and toughness ").parse(input)?;
     let (rest, _) = tag(" with base power and toughness ").parse(rest)?;
-    let (rest, (power, toughness)) = nom_primitives::parse_pt_value.parse(rest)?;
+    let (rest, (power, toughness)) = cut(nom_primitives::parse_pt_value).parse(rest)?;
     let (power, toughness) = match (power, toughness) {
         (PtValue::Fixed(power), PtValue::Fixed(toughness)) => (power, toughness),
-        _ => return Err(oracle_err(rest)),
+        _ => {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                rest,
+                nom::error::ErrorKind::Fail,
+            )))
+        }
     };
     let (rest, keywords) = opt(parse_base_pt_trailing_keywords).parse(rest)?;
     Ok((
@@ -422,11 +433,12 @@ fn parse_base_pt_trailing_keyword_intro(input: &str) -> OracleResult<'_, ()> {
 
 fn parse_base_pt_trailing_keywords(input: &str) -> OracleResult<'_, Vec<Keyword>> {
     let (rest, _) = parse_base_pt_trailing_keyword_intro(input)?;
-    let (rest, raw_clause) = take_till(|c| c == '"' || c == '.').parse(rest)?;
-    let keywords = split_token_keyword_list(raw_clause.trim())
-        .into_iter()
-        .filter_map(map_token_keyword)
-        .collect();
+    // Once a keyword intro is recognized, an invalid list must escape `opt`
+    // above as Failure so the base-P/T grant cannot survive as a partial parse.
+    let (rest, raw_clause) = cut(parse_animation_keyword_text).parse(rest)?;
+    let keywords = parse_animation_keywords(raw_clause, rest).ok_or_else(|| {
+        nom::Err::Failure(nom::error::Error::new(rest, nom::error::ErrorKind::Fail))
+    })?;
     Ok((rest, keywords))
 }
 
@@ -881,25 +893,50 @@ fn parse_animation_type_parts(text: &str, infer_creature: bool) -> (Vec<Supertyp
     (supertypes, types)
 }
 
-fn split_animation_keyword_clause(text: &str) -> (&str, Vec<Keyword>) {
-    const NEEDLE: &str = " with ";
+fn split_animation_keyword_clause(text: &str) -> Option<(&str, Vec<Keyword>)> {
     let lower = text.to_lowercase();
-    let Some((before, _)) = split_around(&lower, NEEDLE) else {
-        return (text, Vec::new());
+    let Ok((_, before)) =
+        nom::sequence::terminated(take_until::<_, _, OracleError<'_>>(" with "), tag(" with "))
+            .parse(lower.as_str())
+    else {
+        return Some((text, Vec::new()));
     };
 
     let pos = before.len();
     let prefix = text[..pos].trim_end_matches(',').trim();
-    // allow-noncombinator: structural post-processing of an already-chunked
-    // keyword phrase (split at the first `"` above); this is not parsing
-    // dispatch. A nom-combinator rewrite would add a word-boundary scan
-    // helper without improving correctness.
-    let keyword_text = text[pos + NEEDLE.len()..]
-        .split('"')
-        .next()
-        .unwrap_or("")
+    let after_with = &text[pos + " with ".len()..];
+    // ASCII lowering preserves byte offsets while the nom connective parser
+    // recognizes Oracle's case-insensitive grammatical boundary.
+    let after_with_lower = after_with.to_ascii_lowercase();
+    let (remaining, raw_clause) = parse_animation_keyword_text(&after_with_lower).ok()?;
+    let keywords = parse_animation_keywords(raw_clause, remaining)?;
+    Some((prefix, keywords))
+}
+
+/// The quote belongs to the existing quoted-grant owner. Consume only the
+/// connective before it, leaving the quote itself in the caller's source text.
+fn parse_animation_keyword_text(input: &str) -> OracleResult<'_, &str> {
+    if take_until::<_, _, OracleError<'_>>("\"")
+        .parse(input)
+        .is_ok()
+    {
+        alt((
+            value("", peek(tag("\""))),
+            nom::sequence::terminated(take_until(" and \""), tag(" and ")),
+        ))
+        .parse(input)
+    } else {
+        take_till(|c| c == '.').parse(input)
+    }
+}
+
+/// CR 613.1f: every nonempty animation keyword list must lower completely.
+/// An empty list is valid only when the following quoted ability is the grant.
+fn parse_animation_keywords(raw_clause: &str, remaining: &str) -> Option<Vec<Keyword>> {
+    // allow-noncombinator: punctuation and suffix cleanup after nom isolated the clause.
+    let keyword_text = raw_clause
         .trim()
-        .trim_end_matches('.')
+        .trim_end_matches(',')
         .trim_end_matches(" in addition to its other types");
     // CR 205.1b + CR 305.7 + CR 613.1d (#2917, #1155): a trailing "that's still
     // a <type>" rider confirms the permanent keeps a prior card type — it is NOT
@@ -907,14 +944,16 @@ fn split_animation_keyword_clause(text: &str) -> (&str, Vec<Keyword>) {
     // land") and the planeswalker family (Gideon Blackblade — "that's still a
     // planeswalker") both carry such a rider. Without stripping it the last
     // keyword fuses with the rider ("haste that's still a land" /
-    // "indestructible that's still a planeswalker") and is dropped by
-    // `map_token_keyword`.
+    // "indestructible that's still a planeswalker") would fail strict keyword
+    // mapping unless the rider is removed first.
     let keyword_text = strip_still_a_type_rider(keyword_text);
-    let keywords = split_token_keyword_list(keyword_text)
-        .into_iter()
-        .filter_map(map_token_keyword)
-        .collect();
-    (prefix, keywords)
+    if keyword_text.is_empty() {
+        return peek(tag::<_, _, OracleError<'_>>("\""))
+            .parse(remaining)
+            .ok()
+            .map(|_| Vec::new());
+    }
+    parse_complete_token_keyword_list(&keyword_text.to_ascii_lowercase())
 }
 
 /// Cut a trailing "that's/that is/it's/they're still a[n] <type>" rider off a
@@ -1016,33 +1055,74 @@ pub(crate) fn split_animation_conjunct_clause(text: &str) -> Option<(&str, &str)
 /// * the tail yields no tokens at all;
 /// * any token fails to map, which would leave a partial grant behind.
 ///
-/// Reuses the same `split_token_keyword_list` + `map_token_keyword` pair that
-/// [`split_animation_keyword_clause`] uses for the `" with "` tail — the two
-/// clause shapes are grammatical siblings and must not drift apart.
+/// Reuses the same strict keyword-list authority as
+/// [`split_animation_keyword_clause`] so both grammatical siblings decline
+/// incomplete keyword grants.
 pub(crate) fn parse_animation_conjunct_keywords(tail: &str) -> Option<Vec<Keyword>> {
     if peek(tag::<_, _, OracleError<'_>>("\"")).parse(tail).is_ok() {
         return None;
     }
-    // `split_token_keyword_list` recognises only the lowercase separators
-    // (" and ", ", and ", ", "), so the tail is lowered before splitting.
-    // `map_token_keyword` already lowercases its own input, which is why this
-    // split is the only case-sensitive step left in the path.
+    // The shared splitter recognizes lowercase separators, so normalize the
+    // conjunct before asking the strict keyword-list authority to map it.
     let keyword_text = tail.trim_end_matches('.').trim().to_ascii_lowercase();
-    let tokens = split_token_keyword_list(&keyword_text);
-    if tokens.is_empty() {
-        return None;
-    }
-    let keywords: Vec<Keyword> = tokens
-        .iter()
-        .copied()
-        .filter_map(map_token_keyword)
-        .collect();
-    (keywords.len() == tokens.len()).then_some(keywords)
+    parse_complete_token_keyword_list(&keyword_text)
 }
 
 #[cfg(test)]
 mod test_den_bugbear {
     use super::*;
+
+    #[test]
+    fn quoted_animation_keyword_lists_are_complete() {
+        let cases = [
+            (
+                r#"a 3/3 black Beholder creature with menace and "Whenever this creature attacks, exile target card.""#,
+                vec![Keyword::Menace],
+            ),
+            (
+                r#"0/0 Elemental creatures with reach, haste, and "When this creature leaves the battlefield, conjure a card.""#,
+                vec![Keyword::Reach, Keyword::Haste],
+            ),
+        ];
+        for (text, expected) in cases {
+            let spec = parse_animation_spec(text, &mut ParseContext::default())
+                .expect("valid quoted animation");
+            assert_eq!(spec.keywords, expected);
+        }
+
+        for text in [
+            r#"a 3/3 black Beholder creature with menace and gibberish and "Whenever this creature attacks, exile target card.""#,
+            "a 3/3 black Beholder creature with menace and gibberish",
+        ] {
+            assert!(
+                parse_animation_spec(text, &mut ParseContext::default()).is_none(),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn base_pt_keyword_intro_is_committed() {
+        let (_, (_, power, toughness, keywords)) = parse_animation_base_pt_clause(
+            r#"Dragon with base power and toughness 4/4, flying, and "{R}: Dragons you control get +1/+0 until end of turn.""#,
+        ).expect("Goddric's trailing keyword should parse");
+        assert_eq!((power, toughness), (4, 4));
+        assert_eq!(keywords, vec![Keyword::Flying]);
+
+        let (quoted_tail, (_, _, _, keywords)) = parse_animation_base_pt_clause(
+            r#"Citizen with base power and toughness 1/1 and "{T}: Add {C}" named Humble Merchant"#,
+        )
+        .expect("Honest Work's quote-only grant should parse");
+        assert!(keywords.is_empty());
+        assert_eq!(quoted_tail, r#""{T}: Add {C}" named Humble Merchant"#);
+
+        assert!(matches!(
+            parse_animation_base_pt_clause(
+                "Dragon with base power and toughness 4/4, flying and nonsense"
+            ),
+            Err(nom::Err::Failure(_))
+        ));
+    }
 
     /// #2917 (CR 305.7 / 613.1d): a trailing "that's still a land" rider must
     /// not truncate the keyword list. Nissa, Who Shakes the World grants the
@@ -1053,7 +1133,8 @@ mod test_den_bugbear {
         use crate::types::keywords::Keyword;
         let (_, keywords) = split_animation_keyword_clause(
             "a 0/0 Elemental creature with vigilance and haste that's still a land",
-        );
+        )
+        .expect("valid animation keyword list");
         assert!(
             keywords.contains(&Keyword::Vigilance),
             "expected Vigilance, got {keywords:?}"
