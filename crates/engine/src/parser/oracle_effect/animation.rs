@@ -401,16 +401,10 @@ fn split_animation_base_pt_clause(
 fn parse_animation_base_pt_clause(input: &str) -> OracleResult<'_, (&str, i32, i32, Vec<Keyword>)> {
     let (rest, descriptor) = take_until(" with base power and toughness ").parse(input)?;
     let (rest, _) = tag(" with base power and toughness ").parse(rest)?;
-    let (rest, (power, toughness)) = cut(nom_primitives::parse_pt_value).parse(rest)?;
-    let (power, toughness) = match (power, toughness) {
-        (PtValue::Fixed(power), PtValue::Fixed(toughness)) => (power, toughness),
-        _ => {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                rest,
-                nom::error::ErrorKind::Fail,
-            )))
-        }
-    };
+    // A dynamic "each equal to" clause shares this prefix. Only commit to
+    // the fixed branch after its P/T value is recognized as two fixed numbers.
+    let (power, toughness, rest) =
+        parse_fixed_become_pt_prefix(rest).ok_or_else(|| oracle_err(rest))?;
     let (rest, keywords) = opt(parse_base_pt_trailing_keywords).parse(rest)?;
     Ok((
         rest,
