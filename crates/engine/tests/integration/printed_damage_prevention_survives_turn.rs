@@ -642,6 +642,10 @@ fn argivian_blacksmith_illegal_target_gets_no_shield() {
         runner.state().waiting_for,
         WaitingFor::Priority { .. }
     ));
+    assert!(
+        !runner.state().stack.is_empty(),
+        "the targeted ability must be on the stack before its target changes type"
+    );
 
     let target_object = runner.state_mut().objects.get_mut(&target).unwrap();
     target_object.card_types.core_types = vec![CoreType::Creature];
@@ -652,6 +656,10 @@ fn argivian_blacksmith_illegal_target_gets_no_shield() {
         vec![CoreType::Creature]
     );
     runner.advance_until_stack_empty();
+    assert!(
+        runner.state().stack.is_empty(),
+        "the illegal-target ability must finish resolving"
+    );
     assert_eq!(runner.state().objects[&target].zone, Zone::Battlefield);
     assert!(
         runner.state().objects[&target]
