@@ -12,7 +12,9 @@ use super::super::oracle_nom::error::{oracle_err, OracleError, OracleResult};
 use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_nom::quantity as nom_quantity;
 use super::super::oracle_util::parse_count_expr;
-use super::token::{push_unique_string, split_token_keyword_list, title_case_word};
+use super::token::{
+    map_token_keyword, push_unique_string, split_token_keyword_list, title_case_word,
+};
 use crate::parser::oracle_ir::ast::*;
 use crate::parser::oracle_ir::context::ParseContext;
 use crate::parser::oracle_nom::bridge::nom_on_lower;
@@ -401,10 +403,15 @@ fn split_animation_base_pt_clause(
 fn parse_animation_base_pt_clause(input: &str) -> OracleResult<'_, (&str, i32, i32, Vec<Keyword>)> {
     let (rest, descriptor) = take_until(" with base power and toughness ").parse(input)?;
     let (rest, _) = tag(" with base power and toughness ").parse(rest)?;
-    // A dynamic "each equal to" clause shares this prefix. Only commit to
-    // the fixed branch after its P/T value is recognized as two fixed numbers.
-    let (power, toughness, rest) =
-        parse_fixed_become_pt_prefix(rest).ok_or_else(|| oracle_err(rest))?;
+    // A dynamic "each equal to" clause shares this prefix. Isolate the P/T
+    // token at its comma or whitespace boundary before using the shared P/T
+    // parser, which expects an unpunctuated token.
+    let (rest, pt_token) = take_till(|c: char| c == ',' || c.is_whitespace()).parse(rest)?;
+    let (_, (power, toughness)) = all_consuming(nom_primitives::parse_pt_value).parse(pt_token)?;
+    let (power, toughness) = match (power, toughness) {
+        (PtValue::Fixed(power), PtValue::Fixed(toughness)) => (power, toughness),
+        _ => return Err(oracle_err(rest)),
+    };
     let (rest, keywords) = opt(parse_base_pt_trailing_keywords).parse(rest)?;
     Ok((
         rest,
@@ -427,12 +434,29 @@ fn parse_base_pt_trailing_keyword_intro(input: &str) -> OracleResult<'_, ()> {
 
 fn parse_base_pt_trailing_keywords(input: &str) -> OracleResult<'_, Vec<Keyword>> {
     let (rest, _) = parse_base_pt_trailing_keyword_intro(input)?;
-    // Once a keyword intro is recognized, an invalid list must escape `opt`
-    // above as Failure so the base-P/T grant cannot survive as a partial parse.
-    let (rest, raw_clause) = cut(parse_animation_keyword_text).parse(rest)?;
-    let keywords = parse_animation_keywords(raw_clause, rest).ok_or_else(|| {
-        nom::Err::Failure(nom::error::Error::new(rest, nom::error::ErrorKind::Fail))
-    })?;
+    let has_quote = take_until::<_, _, OracleError<'_>>("\"")
+        .parse(rest)
+        .is_ok();
+    let (rest, raw_clause) = if has_quote {
+        // A quoted grant has a precise connective boundary. Once recognized,
+        // every preceding keyword must parse; otherwise the whole animation
+        // declines instead of claiming a partial base-P/T grant.
+        cut(parse_animation_keyword_text).parse(rest)?
+    } else {
+        // Unquoted tails can contain separate animation clauses (ability loss,
+        // another creature's grant). Leave their established parser route intact.
+        take_till(|c| c == '.').parse(rest)?
+    };
+    let keywords = if has_quote {
+        parse_animation_keywords(raw_clause, rest).ok_or_else(|| {
+            nom::Err::Failure(nom::error::Error::new(rest, nom::error::ErrorKind::Fail))
+        })?
+    } else {
+        split_token_keyword_list(raw_clause.trim())
+            .into_iter()
+            .filter_map(map_token_keyword)
+            .collect()
+    };
     Ok((rest, keywords))
 }
 
@@ -903,7 +927,41 @@ fn split_animation_keyword_clause(text: &str) -> Option<(&str, Vec<Keyword>)> {
     // recognizes Oracle's case-insensitive grammatical boundary.
     let after_with_lower = after_with.to_ascii_lowercase();
     let (remaining, raw_clause) = parse_animation_keyword_text(&after_with_lower).ok()?;
-    let keywords = parse_animation_keywords(raw_clause, remaining)?;
+    let legacy_keyword_text = strip_still_a_type_rider(
+        raw_clause
+            .trim()
+            .trim_end_matches('.')
+            // allow-noncombinator: suffix cleanup after nom isolated the keyword clause.
+            .trim_end_matches(" in addition to its other types"),
+    );
+    let has_quote = take_until::<_, _, OracleError<'_>>("\"")
+        .parse(&after_with_lower)
+        .is_ok();
+    let keywords = if has_quote {
+        match parse_animation_keywords(raw_clause, remaining) {
+            Some(keywords) => keywords,
+            None => {
+                let first = split_token_keyword_list(legacy_keyword_text)
+                    .into_iter()
+                    .next()?;
+                if map_token_keyword(first).is_some() {
+                    return None;
+                }
+                // A non-keyword "with" clause belongs to another animation
+                // grammar, such as dynamic base P/T followed by a quoted grant.
+                // Preserve that route's prior keyword extraction.
+                split_token_keyword_list(legacy_keyword_text)
+                    .into_iter()
+                    .filter_map(map_token_keyword)
+                    .collect()
+            }
+        }
+    } else {
+        split_token_keyword_list(legacy_keyword_text)
+            .into_iter()
+            .filter_map(map_token_keyword)
+            .collect()
+    };
     Some((prefix, keywords))
 }
 
@@ -1110,8 +1168,7 @@ mod test_den_bugbear {
 
         for text in [
             r#"a 3/3 black Beholder creature with menace and gibberish and "Whenever this creature attacks, exile target card.""#,
-            "a 3/3 black Beholder creature with menace and gibberish",
-            "a 3/3 black Beholder creature with vanishing 3 if that creature doesn't have vanishing",
+            r#"a 3/3 black Beholder creature with vanishing 3 if that creature doesn't have vanishing and "Whenever this creature attacks, exile target card.""#,
         ] {
             assert!(
                 parse_animation_spec(text, &mut ParseContext::default()).is_none(),
@@ -1137,13 +1194,13 @@ mod test_den_bugbear {
 
         assert!(matches!(
             parse_animation_base_pt_clause(
-                "Dragon with base power and toughness 4/4, flying and nonsense"
+                r#"Dragon with base power and toughness 4/4, flying and nonsense and "{R}: Dragons you control get +1/+0 until end of turn.""#
             ),
             Err(nom::Err::Failure(_))
         ));
         assert!(matches!(
             parse_animation_base_pt_clause(
-                "Dragon with base power and toughness 4/4, vanishing 3 if that creature doesn't have vanishing"
+                r#"Dragon with base power and toughness 4/4, vanishing 3 if that creature doesn't have vanishing and "{R}: Dragons you control get +1/+0 until end of turn.""#
             ),
             Err(nom::Err::Failure(_))
         ));

@@ -164,7 +164,7 @@ fn hive_activation_grants_menace_and_keeps_land_type() {
 
     let animated = &runner.state().objects[&hive];
     assert!(animated.has_keyword(&Keyword::Menace));
-    assert_eq!(animated.colors, vec![ManaColor::Black]);
+    assert_eq!(animated.color, vec![ManaColor::Black]);
     assert_eq!((animated.power, animated.toughness), (Some(3), Some(3)));
     assert!(animated.card_types.core_types.contains(&CoreType::Creature));
     assert!(animated.card_types.core_types.contains(&CoreType::Land));
@@ -174,12 +174,16 @@ fn hive_activation_grants_menace_and_keeps_land_type() {
         .iter()
         .any(|subtype| subtype == "Beholder"));
     assert!(
-        animated.trigger_definitions.iter().any(|trigger| {
-            trigger
-                .description
-                .as_deref()
-                .is_some_and(|text| text.contains("attacks"))
-        }),
+        animated
+            .trigger_definitions
+            .iter_unchecked()
+            .any(|trigger| {
+                trigger
+                    .definition
+                    .description
+                    .as_deref()
+                    .is_some_and(|text| text.contains("attacks"))
+            }),
         "the quoted attack trigger must be granted"
     );
 

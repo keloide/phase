@@ -3261,7 +3261,7 @@ mod animation_keyword_tail_tests {
             subtype: "Forest".to_string(),
         }));
 
-        let bad = "Lands you control are 1/1 green Saproling creatures with flying and gibberish in addition to their other types";
+        let bad = r#"Lands you control are 1/1 green Saproling creatures with flying and gibberish and "{T}: Add {G}" in addition to their other types"#;
         assert!(
             parse_additive_type_clause_modifications(bad).is_none(),
             "an invalid leading-P/T keyword tail must decline the whole additive grant"
