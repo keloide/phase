@@ -383,12 +383,12 @@ fn parse_cost_x_become_pt_prefix(text: &str) -> Option<&str> {
     }
 }
 
+type AnimationBasePtClause<'a> = (&'a str, i32, i32, Vec<Keyword>);
+
 /// CR 613.1d/f/g: animation clauses can simultaneously change types, grant
 /// keyword abilities, and set base P/T. Keep those written components together
 /// so later lowering emits Layer 4, Layer 6, and Layer 7 modifications.
-fn split_animation_base_pt_clause(
-    text: &str,
-) -> Result<Option<(&str, i32, i32, Vec<Keyword>)>, ()> {
+fn split_animation_base_pt_clause(text: &str) -> Result<Option<AnimationBasePtClause<'_>>, ()> {
     let lower = text.to_lowercase();
     let (descriptor_lower, power, toughness, keywords) =
         match parse_animation_base_pt_clause(&lower) {
@@ -400,7 +400,7 @@ fn split_animation_base_pt_clause(
     Ok(Some((descriptor, power, toughness, keywords)))
 }
 
-fn parse_animation_base_pt_clause(input: &str) -> OracleResult<'_, (&str, i32, i32, Vec<Keyword>)> {
+fn parse_animation_base_pt_clause(input: &str) -> OracleResult<'_, AnimationBasePtClause<'_>> {
     let (rest, descriptor) = take_until(" with base power and toughness ").parse(input)?;
     let (rest, _) = tag(" with base power and toughness ").parse(rest)?;
     // A dynamic "each equal to" clause shares this prefix. Isolate the P/T
