@@ -167,12 +167,24 @@ expression: "&lowered"
             },
             "modifications": [
               {
+                "type": "SetPower",
+                "value": 8
+              },
+              {
+                "type": "SetToughness",
+                "value": 8
+              },
+              {
                 "type": "AddKeyword",
                 "keyword": "Flying"
               },
               {
                 "type": "AddKeyword",
                 "keyword": "FirstStrike"
+              },
+              {
+                "type": "AddType",
+                "core_type": "Creature"
               },
               {
                 "type": "RemoveAllSubtypes",
@@ -193,14 +205,6 @@ expression: "&lowered"
               {
                 "type": "AddSubtype",
                 "subtype": "Avatar"
-              },
-              {
-                "type": "SetPower",
-                "value": 8
-              },
-              {
-                "type": "SetToughness",
-                "value": 8
               }
             ],
             "condition": null,
