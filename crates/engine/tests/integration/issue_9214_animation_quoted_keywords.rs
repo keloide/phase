@@ -197,6 +197,7 @@ fn malformed_keyword_tail_declines_the_whole_animation() {
     let good = r#"{3}{B}: Until end of turn, this land becomes a 3/3 black Beholder creature with menace and "Whenever this creature attacks, exile target card from defending player's graveyard." It's still a land."#;
     let bad_clauses = [
         r#"{3}{B}: Until end of turn, this land becomes a 3/3 black Beholder creature with menace and gibberish and "Whenever this creature attacks, exile target card from defending player's graveyard." It's still a land."#,
+        r#"{3}{B}: Until end of turn, this land becomes a 3/3 black Beholder creature with gibberish and menace and "Whenever this creature attacks, exile target card from defending player's graveyard." It's still a land."#,
         r#"{3}{B}: Until end of turn, this land becomes a 3/3 black Beholder creature with vanishing 3 if that creature doesn't have vanishing and "Whenever this creature attacks, exile target card from defending player's graveyard." It's still a land."#,
     ];
     let parse =

@@ -463,15 +463,7 @@ fn parse_base_pt_trailing_keywords(input: &str) -> OracleResult<'_, Vec<Keyword>
 fn parse_dynamic_pt_clause(input: &str) -> OracleResult<'_, (&str, QuantityExpr)> {
     let (rest, descriptor) = alt((take_until(" with "), take_until(" and has "))).parse(input)?;
     let (rest, _) = alt((tag(" with "), tag(" and has "))).parse(rest)?;
-    let (rest, _) = alt((
-        tag("power and toughness each equal to "),
-        tag("power and toughness are each equal to "),
-        tag("base power and base toughness each equal to "),
-        tag("base power and base toughness are each equal to "),
-        tag("base power and toughness each equal to "),
-        tag("base power and toughness are each equal to "),
-    ))
-    .parse(rest)?;
+    let (rest, _) = parse_dynamic_pt_intro(rest)?;
     let (rest, qty) = alt((
         nom::combinator::map(nom_quantity::parse_quantity_ref, |qty| QuantityExpr::Ref {
             qty,
@@ -482,6 +474,18 @@ fn parse_dynamic_pt_clause(input: &str) -> OracleResult<'_, (&str, QuantityExpr)
     let (rest, _) = opt(tag(".")).parse(rest)?;
     let (rest, _) = eof.parse(rest)?;
     Ok((rest, (descriptor, qty)))
+}
+
+fn parse_dynamic_pt_intro(input: &str) -> OracleResult<'_, &str> {
+    alt((
+        tag("power and toughness each equal to "),
+        tag("power and toughness are each equal to "),
+        tag("base power and base toughness each equal to "),
+        tag("base power and base toughness are each equal to "),
+        tag("base power and toughness each equal to "),
+        tag("base power and toughness are each equal to "),
+    ))
+    .parse(input)
 }
 
 fn parse_animation_count_expr(input: &str) -> OracleResult<'_, QuantityExpr> {
@@ -941,10 +945,10 @@ fn split_animation_keyword_clause(text: &str) -> Option<(&str, Vec<Keyword>)> {
         match parse_animation_keywords(raw_clause, remaining) {
             Some(keywords) => keywords,
             None => {
-                let first = split_token_keyword_list(legacy_keyword_text)
-                    .into_iter()
-                    .next()?;
-                if map_token_keyword(first).is_some() {
+                // Only a recognized dynamic-P/T grammar may use the older
+                // non-keyword "with" route. Otherwise an unknown leading word
+                // could hide a later keyword in an incomplete quoted grant.
+                if parse_dynamic_pt_intro(legacy_keyword_text).is_err() {
                     return None;
                 }
                 // A non-keyword "with" clause belongs to another animation
@@ -1168,6 +1172,7 @@ mod test_den_bugbear {
 
         for text in [
             r#"a 3/3 black Beholder creature with menace and gibberish and "Whenever this creature attacks, exile target card.""#,
+            r#"a 3/3 black Beholder creature with gibberish and menace and "Whenever this creature attacks, exile target card.""#,
             r#"a 3/3 black Beholder creature with vanishing 3 if that creature doesn't have vanishing and "Whenever this creature attacks, exile target card.""#,
         ] {
             assert!(
