@@ -6128,6 +6128,7 @@ mod tests {
                     block_requirements: HashMap::new(),
                     blocker_constraints: Default::default(),
                     must_be_blocked_targets: Default::default(),
+                    block_capacities: Default::default(),
                 },
             ),
             (
@@ -9121,6 +9122,8 @@ mod tests {
                 dynamic_count: None,
                 exemption: ActivationExemption::None,
                 activator: None,
+                targets: None,
+                frequency: None,
             })
             .affected(TargetFilter::Typed(
                 TypedFilter::creature().controller(ControllerRef::You),
