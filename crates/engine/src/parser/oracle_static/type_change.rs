@@ -3249,16 +3249,16 @@ mod animation_keyword_tail_tests {
     #[test]
     fn leading_pt_additive_types_preserve_compound_grants_and_decline_invalid_keywords() {
         let good = parse_additive_type_clause_modifications(
-            "Lands you control are 1/1 green Saproling creatures and Forest lands in addition to their other types",
+            r#"Lands you control are 1/1 green Saproling creatures with flying and "{T}: Add {G}" in addition to their other types"#,
         )
-        .expect("compound additive type grant");
+        .expect("quoted animation keyword must reach the additive grant");
         assert!(good.contains(&ContinuousModification::SetPower { value: 1 }));
         assert!(good.contains(&ContinuousModification::SetToughness { value: 1 }));
-        assert!(good.contains(&ContinuousModification::AddType {
-            core_type: CoreType::Land,
+        assert!(good.contains(&ContinuousModification::AddKeyword {
+            keyword: Keyword::Flying,
         }));
-        assert!(good.contains(&ContinuousModification::AddSubtype {
-            subtype: "Forest".to_string(),
+        assert!(good.contains(&ContinuousModification::AddType {
+            core_type: CoreType::Creature,
         }));
 
         let bad = r#"Lands you control are 1/1 green Saproling creatures with flying and gibberish and "{T}: Add {G}" in addition to their other types"#;
