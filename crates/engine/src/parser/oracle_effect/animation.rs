@@ -931,36 +931,22 @@ fn split_animation_keyword_clause(text: &str) -> Option<(&str, Vec<Keyword>)> {
     // recognizes Oracle's case-insensitive grammatical boundary.
     let after_with_lower = after_with.to_ascii_lowercase();
     let (remaining, raw_clause) = parse_animation_keyword_text(&after_with_lower).ok()?;
-    let legacy_keyword_text = strip_still_a_type_rider(
-        raw_clause
-            .trim()
-            .trim_end_matches('.')
-            // allow-noncombinator: suffix cleanup after nom isolated the keyword clause.
-            .trim_end_matches(" in addition to its other types"),
-    );
     let has_quote = take_until::<_, _, OracleError<'_>>("\"")
         .parse(&after_with_lower)
         .is_ok();
     let keywords = if has_quote {
-        match parse_animation_keywords(raw_clause, remaining) {
-            Some(keywords) => keywords,
-            None => {
-                // Only a recognized dynamic-P/T grammar may use the older
-                // non-keyword "with" route. Otherwise an unknown leading word
-                // could hide a later keyword in an incomplete quoted grant.
-                if parse_dynamic_pt_intro(legacy_keyword_text).is_err() {
-                    return None;
-                }
-                // A non-keyword "with" clause belongs to another animation
-                // grammar, such as dynamic base P/T followed by a quoted grant.
-                // Preserve that route's prior keyword extraction.
-                split_token_keyword_list(legacy_keyword_text)
-                    .into_iter()
-                    .filter_map(map_token_keyword)
-                    .collect()
-            }
-        }
+        // A quoted non-keyword tail (including dynamic base P/T) is not a
+        // keyword grant. Decline the whole animation until an owner can carry
+        // both that tail and the quoted ability through resolution.
+        parse_animation_keywords(raw_clause, remaining)?
     } else {
+        let legacy_keyword_text = strip_still_a_type_rider(
+            raw_clause
+                .trim()
+                .trim_end_matches('.')
+                // allow-noncombinator: suffix cleanup after nom isolated the keyword clause.
+                .trim_end_matches(" in addition to its other types"),
+        );
         split_token_keyword_list(legacy_keyword_text)
             .into_iter()
             .filter_map(map_token_keyword)

@@ -231,3 +231,35 @@ fn malformed_keyword_tail_declines_the_whole_animation() {
         );
     }
 }
+
+#[test]
+fn quoted_dynamic_power_tail_does_not_become_a_type_only_animation() {
+    let good = "{3}{B}: Until end of turn, this land becomes a Vehicle artifact with base power and toughness each equal to its mana value.";
+    let bad = "{3}{B}: Until end of turn, this land becomes a Vehicle artifact with base power and toughness each equal to its mana value and \"Whenever this creature attacks, draw a card.\"";
+    let parse =
+        |text| parse_oracle_text(text, "Animation Test Land", &[], &["Land".to_string()], &[]);
+
+    let good = parse(good);
+    assert_eq!(
+        good.abilities.len(),
+        1,
+        "positive route reach guard: {good:?}"
+    );
+    assert!(
+        !matches!(
+            good.abilities[0].effect.as_ref(),
+            Effect::Unimplemented { .. }
+        ),
+        "complete dynamic P/T without a quote must parse: {good:?}"
+    );
+
+    let bad = parse(bad);
+    assert_eq!(bad.abilities.len(), 1, "quoted route reach guard: {bad:?}");
+    assert!(
+        matches!(
+            bad.abilities[0].effect.as_ref(),
+            Effect::Unimplemented { .. }
+        ),
+        "an unmodeled quoted dynamic P/T clause must not leave a type-only animation: {bad:?}"
+    );
+}
