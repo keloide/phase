@@ -647,6 +647,17 @@ pub(crate) fn parse_additive_type_clause_modifications(
         }
     }
 
+    // CR 113.10a + CR 613.1f: a quoted ability before the additive marker is
+    // granted alongside the types. The word classifier cannot recover it, so
+    // delegate to the same quoted-ability authority used for trailing grants.
+    let quoted_modifications = super::keyword_grant::parse_quoted_ability_modifications(type_words);
+    if take_until::<_, _, VE>("\"").parse(type_words_lower).is_ok()
+        && quoted_modifications.is_empty()
+    {
+        return None;
+    }
+    modifications.extend(quoted_modifications);
+
     // CR 613.4b (Layer 7b) + CR 613.1f (Layer 6): then recover the base P/T and
     // the pre-marker keyword tail, which word-classification silently swallows.
     // Additive only — a span with no leading `N/M` contributes nothing here and
@@ -3260,11 +3271,21 @@ mod animation_keyword_tail_tests {
         assert!(good.contains(&ContinuousModification::AddType {
             core_type: CoreType::Creature,
         }));
+        assert!(good.iter().any(|modification| matches!(
+            modification,
+            ContinuousModification::GrantAbility { .. }
+        )));
 
         let bad = r#"Lands you control are 1/1 green Saproling creatures with flying and gibberish and "{T}: Add {G}" in addition to their other types"#;
         assert!(
             parse_additive_type_clause_modifications(bad).is_none(),
             "an invalid leading-P/T keyword tail must decline the whole additive grant"
+        );
+
+        let unclosed = r#"Lands you control are 1/1 green Saproling creatures with flying and "{T}: Add {G} in addition to their other types"#;
+        assert!(
+            parse_additive_type_clause_modifications(unclosed).is_none(),
+            "an unclosed pre-marker ability must decline the whole additive grant"
         );
     }
 }
