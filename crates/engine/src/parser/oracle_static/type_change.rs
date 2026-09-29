@@ -2811,13 +2811,12 @@ pub(crate) fn parse_land_type_change(tp: &TextPair<'_>, text: &str) -> Option<St
 }
 
 /// CR 613.4b + CR 205.1b: Merge a creature-animation predicate with the additive
-/// type/subtype grants past `parse_animation_spec`'s internal `" and "` stop.
+/// grants past `parse_animation_spec`'s internal `" and "` stop.
 /// `parse_animation_spec` supplies base P/T (layer 7b), set color (layer 5),
 /// and leading creature type/subtype grants; `parse_additive_type_clause_modifications`
-/// supplies the trailing `"and <type> lands in addition to their other types"`
-/// nouns (layer 4). Only additive `AddType` / `AddSubtype` grants are merged —
-/// the animation spec's set color takes precedence over the additive parser's
-/// additive color.
+/// supplies the additive type nouns (layer 4) and any quoted ability grants
+/// before or after the marker (layer 6). The animation spec's set color takes
+/// precedence over the additive parser's additive color.
 ///
 /// Shared by [`parse_land_animation`] (single-subject) and
 /// [`parse_compound_all_subjects_type_change`] (compound-subject).
@@ -2832,16 +2831,16 @@ fn merge_creature_animation_with_additive_type_modifications(
     if modifications.is_empty() {
         return None;
     }
-    if let Some(additive) = parse_additive_type_clause_modifications(&format!("~ are {predicate}"))
-    {
-        for modification in additive {
-            let is_type_grant = matches!(
-                modification,
-                ContinuousModification::AddType { .. } | ContinuousModification::AddSubtype { .. }
-            );
-            if is_type_grant && !modifications.contains(&modification) {
-                modifications.push(modification);
-            }
+    let additive = parse_additive_type_clause_modifications(&format!("~ are {predicate}"))?;
+    for modification in additive {
+        // CR 613.1e: the animation spec owns the color-setting effect. The
+        // additive word classifier sees that same color but would turn it into
+        // AddColor, which would change replacement semantics.
+        if matches!(modification, ContinuousModification::AddColor { .. }) {
+            continue;
+        }
+        if !modifications.contains(&modification) {
+            modifications.push(modification);
         }
     }
     Some(modifications)
@@ -3287,5 +3286,72 @@ mod animation_keyword_tail_tests {
             parse_additive_type_clause_modifications(unclosed).is_none(),
             "an unclosed pre-marker ability must decline the whole additive grant"
         );
+    }
+
+    #[test]
+    fn full_oracle_additive_animation_keeps_quoted_grants_and_declines_unclosed_quotes() {
+        use crate::parser::oracle::parse_oracle_text;
+
+        for subject in ["All lands", "All Forests and all Saprolings"] {
+            let prefix = format!(
+                "{subject} are 1/1 green Saproling creatures with flying and \"{{T}}: Add {{G}}"
+            );
+            let good = format!("{prefix}\" and Forest lands in addition to their other types.");
+            let parsed = parse_oracle_text(
+                &good,
+                "Additive Animation",
+                &[],
+                &["Enchantment".into()],
+                &[],
+            );
+            let def = parsed
+                .statics
+                .iter()
+                .find(|def| def.mode == StaticMode::Continuous)
+                .expect("full Oracle dispatch must claim the additive animation");
+            for expected in [
+                ContinuousModification::SetPower { value: 1 },
+                ContinuousModification::SetToughness { value: 1 },
+                ContinuousModification::AddKeyword {
+                    keyword: Keyword::Flying,
+                },
+                ContinuousModification::AddType {
+                    core_type: CoreType::Land,
+                },
+            ] {
+                assert!(
+                    def.modifications.contains(&expected),
+                    "{subject}: missing {expected:?}"
+                );
+            }
+            assert!(
+                def.modifications.iter().any(|modification| matches!(
+                    modification,
+                    ContinuousModification::GrantAbility { .. }
+                )),
+                "{subject}: quoted mana ability was dropped"
+            );
+
+            let bad = format!("{prefix} and Forest lands in addition to their other types.");
+            let rejected = parse_oracle_text(
+                &bad,
+                "Additive Animation",
+                &[],
+                &["Enchantment".into()],
+                &[],
+            );
+            assert!(
+                rejected.statics.is_empty(),
+                "{subject}: an unclosed ability must not leave a partial static"
+            );
+            assert!(
+                !rejected.parse_warnings.is_empty()
+                    || rejected.abilities.iter().any(|ability| matches!(
+                        ability.effect.as_ref(),
+                        crate::types::ability::Effect::Unimplemented { .. }
+                    )),
+                "{subject}: rejected text must remain an explicit parse gap"
+            );
+        }
     }
 }
