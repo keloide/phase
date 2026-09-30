@@ -637,7 +637,9 @@ pub(crate) fn parse_additive_type_clause_modifications(
     // the span — it is the only reader that sees a compound span ("… creatures
     // and Forest lands") in full.
     let mut modifications = Vec::new();
-    for raw_word in type_words.split_whitespace() {
+    // Quoted ability text is not a type token. Keep `type_words` intact for the
+    // quoted-grant parser below, but exclude its contents from the type scanner.
+    for raw_word in super::grammar::strip_quoted_segments(type_words).split_whitespace() {
         let word = raw_word.trim_matches(|c: char| c == ',' || c == '.');
         if word.is_empty() {
             continue;
@@ -647,7 +649,7 @@ pub(crate) fn parse_additive_type_clause_modifications(
         }
     }
 
-    // CR 113.10a + CR 613.1f: a quoted ability before the additive marker is
+    // CR 113.10 + CR 613.1f: a quoted ability before the additive marker is
     // granted alongside the types. The word classifier cannot recover it, so
     // delegate to the same quoted-ability authority used for trailing grants.
     let quoted_modifications = super::keyword_grant::parse_quoted_ability_modifications(type_words);
@@ -1736,29 +1738,26 @@ pub(crate) fn parse_bare_becomes_type_replacement_modifications(
 /// CR 613.1f (Layer 6): resolve an animation conjunct tail to the modifications
 /// it grants, or `None` if no authority can model it.
 ///
-/// Two shapes, each delegated to the authority that already owns it rather than
-/// re-implemented here:
-///   1. a bare keyword list ("trample", "vigilance and menace") →
-///      `parse_animation_conjunct_keywords`, which shares the token splitter and
-///      keyword mapper used by the sibling `" with "` tail;
-///   2. a quoted granted ability (`"When this creature dies, draw a card."`) →
-///      the shared `parse_quoted_ability_modifications` (CR 604.1), which
-///      classifies triggers, keywords, statics and activated abilities.
+/// The sibling animation parser isolates a complete keyword list and any quoted
+/// remainder. The shared quoted-ability parser (CR 604.1) classifies the latter.
 ///
 /// `None` when neither claims the tail, so the caller declines the line instead
 /// of emitting the animation with its ability clause silently dropped.
 fn parse_animation_conjunct_modifications(tail: &str) -> Option<Vec<ContinuousModification>> {
-    if let Some(keywords) = super::oracle_effect::animation::parse_animation_conjunct_keywords(tail)
-    {
-        return Some(
-            keywords
-                .into_iter()
-                .map(|keyword| ContinuousModification::AddKeyword { keyword })
-                .collect(),
-        );
+    let (keywords, quoted_tail) =
+        super::oracle_effect::animation::parse_animation_conjunct_keywords(tail)?;
+    let mut modifications: Vec<_> = keywords
+        .into_iter()
+        .map(|keyword| ContinuousModification::AddKeyword { keyword })
+        .collect();
+    if let Some(quoted_tail) = quoted_tail {
+        let granted = super::keyword_grant::parse_quoted_ability_modifications(quoted_tail);
+        if granted.is_empty() {
+            return None;
+        }
+        modifications.extend(granted);
     }
-    let granted = super::keyword_grant::parse_quoted_ability_modifications(tail);
-    (!granted.is_empty()).then_some(granted)
+    Some(modifications)
 }
 
 /// CR 613.1d + CR 613.1g: "[pronoun]'s a/an <descriptor> [as long as <condition>]"
@@ -3275,6 +3274,20 @@ mod animation_keyword_tail_tests {
             ContinuousModification::GrantAbility { .. }
         )));
 
+        let quoted_subtype = parse_additive_type_clause_modifications(
+            r#"Lands you control are 1/1 green Saproling creatures with flying and "Whenever this creature attacks, create a Treasure token." in addition to their other types"#,
+        )
+        .expect("the quoted trigger must reach the additive grant");
+        assert!(quoted_subtype.iter().any(|modification| matches!(
+            modification,
+            ContinuousModification::GrantTrigger { .. }
+        )));
+        assert!(
+            !quoted_subtype.contains(&ContinuousModification::AddSubtype {
+                subtype: "Treasure".to_string(),
+            })
+        );
+
         let bad = r#"Lands you control are 1/1 green Saproling creatures with flying and gibberish and "{T}: Add {G}" in addition to their other types"#;
         assert!(
             parse_additive_type_clause_modifications(bad).is_none(),
@@ -3286,6 +3299,25 @@ mod animation_keyword_tail_tests {
             parse_additive_type_clause_modifications(unclosed).is_none(),
             "an unclosed pre-marker ability must decline the whole additive grant"
         );
+    }
+
+    #[test]
+    fn mixed_animation_conjunct_keeps_keyword_and_quoted_trigger() {
+        let modifications = parse_animation_conjunct_modifications(
+            r#"menace and "Whenever this creature attacks, draw a card.""#,
+        )
+        .expect("both conjunct grants must parse");
+        assert!(modifications.contains(&ContinuousModification::AddKeyword {
+            keyword: Keyword::Menace,
+        }));
+        assert!(modifications.iter().any(|modification| matches!(
+            modification,
+            ContinuousModification::GrantTrigger { .. }
+        )));
+        assert!(parse_animation_conjunct_modifications(
+            r#"menace and gibberish and "Whenever this creature attacks, draw a card.""#
+        )
+        .is_none());
     }
 
     #[test]

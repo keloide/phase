@@ -1110,28 +1110,37 @@ pub(crate) fn split_animation_conjunct_clause(text: &str) -> Option<(&str, &str)
     (!body.is_empty()).then_some((body, tail))
 }
 
-/// CR 613.1f (Layer 6): map an animation conjunct tail to the keywords it
-/// grants — "trample", "vigilance and menace", "flying, haste".
+/// CR 113.10 + CR 613.1f: isolate every keyword in an animation conjunct,
+/// including keywords before a quoted ability, and leave the quote for the
+/// shared quoted-ability parser.
 ///
 /// Returns `None` rather than an empty or partial vector, so the caller declines
 /// the whole line instead of emitting a silent half-parse (an animation whose
 /// ability clause was quietly dropped). Three cases decline:
-/// * the tail opens a quoted ability — owned by
-///   `parse_quoted_ability_modifications`, not by keyword mapping;
 /// * the tail yields no tokens at all;
 /// * any token fails to map, which would leave a partial grant behind.
 ///
 /// Reuses the same strict keyword-list authority as
 /// [`split_animation_keyword_clause`] so both grammatical siblings decline
 /// incomplete keyword grants.
-pub(crate) fn parse_animation_conjunct_keywords(tail: &str) -> Option<Vec<Keyword>> {
-    if peek(tag::<_, _, OracleError<'_>>("\"")).parse(tail).is_ok() {
-        return None;
+pub(crate) fn parse_animation_conjunct_keywords(
+    tail: &str,
+) -> Option<(Vec<Keyword>, Option<&str>)> {
+    // The shared keyword parser recognizes lowercase connectors. ASCII lowering
+    // preserves byte offsets when the quoted remainder is mapped to `tail`.
+    let lower = tail.to_ascii_lowercase();
+    if take_until::<_, _, OracleError<'_>>("\"")
+        .parse(lower.as_str())
+        .is_ok()
+    {
+        let (quoted, raw_keywords) = parse_animation_keyword_text(&lower).ok()?;
+        let keywords = parse_animation_keywords(raw_keywords, quoted)?;
+        let quoted = &tail[lower.len() - quoted.len()..];
+        Some((keywords, Some(quoted)))
+    } else {
+        let keyword_text = lower.trim_end_matches('.').trim();
+        parse_complete_animation_keyword_list(keyword_text).map(|keywords| (keywords, None))
     }
-    // The shared splitter recognizes lowercase separators, so normalize the
-    // conjunct before asking the strict keyword-list authority to map it.
-    let keyword_text = tail.trim_end_matches('.').trim().to_ascii_lowercase();
-    parse_complete_animation_keyword_list(&keyword_text)
 }
 
 #[cfg(test)]

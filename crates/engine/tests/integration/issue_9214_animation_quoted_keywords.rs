@@ -263,3 +263,33 @@ fn quoted_dynamic_power_tail_does_not_become_a_type_only_animation() {
         "an unmodeled quoted dynamic P/T clause must not leave a type-only animation: {bad:?}"
     );
 }
+
+/// CR 113.10 + CR 613.1f: a static animation grants both abilities through
+/// layer evaluation when the keyword precedes a quoted trigger.
+#[test]
+fn static_animation_conjunct_applies_keyword_and_quoted_trigger() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let artifact = scenario
+        .add_artifact_from_oracle(
+            P0,
+            "Animation Test Artifact",
+            "It's a 3/3 Beholder creature and it has menace and \"Whenever this creature attacks, draw a card.\"",
+        )
+        .id();
+    let mut runner = scenario.build();
+    evaluate_layers(runner.state_mut());
+
+    let animated = &runner.state().objects[&artifact];
+    assert!(animated.card_types.core_types.contains(&CoreType::Creature));
+    assert_eq!((animated.power, animated.toughness), (Some(3), Some(3)));
+    assert!(animated.has_keyword(&Keyword::Menace));
+    assert!(animated
+        .trigger_definitions
+        .iter_unchecked()
+        .any(|trigger| trigger
+            .definition
+            .description
+            .as_deref()
+            .is_some_and(|text| text.contains("attacks"))));
+}
