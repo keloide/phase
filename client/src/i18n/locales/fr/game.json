@@ -808,6 +808,7 @@
     "titleTargets": "Cibles : {{targets}}",
     "titlePaid": "Payé : {{paid}}",
     "titleContext": "Contexte : {{context}}",
+    "revealedCards": "Révélée : {{cards}}",
     "paidXValue": "X={{value}}",
     "paidManaSpent": "{{amount}} mana",
     "paidColorsSpent": "{{count}} couleurs",
@@ -1347,6 +1348,8 @@
     },
     "config": {
       "startingLife": "Points de vie de départ",
+      "experimentalDungeons": "Donjons expérimentaux",
+      "experimentalDungeonsHelp": "Proposer Baldur's Gate Wilderness dans les donjons et à la prise d'initiative. Expérimental et non officiel.",
       "players": "Joueurs",
       "whoGoesFirst": "Qui commence",
       "firstPlayer": {
@@ -1382,6 +1385,7 @@
       "target": "Cible",
       "return": "Renvoyer",
       "discard": "Défausser",
+      "reveal": "Révéler",
       "evidence": "Preuves",
       "manifest": "Manifester",
       "untap": "Dégager",
@@ -1958,6 +1962,8 @@
     "additionalExile": "+ Exiler une carte",
     "additionalSacrifice": "+ Sacrifier un permanent",
     "additionalPayLife": "+ Payer des points de vie",
+    "additionalPayLifeAmount": "+ Payer {{amount}} points de vie",
+    "additionalCollectEvidence": "+ Rassembler des preuves {{amount}}",
     "additionalDiscard": "+ Se défausser d'une carte",
     "additionalTapCreatures": "+ Engager des créatures",
     "additionalGeneric": "+ {{type}}"
@@ -2085,6 +2091,7 @@
     "variantForetell": "Lancer depuis la Prédiction",
     "variantOverload": "Lancer avec Surcharge",
     "variantBestow": "Lancer avec Don",
+    "variantBlitz": "Lancer avec Blitz",
     "variantFreerunning": "Lancer avec Freerunning",
     "variantFuse": "Lancer avec Fusion",
     "variantMutate": "Lancer avec Mutate",
@@ -2094,7 +2101,14 @@
     "variantMoreThanMeetsTheEye": "Cast Converted",
     "variantPrototype": "Lancer avec Prototype",
     "variantFaceDown": "Lancer face cachée",
-    "variantFallback": "Lancer avec {{type}}"
+    "variantFallback": "Lancer avec {{type}}",
+    "viaSource": "via {{name}}",
+    "extraCostAdditional": "+ {{cost}}",
+    "extraCostAlternative": "au lieu de son coût de mana : {{cost}}",
+    "entersWithCounter": "arrive avec un marqueur {{counter}}",
+    "slotPerType": "utilise son emplacement {{type}}",
+    "slotChooseType": "choisissez un type de permanent",
+    "slotOncePerTurn": "une fois ce tour"
   },
   "categoryChoice": {
     "title": "Choisir les permanents à garder",
@@ -2262,6 +2276,12 @@
     "dontAskAgain": "Ne plus demander pendant cette partie",
     "dontAskAgainForSameCard": "Utiliser ce choix pour chaque copie de cette carte dans cette partie"
   },
+  "keywordDetail": {
+    "selfManaCost": "son coût de mana",
+    "selfManaValue": "sa valeur de mana",
+    "manaCostReduced": "son coût de mana réduit de {{reduction}}",
+    "spliceOnto": "sur {{subtype}} {{cost}}"
+  },
   "resolutionOptionalPayment": {
     "title": "Choisissez un paiement optionnel",
     "pay": "Payer {{cost}}",
@@ -2279,7 +2299,8 @@
       "zoneExile": "l’exil",
       "zoneHand": "votre main",
       "discard": "Défaussez-vous de {{count}} {{cards}}",
-      "exile": "Exilez {{count}} {{cards}} depuis {{zone}}"
+      "exile": "Exilez {{count}} {{cards}} depuis {{zone}}",
+      "reveal": "Révélez {{count}} {{cards}} de {{zone}}"
     }
   },
   "topOrBottom": {

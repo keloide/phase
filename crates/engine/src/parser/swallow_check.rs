@@ -43,7 +43,7 @@ use crate::types::ability_visit::{
     visit_ability_def, visit_replacement, visit_static, visit_trigger,
 };
 use crate::types::game_state::RetargetScope;
-use crate::types::keywords::Keyword;
+use crate::types::keywords::{Keyword, WardCost};
 use crate::types::mana::{ManaCost, ManaExpiry};
 use crate::types::replacements::ReplacementEvent;
 use crate::types::statics::ActivationExemption;
@@ -214,7 +214,7 @@ pub(crate) fn check_swallowed_clauses(
         detect_activate_limit(&cleaned, fragment, &scoped, &mut found);
         detect_duration_until_eot(&cleaned, fragment, &scoped, &evidence, &mut found);
         detect_optional_you_may(&cleaned, fragment, &scoped, &mut found);
-        detect_dynamic_qty(&cleaned, fragment, &evidence, &mut found);
+        detect_dynamic_qty(&cleaned, fragment, &scoped, &evidence, &mut found);
         detect_condition_if(&cleaned, fragment, &evidence, &scoped, &mut found);
         detect_condition_unless(&cleaned, fragment, &evidence, &mut found);
         detect_condition_as_long_as(&cleaned, fragment, &evidence, &scoped, &mut found);
@@ -2465,6 +2465,87 @@ fn dynamic_markers_are_all_recorded_unrecognized(
     })
 }
 
+/// CR 702.21a + CR 608.2h + CR 113.7a: how many dynamic ward payments a parsed
+/// `WardCost` actually REPRESENTS AT RUNTIME — one for the bare
+/// `PayLifeEqualToPower`, and zero for every other shape.
+///
+/// **`Compound` deliberately counts zero, and is not recursed into.**
+/// `ward_cost_to_ability_cost` (`game/triggers.rs`) converts only `costs.first()`
+/// of a compound cost, with the remaining components explicitly deferred — so for
+/// `Compound([Mana({2}), PayLifeEqualToPower])` the engine asks for {2} and drops
+/// the life payment. Counting the nested payment here would discharge the very
+/// `" equal to "` marker that flags the dropped quantity. The compound spelling
+/// therefore stays DIAGNOSED (conservative-red) until the runtime charges every
+/// component; when it does, this arm flips back to a recursive count. No printed
+/// card is affected today: no printed compound ward spelling carries a dynamic
+/// component (the printed compounds are fixed-cost, e.g. "Ward—{2}, Pay 2 life").
+///
+/// EXHAUSTIVE on purpose: a future `WardCost` variant must decide whether it
+/// represents a dynamic amount rather than defaulting into invisibility behind a `_`
+/// arm. `PayLifeEqualToPower` is the only variant that represents one today; every
+/// other parsed ward cost is a fixed amount, a mana cost, or a non-quantity payment.
+fn ward_power_life_payments(cost: &WardCost) -> usize {
+    match cost {
+        WardCost::PayLifeEqualToPower => 1,
+        WardCost::Mana(_)
+        | WardCost::PayLife(_)
+        | WardCost::DiscardCard
+        | WardCost::Sacrifice { .. }
+        | WardCost::Waterbend(_)
+        | WardCost::GetPlayerCounters { .. }
+        | WardCost::Compound(_) => 0,
+    }
+}
+
+/// CR 702.21a + CR 608.2h + CR 113.7a: true when every dynamic-quantity marker the
+/// line raises is an `" equal to "` occurrence discharged by a represented Ward
+/// power-life payment.
+///
+/// **Occurrence-counted, not set-like** — the same consumption contract
+/// [`dynamic_markers_are_all_recorded_unrecognized`] documents, applied to the Ward
+/// carrier instead of to recorded gap text. A predicate of the shape "some Ward in
+/// this unit pays life equal to power" answers a question about the carrier's TYPE,
+/// not about its OCCURRENCES: a unit whose text raises `" equal to "` twice, from two
+/// independent clauses, of which only ONE is the Ward payment, satisfied that
+/// predicate and had BOTH occurrences suppressed — so the second clause's dropped
+/// dynamic quantity was reported by nothing at all. That is the silent false green
+/// this detector exists to prevent.
+///
+/// So each represented payment CONSUMES one raised `" equal to "` occurrence and no
+/// more. The gate is deliberately narrow twice over: the raised marker set must be
+/// exactly `[" equal to "]` (any other marker — `"for each "`, `"the number of "`, …
+/// — falls through to the remaining probes), and the represented payment count must
+/// cover the raised occurrence count. Everything else is left to the other probes, so
+/// an unrepresented quantity still warns.
+fn ward_power_life_payments_cover_all_equal_to_markers(
+    cleaned: &str,
+    markers: &[&'static str],
+    evidence: &UnitEvidence,
+) -> bool {
+    // Exactly the one marker this leg can discharge; a second marker kind belongs to
+    // a clause no Ward payload represents.
+    if markers.len() != 1 || markers[0] != " equal to " {
+        return false;
+    }
+    // allow-noncombinator: swallow detector marker scan on classified text
+    let raised = cleaned.matches(" equal to ").count();
+    let represented: usize = evidence
+        .keywords()
+        .into_iter()
+        // CR 702.21a: a granted Ward ("Other creatures you control have ward—pay
+        // life equal to ~'s power") carries the same payment under
+        // `ContinuousModification::AddKeyword`, reached through the typed parent
+        // carrier — see `UnitEvidence::granted_keywords`.
+        .chain(evidence.granted_keywords())
+        .map(|keyword| match keyword {
+            Keyword::Ward(cost) => ward_power_life_payments(&cost),
+            // Every non-Ward keyword represents no ward payment.
+            _ => 0,
+        })
+        .sum();
+    raised > 0 && represented >= raised
+}
+
 /// Oracle text contains dynamic-quantity grammar ("equal to", "for each",
 /// "twice", "where x is", "the number of", "half [poss]") but the parsed
 /// AST contains no dynamic carrier (Ref, Multiply, DivideRounded, Offset,
@@ -2475,6 +2556,7 @@ fn dynamic_markers_are_all_recorded_unrecognized(
 fn detect_dynamic_qty(
     cleaned: &str,
     original: &str,
+    scoped: &ParsedAbilities,
     evidence: &UnitEvidence,
     diagnostics: &mut Vec<OracleDiagnostic>,
 ) {
@@ -2627,12 +2709,43 @@ fn detect_dynamic_qty(
     if evidence.any::<PlayerFilter>(|p| matches!(p, PlayerFilter::VotedFor { .. })) {
         return;
     }
-    //   CR 702.139 / 702.41  Affinity-style built-in cost mods carry their scaling in the
-    //              keyword payload. `Keyword` is EXTERNALLY tagged, so it is key-anchored
-    //              (array elements inherit their field's key).
-    if evidence.any_at::<Keyword>(&["extracted_keywords", "keywords"], |k| {
-        matches!(k, Keyword::Affinity { .. })
-    }) {
+    // CR 702.41  There is deliberately NO whole-unit Affinity exemption
+    //              here. Affinity's scaling text is REMINDER text ("This spell costs
+    //              {1} less to cast for each artifact you control"), which
+    //              `strip_parens` removes before any detector runs — so an Affinity
+    //              keyword in this unit can never be the source of a raised
+    //              "for each " occurrence, and a presence check could only ever
+    //              discharge an UNRELATED clause's dropped quantity (the same
+    //              false-green the Ward leg's occurrence-counted gate closes). A
+    //              future card that raises a marker the Affinity payload genuinely
+    //              represents needs an occurrence-counted association with the
+    //              keyword's own `TypedFilter`, not a presence check. Regression
+    //              test: `dynamic_qty_still_warns_for_a_sibling_marker_beside_affinity`.
+    //   CR 702.21a + CR 608.2h + CR 113.7a  A Ward whose life payment is the
+    //              warded permanent's power ("Ward—Pay life equal to ~'s power") is
+    //              a dynamic quantity intrinsic to the `WardCost` variant: the power
+    //              is read as the ability resolves (608.2h / 113.7a), and for the
+    //              BARE `PayLifeEqualToPower` variant `ward_cost_to_ability_cost`
+    //              resolves it to `AbilityCost::PayLife { amount: Ref(Power { scope:
+    //              Source }) }` at payment time. The compound spelling
+    //              ("Ward—{2}, Pay life equal to ~'s power") is NOT counted: the
+    //              runtime charges only `costs.first()` of a compound, so for that
+    //              shape the life payment is dropped and the quantity is not
+    //              represented — the marker must stay diagnosed (conservative-red)
+    //              until every component is charged. See `ward_power_life_payments`
+    //              for the full rationale and the reversal condition. (The
+    //              fixed-cost printed compounds — Gisa, the Hellraiser / Captain
+    //              Howler, Sea Scourge / Ovika, Enigma Goliath — raise no dynamic
+    //              marker at all; their dropped non-first components remain a
+    //              pre-existing runtime gap, reported on this PR.) No `QuantityExpr`
+    //              field exists for the probes above to see, so the variant itself is
+    //              the evidence — but each payment discharges exactly ONE raised
+    //              " equal to " occurrence
+    //              (`ward_power_life_payments_cover_all_equal_to_markers`), so a
+    //              second, unrepresented " equal to "/"for each "/… clause in the
+    //              same unit still warns. Cards: Raubahn, Bull of Ala Mhigo;
+    //              Phyrexian Fleshgorger.
+    if ward_power_life_payments_cover_all_equal_to_markers(cleaned, &markers, evidence) {
         return;
     }
     // Slot-shaped carriers: the fact IS "the parser filled this slot", and the slot's
@@ -2760,6 +2873,14 @@ fn detect_dynamic_qty(
         if all_for_each_are_mana_subst
             && evidence.any_static_mode(|m| matches!(m, StaticMode::PayLifeAsColoredMana { .. }))
         {
+            return;
+        }
+    }
+    // CR 608.2c: each printed "For each <population>," is represented by its own
+    // distinct co-scoped player_scope + ParentTarget iteration (occurrence-counted
+    // per population); an unmatched occurrence is a swallowed clause.
+    if let Some(populations) = cleaned_for_each_is_only_player_iteration(cleaned, &markers) {
+        if player_iterations_cover_all_for_each_markers(&populations, scoped) {
             return;
         }
     }
@@ -2951,6 +3072,170 @@ fn decline_iteration_prefix(input: &str) -> bool {
     ))
     .parse(input)
     .is_ok()
+}
+
+/// CR 608.2c: the population a "For each <population>," per-player iteration
+/// head names.
+fn player_iteration_head(input: &str) -> Option<PlayerFilter> {
+    alt((
+        value(
+            PlayerFilter::Opponent,
+            tag::<_, _, nom::error::Error<&str>>("for each opponent, "),
+        ),
+        value(PlayerFilter::All, tag("for each player, ")),
+    ))
+    .parse(input)
+    .ok()
+    .map(|(_, population)| population)
+}
+
+/// CR 608.2c: `Some(populations)` when the only dynamic marker this line raises
+/// is "for each " (per the shared `active_dynamic_markers` authority, so
+/// " twice " and every other marker are excluded) and every "for each "
+/// occurrence is a "For each <population>," per-player iteration head. The
+/// returned `Vec` holds one entry per printed occurrence (duplicates kept):
+/// `player_iterations_cover_all_for_each_markers` counts it as a multiset.
+fn cleaned_for_each_is_only_player_iteration(
+    cleaned: &str,
+    markers: &[&str],
+) -> Option<Vec<PlayerFilter>> {
+    if markers != ["for each "] {
+        return None;
+    }
+    cleaned
+        .match_indices("for each ") // allow-noncombinator: swallow detector marker scan on classified text
+        .map(|(idx, _)| player_iteration_head(&cleaned[idx..]))
+        .collect()
+}
+
+/// CR 608.2c: the co-scoped `ParentTarget` consumer of a per-iteration
+/// referent introducer scoped to `pop`, if `def` heads one printed per-player
+/// iteration. "For each <population>," realised as a per-player iteration: a
+/// def scoped to that population introduces a per-iteration object referent
+/// and its sub, co-scoped to the same population, consumes it through
+/// `ParentTarget`. A structural fact the parser produces only by binding the
+/// iteration, never implied by the "for each" text itself.
+fn co_scoped_parent_target_consumer<'a>(
+    def: &'a AbilityDefinition,
+    pop: &PlayerFilter,
+) -> Option<&'a AbilityDefinition> {
+    if def.player_scope.as_ref() != Some(pop)
+        || !crate::game::effects::effect_introduces_per_iteration_referent(&def.effect)
+    {
+        return None;
+    }
+    def.sub_ability.as_deref().filter(|sub| {
+        sub.player_scope.as_ref() == Some(pop)
+            && matches!(sub.effect.target_filter(), Some(TargetFilter::ParentTarget))
+    })
+}
+
+/// Iterations of `pop` below `def`: its `CreateDelayedTrigger` inner effect,
+/// the given `sub` (the def's own `sub_ability`, or `None` when that sub was
+/// spent as a consumer), its `else_ability` and its `mode_abilities`.
+fn iteration_count_below(
+    def: &AbilityDefinition,
+    pop: &PlayerFilter,
+    sub: Option<&AbilityDefinition>,
+) -> usize {
+    let delayed = match &*def.effect {
+        Effect::CreateDelayedTrigger { effect, .. } => {
+            def_tree_co_scoped_parent_target_iteration_count(effect, pop)
+        }
+        _ => 0,
+    };
+    delayed
+        + sub.map_or(0, |s| {
+            def_tree_co_scoped_parent_target_iteration_count(s, pop)
+        })
+        + def.else_ability.as_deref().map_or(0, |branch| {
+            def_tree_co_scoped_parent_target_iteration_count(branch, pop)
+        })
+        + def
+            .mode_abilities
+            .iter()
+            .map(|mode| def_tree_co_scoped_parent_target_iteration_count(mode, pop))
+            .sum::<usize>()
+}
+
+/// CR 608.2c: the number of distinct per-player iterations of `pop` in `def`'s
+/// tree. Each parsed node takes part in at most one (introducer, consumer)
+/// pair, so a consumer that is itself an introducer is never counted twice,
+/// while chained iterations along `sub_ability` each count.
+fn def_tree_co_scoped_parent_target_iteration_count(
+    def: &AbilityDefinition,
+    pop: &PlayerFilter,
+) -> usize {
+    match co_scoped_parent_target_consumer(def, pop) {
+        // CR 608.2c: one printed iteration = this introducer + its co-scoped consumer.
+        // The consumer is spent on this pair and never heads a second one, so the
+        // walk resumes at the consumer's own children (one node, at most one pair).
+        Some(consumer) => {
+            1 + iteration_count_below(def, pop, None)
+                + iteration_count_below(consumer, pop, consumer.sub_ability.as_deref())
+        }
+        None => iteration_count_below(def, pop, def.sub_ability.as_deref()),
+    }
+}
+
+/// CR 608.2c: the number of distinct printed per-player iterations of `pop`
+/// that the unit's parse represents. Spell-ability roots are separate printed
+/// items and are summed. CR 113.2c + CR 603.1b: every root in a unit's
+/// `scoped` comes from an item starting on the unit's one source line
+/// (`audit_units` / `scope_to_unit`), and that paragraph is one ability. The
+/// parser splits one printed triggered ability with several trigger conditions
+/// into one `TriggerDefinition` per condition, each carrying the ability's
+/// whole instruction list — equal clones or per-condition re-parses — so the
+/// ability counts as the MAX over the unit's trigger roots, never their sum.
+/// CR 113.2c + CR 614.1c / CR 614.1e: likewise a compound replacement head
+/// ("As ~ enters or is turned face up") counts as the max over the unit's
+/// replacement roots. Neither the item id (each split definition is its own
+/// item) nor structural equality (split halves may differ) can identify the
+/// splits; the unit can. Per category the max never exceeds the sum, so it
+/// under-counts (a visible `DynamicQty` gap) when one unit carries two
+/// separately printed triggered abilities (or replacement effects) that each
+/// hold an iteration (CR 113.2c's keyword-line exception). It stays silent,
+/// within the one-line granularity `AuditUnit` accepts, when split roots of one
+/// ability diverge and only some of them carry every printed iteration.
+fn co_scoped_parent_target_iteration_count(parsed: &ParsedAbilities, pop: &PlayerFilter) -> usize {
+    let count =
+        |def: &AbilityDefinition| def_tree_co_scoped_parent_target_iteration_count(def, pop);
+    parsed.abilities.iter().map(count).sum::<usize>()
+        + parsed
+            .triggers
+            .iter()
+            .filter_map(|t| t.execute.as_deref())
+            .map(count)
+            .max()
+            .unwrap_or(0)
+        + parsed
+            .replacements
+            .iter()
+            .filter_map(|r| r.execute.as_deref())
+            .map(count)
+            .max()
+            .unwrap_or(0)
+}
+
+/// CR 608.2c: every printed "For each <population>," occurrence is represented
+/// by its own distinct parsed per-player iteration of that population.
+///
+/// Occurrence-counted, not set-like (as `ward_power_life_payments_cover_all_equal_to_markers`):
+/// asking "does some parsed iteration of this population exist?" once per
+/// occurrence would let one parsed iteration discharge every same-population
+/// occurrence, hiding a second printed clause the parser dropped. Each printed
+/// occurrence consumes one distinct parsed iteration of its population — the
+/// same consumption contract as `dynamic_markers_are_all_recorded_unrecognized`
+/// — so a second printed clause with no iteration of its own stays reported.
+fn player_iterations_cover_all_for_each_markers(
+    populations: &[PlayerFilter],
+    scoped: &ParsedAbilities,
+) -> bool {
+    !populations.is_empty()
+        && populations.iter().all(|pop| {
+            populations.iter().filter(|p| *p == pop).count()
+                <= co_scoped_parent_target_iteration_count(scoped, pop)
+        })
 }
 
 /// The counter-multiplier phrases whose ×2 is carried intrinsically by the
@@ -5394,7 +5679,7 @@ mod tests {
         TargetFilter, TriggerCondition,
     };
     use crate::types::identifiers::TrackedSetId;
-    use crate::types::keywords::Keyword;
+    use crate::types::keywords::{Keyword, WardCost};
     use crate::types::mana::ManaCost;
     use crate::types::statics::StaticMode;
     use crate::types::triggers::TriggerMode;
@@ -5813,7 +6098,11 @@ If you sang a song the whole time you were searching and shuffling, you may unta
     /// definition in `crates/engine/src/parser/oracle.rs` (same pattern as
     /// `parsed_with_one_replacement_description` below).
     fn no_activation_limit_evidence() -> UnitEvidence {
-        UnitEvidence::of(&crate::parser::oracle::ParsedAbilities {
+        UnitEvidence::of(&no_activation_limit_abilities())
+    }
+
+    fn no_activation_limit_abilities() -> crate::parser::oracle::ParsedAbilities {
+        crate::parser::oracle::ParsedAbilities {
             abilities: Vec::new(),
             triggers: Vec::new(),
             statics: Vec::new(),
@@ -5826,13 +6115,13 @@ If you sang a song the whole time you were searching and shuffling, you may unta
             solve_condition: None,
             strive_cost: None,
             parse_warnings: Vec::new(),
-        })
+        }
     }
 
-    /// Evidence with a `repeat_for` carrier but no activation-limit static. This
+    /// Parsed abilities with a `repeat_for` carrier but no activation-limit static. This
     /// distinguishes a real repeat-count parse from unsupported "rather than
     /// once" wording that must still be reported as dynamic quantity text.
-    fn repeat_for_without_activation_limit_evidence() -> UnitEvidence {
+    fn repeat_for_without_activation_limit_abilities() -> crate::parser::oracle::ParsedAbilities {
         let mut ability = AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
@@ -5841,7 +6130,7 @@ If you sang a song the whole time you were searching and shuffling, you may unta
             },
         );
         ability.repeat_for = Some(QuantityExpr::Fixed { value: 2 });
-        UnitEvidence::of(&crate::parser::oracle::ParsedAbilities {
+        crate::parser::oracle::ParsedAbilities {
             abilities: vec![ability],
             triggers: Vec::new(),
             statics: Vec::new(),
@@ -5854,7 +6143,7 @@ If you sang a song the whole time you were searching and shuffling, you may unta
             solve_condition: None,
             strive_cost: None,
             parse_warnings: Vec::new(),
-        })
+        }
     }
 
     fn has_swallowed_detector(
@@ -9194,6 +9483,413 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
         assert!(!has_swallowed_detector(&parsed, "DynamicQty"));
     }
 
+    /// CR 702.21a + CR 608.2h + CR 113.7a: a Ward whose life payment is the
+    /// warded permanent's power ("Ward—Pay life equal to ~'s power") is a dynamic
+    /// quantity intrinsic to the `WardCost::PayLifeEqualToPower` variant — the
+    /// power is read as the ability resolves (608.2h / 113.7a, the same authority
+    /// `oracle_keyword.rs` cites for the read) and `ward_cost_to_ability_cost`
+    /// resolves it to `AbilityCost::PayLife { amount: Ref(Power { Source }) }`.
+    /// No `QuantityExpr` field exists, so the " equal to " marker must NOT raise
+    /// a DynamicQty swallow warning; the variant itself is the carrier.
+    /// Reverting the evidence leg re-reds Raubahn, Bull of Ala Mhigo and
+    /// Phyrexian Fleshgorger, both of which carried a live warning in shipped
+    /// card data.
+    #[test]
+    fn dynamic_qty_accepts_ward_pay_life_equal_to_power() {
+        // Detector-liveness control, same run: a fixture whose dynamic quantity
+        // is genuinely dropped still warns, so the two greens below cannot be
+        // produced by a detector that never fires. (Drown in the Loch's modal
+        // bullets are the suite's pinned DynamicQty positive.)
+        let dropped = parse_named(
+            "Choose one \u{2014}\n\
+             \u{2022} Counter target spell with mana value less than or equal to the number of \
+             cards in its controller's graveyard.\n\
+             \u{2022} Destroy target creature with mana value less than or equal to the number of \
+             cards in its controller's graveyard.",
+            "Drown in the Loch",
+            &["Instant"],
+        );
+        assert!(
+            has_swallowed_detector(&dropped, "DynamicQty"),
+            "control: the DynamicQty detector must be live in this test"
+        );
+
+        // The real cards, parsed with the production keyword/type inputs so the
+        // fixture reaches the same branches the card-data pipeline does.
+        let raubahn_keywords = vec!["Ward".to_string()];
+        let fleshgorger_keywords = vec![
+            "Prototype".to_string(),
+            "Menace".to_string(),
+            "Lifelink".to_string(),
+            "Ward".to_string(),
+        ];
+        let cases = [
+            (
+                "Raubahn, Bull of Ala Mhigo",
+                "Ward\u{2014}Pay life equal to Raubahn's power.\n\
+                 Whenever Raubahn attacks, attach up to one target Equipment you \
+                 control to target attacking creature.",
+                &raubahn_keywords,
+                vec!["Legendary".to_string(), "Creature".to_string()],
+                vec!["Human".to_string(), "Warrior".to_string()],
+            ),
+            (
+                "Phyrexian Fleshgorger",
+                "Prototype {1}{B}{B} \u{2014} 3/3 (You may cast this spell with different mana \
+                 cost, color, and size. It keeps its abilities and types.)\n\
+                 Menace, lifelink\n\
+                 Ward\u{2014}Pay life equal to this creature's power.",
+                &fleshgorger_keywords,
+                vec!["Artifact".to_string(), "Creature".to_string()],
+                vec!["Phyrexian".to_string(), "Wurm".to_string()],
+            ),
+        ];
+        for (name, text, keywords, core_types, subtypes) in cases {
+            // Reach guard 1: the fixture raises the detector's " equal to "
+            // expectation — without it, green could mean the marker never fired.
+            assert!(
+                // allow-noncombinator: test fixture assertion on classified text
+                text.to_ascii_lowercase().contains(" equal to "),
+                "{name}: fixture must raise the detector's dynamic marker"
+            );
+            let parsed = parse_oracle_text(text, name, keywords, &core_types, &subtypes);
+            // Reach guard 2: the typed carrier the leg keys on is present, so a
+            // green result is the leg's doing rather than a parse failure.
+            assert!(
+                parsed
+                    .extracted_keywords
+                    .iter()
+                    .any(|keyword| matches!(keyword, Keyword::Ward(WardCost::PayLifeEqualToPower))),
+                "{name} must carry the dynamic Ward cost: {:?}",
+                parsed.extracted_keywords
+            );
+            // Reach guard 3: no `Unimplemented` root effect, which would make
+            // `check_swallowed_clauses` skip the unit and green the negative
+            // assertion vacuously.
+            assert!(
+                parsed
+                    .abilities
+                    .iter()
+                    .chain(parsed.triggers.iter().filter_map(|t| t.execute.as_deref()))
+                    .all(|ability| !matches!(
+                        ability.effect.as_ref(),
+                        Effect::Unimplemented { .. }
+                    )),
+                "{name}: no Unimplemented root effect may suppress the unit"
+            );
+            assert!(
+                !has_swallowed_detector(&parsed, "DynamicQty"),
+                "{name} must not report a swallowed dynamic quantity: {:?}",
+                parsed.parse_warnings
+            );
+        }
+    }
+
+    /// CR 702.21a + CR 608.2h + CR 113.7a: a dynamic Ward GRANTED to other
+    /// permanents ("Other creatures you control have ward—Pay life equal to ~'s
+    /// power") parses to `ContinuousModification::AddKeyword { Ward(
+    /// PayLifeEqualToPower) }`, so the Ward leg must count it from the typed grant
+    /// carrier (`UnitEvidence::granted_keywords`) and stay silent. The control — the
+    /// same text with the same-shaped grant carrying a FIXED Ward — does not
+    /// represent the dynamic quantity, so the warning must still fire.
+    #[test]
+    fn dynamic_qty_accepts_granted_ward_pay_life_equal_to_power() {
+        use crate::types::ability::{ContinuousModification, StaticDefinition};
+
+        let text = "Other creatures you control have ward\u{2014}pay life equal to ~'s power.";
+
+        // Production parse: the grant lowers to AddKeyword(Ward(PayLifeEqualToPower)).
+        let granted = parse_named(text, "Test Grantor", &["Creature"]);
+        assert!(
+            granted
+                .statics
+                .iter()
+                .any(|stat| stat.modifications.iter().any(|m| matches!(
+                    m,
+                    ContinuousModification::AddKeyword {
+                        keyword: Keyword::Ward(WardCost::PayLifeEqualToPower)
+                    }
+                ))),
+            "reach guard: the production parser must lower the granted dynamic ward \
+             to AddKeyword(Ward(PayLifeEqualToPower)): {:?}",
+            granted.statics
+        );
+        let evidence = UnitEvidence::of(&granted);
+        let cleaned = text.to_ascii_lowercase();
+        assert!(
+            !super::active_dynamic_markers(&cleaned, &evidence).is_empty(),
+            "fixture must raise the dynamic marker"
+        );
+        // Reach guard: the typed grant carrier exposes the payment to the counting path.
+        assert!(
+            !evidence.granted_keywords().is_empty(),
+            "evidence must expose the granted keyword"
+        );
+        let mut diagnostics = Vec::new();
+        super::detect_dynamic_qty(&cleaned, &cleaned, &granted, &evidence, &mut diagnostics);
+        assert!(
+            dynamic_qty_descriptions(&diagnostics).is_empty(),
+            "a granted power-life Ward must not report DynamicQty: {diagnostics:?}"
+        );
+
+        // Control: the same text with a fixed-cost grant. Nothing represents the
+        // raised " equal to " occurrence, so the warning must fire.
+        let mut fixed_static = StaticDefinition::new(StaticMode::Continuous);
+        fixed_static.modifications = vec![ContinuousModification::AddKeyword {
+            keyword: Keyword::Ward(WardCost::PayLife(2)),
+        }];
+        let control = crate::parser::oracle::ParsedAbilities {
+            abilities: Vec::new(),
+            triggers: Vec::new(),
+            statics: vec![fixed_static],
+            replacements: Vec::new(),
+            extracted_keywords: Vec::new(),
+            modal: None,
+            additional_cost: None,
+            casting_restrictions: Vec::new(),
+            casting_options: Vec::new(),
+            solve_condition: None,
+            strive_cost: None,
+            parse_warnings: Vec::new(),
+        };
+        let control_evidence = UnitEvidence::of(&control);
+        let mut control_diagnostics = Vec::new();
+        super::detect_dynamic_qty(
+            &cleaned,
+            &cleaned,
+            &control,
+            &control_evidence,
+            &mut control_diagnostics,
+        );
+        assert_eq!(
+            dynamic_qty_descriptions(&control_diagnostics).len(),
+            1,
+            "a granted fixed Ward represents no dynamic quantity: {control_diagnostics:?}"
+        );
+    }
+
+    /// CR 702.41: an Affinity keyword's scaling lives in its REMINDER text ("This
+    /// spell costs {1} less to cast for each artifact you control"), which
+    /// `strip_parens` removes before the detectors run — so an Affinity keyword in this
+    /// unit can never be the source of a raised "for each " occurrence, and no
+    /// whole-unit Affinity exemption exists (see `detect_dynamic_qty`). A sibling
+    /// clause whose "for each " is unrepresented must therefore still warn; the
+    /// removed presence-check leg suppressed it.
+    #[test]
+    fn dynamic_qty_still_warns_for_a_sibling_marker_beside_affinity() {
+        use crate::types::ability::{TypeFilter, TypedFilter};
+
+        let parsed = parsed_with_keywords(vec![Keyword::Affinity(TypedFilter::new(
+            TypeFilter::Artifact,
+        ))]);
+        let evidence = UnitEvidence::of(&parsed);
+        let cleaned = "affinity for artifacts. when this creature enters, create a treasure \
+                       token for each artifact you control.";
+        // Reach guard: the marker is raised and the Affinity keyword is visible to the
+        // unit's evidence, so a warning here cannot be vacuous.
+        assert!(
+            !super::active_dynamic_markers(cleaned, &evidence).is_empty(),
+            "fixture must raise the dynamic marker"
+        );
+        assert!(
+            evidence
+                .keywords()
+                .iter()
+                .any(|keyword| matches!(keyword, Keyword::Affinity(_))),
+            "fixture must expose the Affinity keyword: {:?}",
+            evidence.keywords()
+        );
+        let mut diagnostics = Vec::new();
+        super::detect_dynamic_qty(cleaned, cleaned, &parsed, &evidence, &mut diagnostics);
+        assert_eq!(
+            dynamic_qty_descriptions(&diagnostics).len(),
+            1,
+            "a sibling unrepresented \"for each \" clause beside an Affinity keyword must \
+             warn: {diagnostics:?}"
+        );
+    }
+
+    /// A minimal `ParsedAbilities` carrying exactly the given extracted keywords and
+    /// no other definitions — the direct-probe fixture for the Ward evidence leg.
+    /// Field list taken verbatim from `ParsedAbilities` in
+    /// `crates/engine/src/parser/oracle.rs`.
+    fn parsed_with_keywords(keywords: Vec<Keyword>) -> crate::parser::oracle::ParsedAbilities {
+        crate::parser::oracle::ParsedAbilities {
+            abilities: Vec::new(),
+            triggers: Vec::new(),
+            statics: Vec::new(),
+            replacements: Vec::new(),
+            extracted_keywords: keywords,
+            modal: None,
+            additional_cost: None,
+            casting_restrictions: Vec::new(),
+            casting_options: Vec::new(),
+            solve_condition: None,
+            strive_cost: None,
+            parse_warnings: Vec::new(),
+        }
+    }
+
+    /// The `DynamicQty` `SwallowedClause` descriptions in `diagnostics`, in order.
+    fn dynamic_qty_descriptions(diagnostics: &[OracleDiagnostic]) -> Vec<&str> {
+        diagnostics
+            .iter()
+            .filter_map(|warning| match warning {
+                OracleDiagnostic::SwallowedClause {
+                    detector,
+                    description,
+                    ..
+                } if detector == "DynamicQty" => Some(description.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// CR 702.21a + CR 608.2h + CR 113.7a: a Compound Ward cost whose components
+    /// include `PayLifeEqualToPower` ("Ward—{2}, Pay life equal to ~'s power", the
+    /// comma-separated form `oracle_keyword::parse_ward_cost` lowers) is NOT
+    /// exempted. `ward_cost_to_ability_cost` charges only `costs.first()` of a
+    /// compound, so for this exact shape the engine asks for {2} and drops the life
+    /// payment: the dynamic quantity is not represented at runtime, and suppressing
+    /// the warning would hide the drop. The compound spelling therefore stays
+    /// diagnosed (conservative-red) until every component is charged. Reverting
+    /// `ward_power_life_payments` to recurse into `Compound` fails this test.
+    #[test]
+    fn dynamic_qty_flags_compound_ward_with_power_life_payment() {
+        let compound = parsed_with_keywords(vec![Keyword::Ward(WardCost::Compound(vec![
+            WardCost::Mana(ManaCost::generic(2)),
+            WardCost::PayLifeEqualToPower,
+        ]))]);
+        let evidence = UnitEvidence::of(&compound);
+
+        let cleaned = "ward\u{2014}{2}, pay life equal to ~'s power.";
+        // Reach guards: the fixture raises the " equal to " marker, and the compound
+        // carrier with its dynamic component is visible to the evidence probe — so
+        // the warning below is a verdict on the carrier, not a fixture that never
+        // engaged.
+        assert!(
+            !super::active_dynamic_markers(cleaned, &evidence).is_empty(),
+            "fixture must raise the dynamic marker"
+        );
+        assert!(
+            evidence.keywords().iter().any(|keyword| matches!(
+                keyword,
+                Keyword::Ward(WardCost::Compound(parts))
+                    if parts.contains(&WardCost::PayLifeEqualToPower)
+            )),
+            "fixture must expose the compound carrier with its dynamic component: {:?}",
+            evidence.keywords()
+        );
+        let mut diagnostics = Vec::new();
+        super::detect_dynamic_qty(cleaned, cleaned, &compound, &evidence, &mut diagnostics);
+        assert_eq!(
+            dynamic_qty_descriptions(&diagnostics).len(),
+            1,
+            "a compound Ward whose dynamic component is not charged must stay flagged: \
+             {diagnostics:?}"
+        );
+
+        // Control: the BARE spelling of the same payment IS fully charged, so the
+        // same text is silent — proving the warning above is about the compound
+        // carrier, not about the text or the marker gate.
+        let bare = UnitEvidence::of(&parsed_with_keywords(vec![Keyword::Ward(
+            WardCost::PayLifeEqualToPower,
+        )]));
+        let mut bare_diagnostics = Vec::new();
+        super::detect_dynamic_qty(
+            cleaned,
+            cleaned,
+            &parsed_with_keywords(vec![Keyword::Ward(WardCost::PayLifeEqualToPower)]),
+            &bare,
+            &mut bare_diagnostics,
+        );
+        assert!(
+            dynamic_qty_descriptions(&bare_diagnostics).is_empty(),
+            "the bare spelling must stay silent: {bare_diagnostics:?}"
+        );
+    }
+
+    /// CR 702.21a + CR 608.2h + CR 113.7a: each represented Ward power-life payment
+    /// discharges exactly ONE raised " equal to " occurrence — the consumption
+    /// contract `dynamic_markers_are_all_recorded_unrecognized` documents, applied to
+    /// the Ward carrier. A unit carrying the Ward clause PLUS a second, unrepresented
+    /// dynamic clause must still warn; the whole-unit boolean this leg replaces
+    /// suppressed both, and the second clause's dropped quantity was reported by
+    /// nothing at all.
+    #[test]
+    fn dynamic_qty_still_warns_for_a_second_unrepresented_marker_in_a_ward_unit() {
+        // Evidence: exactly ONE represented Ward power-life payment and no other
+        // carrier (no abilities/statics/replacements at all).
+        let parsed = parsed_with_keywords(vec![Keyword::Ward(WardCost::PayLifeEqualToPower)]);
+        let evidence = UnitEvidence::of(&parsed);
+
+        // Positive reach/control: the ward-only text stays silent with this
+        // evidence — one occurrence, one payment.
+        let ward_only = "ward\u{2014}pay life equal to ~'s power.";
+        let mut diagnostics = Vec::new();
+        super::detect_dynamic_qty(ward_only, ward_only, &parsed, &evidence, &mut diagnostics);
+        assert!(
+            dynamic_qty_descriptions(&diagnostics).is_empty(),
+            "the ward-only text must stay silent: {diagnostics:?}"
+        );
+
+        // A second, unrepresented " equal to " clause: one payment cannot discharge
+        // two occurrences. (The clause carries only the " equal to " marker, so the
+        // raised set is exactly [" equal to "] and the occurrence count is what
+        // refuses.)
+        let second_equal_to = "ward\u{2014}pay life equal to ~'s power. whenever ~ attacks, it \
+                               deals damage equal to its power to any target.";
+        let mut diagnostics = Vec::new();
+        super::detect_dynamic_qty(
+            second_equal_to,
+            second_equal_to,
+            &parsed,
+            &evidence,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            dynamic_qty_descriptions(&diagnostics).len(),
+            1,
+            "a second unrepresented \" equal to \" clause must warn: {diagnostics:?}"
+        );
+
+        // A second clause that also raises "the number of " — the raised marker set
+        // is no longer exactly [" equal to "], so the Ward leg cannot discharge it.
+        let second_number_of = "ward\u{2014}pay life equal to ~'s power. whenever ~ attacks, it \
+                                deals damage equal to the number of cards in your hand to any target.";
+        let mut diagnostics = Vec::new();
+        super::detect_dynamic_qty(
+            second_number_of,
+            second_number_of,
+            &parsed,
+            &evidence,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            dynamic_qty_descriptions(&diagnostics).len(),
+            1,
+            "a second \"the number of \" clause must warn: {diagnostics:?}"
+        );
+
+        // A second clause with a different marker ("for each ") also warns: the
+        // raised marker set is no longer exactly [" equal to "].
+        let second_for_each = "ward\u{2014}pay life equal to ~'s power. put a soul counter on ~ \
+                               for each player who lost life this turn.";
+        let mut diagnostics = Vec::new();
+        super::detect_dynamic_qty(
+            second_for_each,
+            second_for_each,
+            &parsed,
+            &evidence,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            dynamic_qty_descriptions(&diagnostics).len(),
+            1,
+            "a second \"for each \" clause must warn: {diagnostics:?}"
+        );
+    }
+
     /// CR 702.143d: Singing Towers of Darillium grants foretell whose cost is
     /// "equal to its mana cost reduced by {2}". That derived cost is intrinsic to
     /// the `AddKeywordWithDerivedCost` continuous modification (computed per
@@ -10599,7 +11295,7 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
     /// is present somewhere in it, silently hiding the second, unrelated rider.
     ///
     /// Constructed directly against `detect_replacement` (mirroring the
-    /// `no_activation_limit_evidence` / `repeat_for_without_activation_limit_evidence`
+    /// `no_activation_limit_evidence` / `repeat_for_without_activation_limit_abilities`
     /// direct-`UnitEvidence` pattern above) rather than through `parse_named`: the
     /// real front-end recognizes at most one ability grammar per physical source
     /// line, so two unrelated cast-permission abilities cannot be forced onto one
@@ -10637,6 +11333,7 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
             graveyard_destination_replacement: None,
             extra_cost: None,
             enters_with_counter: Some(CounterType::Finality),
+            required_cast_keyword: None,
         });
         let parsed = crate::parser::oracle::ParsedAbilities {
             abilities: Vec::new(),
@@ -10722,6 +11419,7 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
             graveyard_destination_replacement: None,
             extra_cost: None,
             enters_with_counter: Some(CounterType::Finality),
+            required_cast_keyword: None,
         });
         let parsed = crate::parser::oracle::ParsedAbilities {
             abilities: Vec::new(),
@@ -11247,9 +11945,10 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
     fn dynamic_qty_flags_unbacked_rather_than_once_wording() {
         let cleaned = "creatures you control can forage twice during each of your turns rather \
                        than once.";
-        let evidence = no_activation_limit_evidence();
+        let parsed = no_activation_limit_abilities();
+        let evidence = UnitEvidence::of(&parsed);
         let mut found = Vec::new();
-        super::detect_dynamic_qty(cleaned, cleaned, &evidence, &mut found);
+        super::detect_dynamic_qty(cleaned, cleaned, &parsed, &evidence, &mut found);
         assert!(
             found.iter().any(|d| matches!(
                 d,
@@ -11267,9 +11966,10 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
     fn dynamic_qty_flags_unbacked_rather_than_once_with_repeat_for() {
         let cleaned = "creatures you control can forage twice during each of your turns rather \
                        than once.";
-        let evidence = repeat_for_without_activation_limit_evidence();
+        let parsed = repeat_for_without_activation_limit_abilities();
+        let evidence = UnitEvidence::of(&parsed);
         let mut found = Vec::new();
-        super::detect_dynamic_qty(cleaned, cleaned, &evidence, &mut found);
+        super::detect_dynamic_qty(cleaned, cleaned, &parsed, &evidence, &mut found);
         assert!(
             found.iter().any(|d| matches!(
                 d,
@@ -11278,6 +11978,360 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
             "repeat_for must not hide unbacked 'rather than once' wording"
         );
     }
+
+    // ── DynamicQty: co-scoped per-player iteration (CR 608.2c) ──────────
+
+    const VALKI_FULL: &str = "When Valki enters, each opponent reveals their hand. For each opponent, exile a creature card they revealed this way until Valki leaves the battlefield.\n{X}: Choose a creature card exiled with Valki with mana value X. Valki becomes a copy of that card.";
+
+    /// A scoped `RevealHand` that parks a creature-card choice, optionally with a
+    /// co-scoped `ChangeZone { target }` consumer.
+    fn scoped_reveal_choice(
+        reveal_scope: PlayerFilter,
+        consumer: Option<(PlayerFilter, TargetFilter)>,
+    ) -> AbilityDefinition {
+        let mut reveal = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::RevealHand {
+                target: TargetFilter::Controller,
+                card_filter: TargetFilter::Typed(crate::types::ability::TypedFilter::creature()),
+                count: None,
+                selection: crate::types::ability::CardSelectionMode::Chosen,
+                choice_optional: false,
+                reveal: true,
+            },
+        );
+        reveal.player_scope = Some(reveal_scope);
+        if let Some((consumer_scope, target)) = consumer {
+            let mut exile = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::ChangeZone {
+                    origin: None,
+                    destination: Zone::Exile,
+                    target,
+                    owner_library: false,
+                    enter_transformed: false,
+                    enters_under: None,
+                    enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                    enters_attacking: false,
+                    up_to: false,
+                    enter_with_counters: vec![],
+                    conditional_enter_with_counters: vec![],
+                    face_down_profile: None,
+                    enters_modified_if: None,
+                },
+            );
+            exile.player_scope = Some(consumer_scope);
+            reveal.sub_ability = Some(Box::new(exile));
+        }
+        reveal
+    }
+
+    fn dynamic_qty_fires(cleaned: &str, abilities: Vec<AbilityDefinition>) -> bool {
+        let mut parsed = no_activation_limit_abilities();
+        parsed.abilities = abilities;
+        dynamic_qty_fires_parsed(cleaned, parsed)
+    }
+
+    /// Run `detect_dynamic_qty` over `cleaned` with `parsed` as the unit's
+    /// scoped roots (abilities, triggers and replacements).
+    fn dynamic_qty_fires_parsed(
+        cleaned: &str,
+        parsed: crate::parser::oracle::ParsedAbilities,
+    ) -> bool {
+        let evidence = UnitEvidence::of(&parsed);
+        let mut found = Vec::new();
+        super::detect_dynamic_qty(cleaned, cleaned, &parsed, &evidence, &mut found);
+        found.iter().any(|d| {
+            matches!(d, OracleDiagnostic::SwallowedClause { detector, .. } if detector == "DynamicQty")
+        })
+    }
+
+    const CO_SCOPED_TEXT: &str = "each opponent reveals their hand. for each opponent, exile a \
+                                  creature card they revealed this way.";
+
+    /// CR 608.2c: Valki's "For each opponent," is bound as a per-opponent
+    /// iteration (co-scoped reveal choice + `ParentTarget` exile), not a count,
+    /// so it is represented and raises no `DynamicQty`.
+    #[test]
+    fn valki_verbatim_co_scoped_iteration_raises_no_dynamic_qty() {
+        let parsed = parse_named(VALKI_FULL, "Valki, God of Lies", &["Creature"]);
+        // Reach-guards: the unit is audited (no Unimplemented skip) and carries
+        // the co-scoped per-opponent shape.
+        assert!(!any_ability_has_unimplemented(&parsed));
+        let etb = parsed.triggers[0].execute.as_deref().expect("Valki ETB");
+        assert_eq!(etb.player_scope, Some(PlayerFilter::Opponent));
+        assert!(!crate::game::effects::reveal_hand::effect_parks_reveal_card_choice(&etb.effect));
+        let choice = etb.sub_ability.as_deref().expect("choice step");
+        assert_eq!(choice.player_scope, Some(PlayerFilter::Opponent));
+        assert!(crate::game::effects::reveal_hand::effect_parks_reveal_card_choice(&choice.effect));
+        let sub = choice.sub_ability.as_deref().expect("exile consumer");
+        assert_eq!(sub.player_scope, Some(PlayerFilter::Opponent));
+        assert_eq!(
+            sub.effect.target_filter(),
+            Some(&TargetFilter::ParentTarget)
+        );
+        // The text itself raises the expectation: with no evidence it fires.
+        assert!(dynamic_qty_fires(
+            "when valki enters, each opponent reveals their hand. for each opponent, exile a \
+             creature card they revealed this way until valki leaves the battlefield.",
+            vec![],
+        ));
+
+        assert!(
+            swallows_for(&parsed, "DynamicQty").is_empty(),
+            "{:#?}",
+            parsed.parse_warnings
+        );
+    }
+
+    /// Make an Example's "For each opponent, you choose one of their piles" is
+    /// not a co-scoped reveal iteration; it still raises exactly one `DynamicQty`.
+    #[test]
+    fn make_an_example_verbatim_still_raises_one_dynamic_qty() {
+        let parsed = parse_named(
+            "Each opponent separates the creatures they control into two piles. For each opponent, you choose one of their piles. Each opponent sacrifices the creatures in their chosen pile. (Piles can be empty.)",
+            "Make an Example",
+            &["Sorcery"],
+        );
+        assert_eq!(swallows_for(&parsed, "DynamicQty").len(), 1);
+    }
+
+    /// Breach the Multiverse's "For each player, choose …" has no co-scoped
+    /// referent consumer; it still raises exactly one `DynamicQty`.
+    #[test]
+    fn breach_the_multiverse_verbatim_still_raises_one_dynamic_qty() {
+        let parsed = parse_named(
+            "Each player mills ten cards. For each player, choose a creature or planeswalker card in that player's graveyard. Put those cards onto the battlefield under your control. Then each creature you control becomes a Phyrexian in addition to its other types.",
+            "Breach the Multiverse",
+            &["Sorcery"],
+        );
+        assert_eq!(swallows_for(&parsed, "DynamicQty").len(), 1);
+    }
+
+    /// Typed positive: the co-scoped pair represents the iteration.
+    #[test]
+    fn co_scoped_parent_target_iteration_is_represented() {
+        assert!(
+            dynamic_qty_fires(CO_SCOPED_TEXT, vec![]),
+            "reach: the text raises it"
+        );
+        assert!(!dynamic_qty_fires(
+            CO_SCOPED_TEXT,
+            vec![scoped_reveal_choice(
+                PlayerFilter::Opponent,
+                Some((PlayerFilter::Opponent, TargetFilter::ParentTarget)),
+            )],
+        ));
+    }
+
+    /// "Body absent" twin: a scoped reveal with no co-scoped
+    /// consumer does not represent the iteration.
+    #[test]
+    fn single_scoped_def_without_co_scoped_consumer_still_warns() {
+        assert!(!dynamic_qty_fires(
+            CO_SCOPED_TEXT,
+            vec![scoped_reveal_choice(
+                PlayerFilter::Opponent,
+                Some((PlayerFilter::Opponent, TargetFilter::ParentTarget)),
+            )],
+        ));
+        assert!(dynamic_qty_fires(
+            CO_SCOPED_TEXT,
+            vec![scoped_reveal_choice(PlayerFilter::Opponent, None)],
+        ));
+    }
+
+    /// The iteration's population must be the one the text names.
+    #[test]
+    fn co_scoped_iteration_population_mismatch_still_warns() {
+        let pair = || {
+            vec![scoped_reveal_choice(
+                PlayerFilter::Opponent,
+                Some((PlayerFilter::Opponent, TargetFilter::ParentTarget)),
+            )]
+        };
+        assert!(!dynamic_qty_fires(CO_SCOPED_TEXT, pair()));
+        assert!(dynamic_qty_fires(
+            "each opponent reveals their hand. for each player, exile a creature card they \
+             revealed this way.",
+            pair(),
+        ));
+    }
+
+    /// Another dynamic marker on the line is not discharged by the iteration.
+    #[test]
+    fn co_scoped_iteration_with_extra_marker_still_warns() {
+        let pair = || {
+            vec![scoped_reveal_choice(
+                PlayerFilter::Opponent,
+                Some((PlayerFilter::Opponent, TargetFilter::ParentTarget)),
+            )]
+        };
+        assert!(!dynamic_qty_fires(CO_SCOPED_TEXT, pair()));
+        assert!(dynamic_qty_fires(
+            "each opponent reveals their hand. for each opponent, exile a creature card they \
+             revealed this way with mana value equal to its power.",
+            pair(),
+        ));
+    }
+
+    /// One line, two same-population "For each opponent," markers.
+    const TWO_OPP_TEXT: &str = "each opponent reveals their hand. for each opponent, exile a \
+                                creature card they revealed this way. for each opponent, exile a \
+                                creature card they revealed this way.";
+
+    /// One line, one "For each opponent," and one "For each player," marker.
+    const MIXED_TEXT: &str = "each opponent reveals their hand. for each opponent, exile a \
+                              creature card they revealed this way. for each player, exile a \
+                              creature card they revealed this way.";
+
+    /// One co-scoped per-player iteration of `pop` (introducer + `ParentTarget`
+    /// consumer).
+    fn pair(pop: PlayerFilter) -> AbilityDefinition {
+        scoped_reveal_choice(pop.clone(), Some((pop, TargetFilter::ParentTarget)))
+    }
+
+    /// Two chained co-scoped iterations of `pop` in one tree: the second pair
+    /// hangs off the first pair's consumer.
+    fn chain(pop: PlayerFilter) -> AbilityDefinition {
+        let mut p1 = pair(pop.clone());
+        p1.sub_ability.as_mut().expect("consumer").sub_ability = Some(Box::new(pair(pop)));
+        p1
+    }
+
+    /// CR 608.2c: two printed same-population iterations on one line need two
+    /// distinct parsed iterations; one parsed iteration leaves the second
+    /// printed clause reported.
+    #[test]
+    fn co_scoped_iteration_two_same_population_markers_one_iteration_still_warns() {
+        assert!(
+            dynamic_qty_fires(TWO_OPP_TEXT, vec![]),
+            "reach: the text raises it"
+        );
+        assert!(
+            !dynamic_qty_fires(
+                TWO_OPP_TEXT,
+                vec![pair(PlayerFilter::Opponent), pair(PlayerFilter::Opponent)],
+            ),
+            "two distinct iterations discharge two markers"
+        );
+        assert!(
+            dynamic_qty_fires(TWO_OPP_TEXT, vec![pair(PlayerFilter::Opponent)]),
+            "one iteration must not discharge two printed markers"
+        );
+    }
+
+    /// The count continues past a matched pair: chained iterations each count.
+    #[test]
+    fn co_scoped_iteration_chained_pairs_each_count() {
+        assert!(!dynamic_qty_fires(
+            TWO_OPP_TEXT,
+            vec![chain(PlayerFilter::Opponent)]
+        ));
+        // Negative twin: the inner iteration has no co-scoped consumer.
+        let mut broken = pair(PlayerFilter::Opponent);
+        broken.sub_ability.as_mut().expect("consumer").sub_ability =
+            Some(Box::new(scoped_reveal_choice(PlayerFilter::Opponent, None)));
+        assert!(dynamic_qty_fires(TWO_OPP_TEXT, vec![broken]));
+    }
+
+    /// A consumer that is itself an introducer is spent on one pair and never
+    /// opens a second: head → mid → tail counts one iteration, not two.
+    #[test]
+    fn co_scoped_iteration_shared_node_counts_once() {
+        let shared_chain = || {
+            let mut mid = pair(PlayerFilter::Opponent);
+            if let Effect::RevealHand { target, .. } = &mut *mid.effect {
+                *target = TargetFilter::ParentTarget;
+            }
+            let mut head = scoped_reveal_choice(PlayerFilter::Opponent, None);
+            head.sub_ability = Some(Box::new(mid));
+            head
+        };
+        assert!(
+            !dynamic_qty_fires(CO_SCOPED_TEXT, vec![shared_chain()]),
+            "the chain represents one iteration"
+        );
+        assert!(dynamic_qty_fires(TWO_OPP_TEXT, vec![shared_chain()]));
+    }
+
+    /// Mixed populations are counted per population, never pooled.
+    #[test]
+    fn co_scoped_iteration_mixed_populations_count_per_population() {
+        assert!(!dynamic_qty_fires(
+            MIXED_TEXT,
+            vec![pair(PlayerFilter::Opponent), pair(PlayerFilter::All)],
+        ));
+        assert!(dynamic_qty_fires(
+            MIXED_TEXT,
+            vec![pair(PlayerFilter::Opponent)]
+        ));
+        assert!(
+            dynamic_qty_fires(
+                MIXED_TEXT,
+                vec![pair(PlayerFilter::Opponent), pair(PlayerFilter::Opponent)],
+            ),
+            "two Opponent iterations must not discharge the Player marker"
+        );
+    }
+
+    /// CR 113.2c + CR 603.1b / CR 614.1c / CR 614.1e: one printed ability split
+    /// into several trigger or replacement roots counts once (the per-category
+    /// max), whether the split roots are equal or divergent.
+    #[test]
+    fn co_scoped_iteration_split_trigger_and_replacement_roots_count_once() {
+        use crate::types::ability::{ReplacementDefinition, TriggerDefinition};
+        use crate::types::replacements::ReplacementEvent;
+
+        // (a) Identical trigger clones.
+        let mut parsed = no_activation_limit_abilities();
+        parsed.triggers = vec![
+            TriggerDefinition::new(TriggerMode::ChangesZone).execute(pair(PlayerFilter::Opponent)),
+            TriggerDefinition::new(TriggerMode::BecomeMonstrous)
+                .execute(pair(PlayerFilter::Opponent)),
+        ];
+        assert!(
+            !dynamic_qty_fires_parsed(CO_SCOPED_TEXT, parsed.clone()),
+            "reach: trigger roots are walked"
+        );
+        assert!(dynamic_qty_fires_parsed(TWO_OPP_TEXT, parsed));
+
+        // (b) Identical replacement clones.
+        let mut parsed = no_activation_limit_abilities();
+        parsed.replacements = vec![
+            ReplacementDefinition::new(ReplacementEvent::Moved)
+                .execute(pair(PlayerFilter::Opponent)),
+            ReplacementDefinition::new(ReplacementEvent::TurnFaceUp)
+                .execute(pair(PlayerFilter::Opponent)),
+        ];
+        assert!(
+            !dynamic_qty_fires_parsed(CO_SCOPED_TEXT, parsed.clone()),
+            "reach: replacement roots are walked"
+        );
+        assert!(dynamic_qty_fires_parsed(TWO_OPP_TEXT, parsed));
+
+        // (c) Divergent trigger clones (per-condition re-parse).
+        let mut second = pair(PlayerFilter::Opponent);
+        second.description = Some("second".into());
+        let mut parsed = no_activation_limit_abilities();
+        parsed.triggers = vec![
+            TriggerDefinition::new(TriggerMode::ChangesZone).execute(pair(PlayerFilter::Opponent)),
+            TriggerDefinition::new(TriggerMode::BecomeMonstrous).execute(second),
+        ];
+        assert!(
+            !dynamic_qty_fires_parsed(CO_SCOPED_TEXT, parsed.clone()),
+            "reach: divergent trigger roots are walked"
+        );
+        assert!(dynamic_qty_fires_parsed(TWO_OPP_TEXT, parsed));
+
+        // (d) One trigger root holding two chained iterations discharges two markers.
+        let mut parsed = no_activation_limit_abilities();
+        parsed.triggers =
+            vec![TriggerDefinition::new(TriggerMode::ChangesZone)
+                .execute(chain(PlayerFilter::Opponent))];
+        assert!(!dynamic_qty_fires_parsed(TWO_OPP_TEXT, parsed));
+    }
+
     // ── Detector P: DamageSubjectConjunction ────────────────────────────
 
     /// Run detector P over one line of Oracle text plus the AST that text parsed
@@ -11622,6 +12676,7 @@ mod detect_condition_if_replacement_exemption_tests {
             graveyard_destination_replacement: None,
             extra_cost: None,
             enters_with_counter: Some(CounterType::Finality),
+            required_cast_keyword: None,
         });
         let parsed = crate::parser::oracle::ParsedAbilities {
             abilities: Vec::new(),

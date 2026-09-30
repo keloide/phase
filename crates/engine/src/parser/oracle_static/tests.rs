@@ -13277,7 +13277,9 @@ fn static_grant_blitz_self_mana_cost() {
     assert_eq!(
         def.mode,
         StaticMode::CastWithKeyword {
-            keyword: Keyword::Blitz(ManaCost::SelfManaCost),
+            keyword: Keyword::Blitz(crate::types::keywords::BlitzCost::Mana(
+                ManaCost::SelfManaCost
+            )),
         }
     );
     let Some(TargetFilter::Typed(tf)) = &def.affected else {
@@ -13314,7 +13316,9 @@ fn static_grant_blitz_simple_form() {
     assert_eq!(
         def.mode,
         StaticMode::CastWithKeyword {
-            keyword: Keyword::Blitz(ManaCost::SelfManaCost),
+            keyword: Keyword::Blitz(crate::types::keywords::BlitzCost::Mana(
+                ManaCost::SelfManaCost
+            )),
         }
     );
 }
@@ -14631,9 +14635,20 @@ fn graveyard_cast_permission_scourge_of_nel_toth_self_ref() {
     // normalization). The `~` filter must lower to TargetFilter::SelfRef, NOT an
     // empty match-all Typed filter (which would grant permission to cast ANY
     // graveyard card).
-    let text = "You may cast ~ from your graveyard by paying {B}{B} \
+    //
+    // The printed alternative-cost rider ("by paying {B}{B} and sacrificing two
+    // creatures rather than paying its mana cost") is unmodelled, so that line
+    // now DECLINES (CR 601.3 + CR 118.9): an unconsumed residual fails closed
+    // rather than granting a cast at the printed cost. The self-reference
+    // lowering this test guards is pinned on the rider-free form.
+    let printed = "You may cast ~ from your graveyard by paying {B}{B} \
                     and sacrificing two creatures rather than paying its mana cost.";
-    let def = parse_static_line(text).expect("should parse Scourge of Nel Toth text");
+    assert!(
+        parse_static_line(printed).is_none(),
+        "an unmodelled alternative-cost rider declines the permission"
+    );
+    let text = "You may cast ~ from your graveyard.";
+    let def = parse_static_line(text).expect("should parse the self-ref permission");
     assert!(matches!(
         def.mode,
         StaticMode::GraveyardCastPermission {
@@ -15167,77 +15182,103 @@ fn disjunctive_graveyard_permission_classifies_static_not_replacement() {
     );
 }
 
-// --- Alt-cost rider tests (Ninja Teen et al., CR 118.9 / CR 702.190a) ---
+// --- Alt-cost rider tests (CR 118.9b) ---
 
-#[test]
-fn graveyard_cast_permission_ninja_teen_sneak_rider() {
-    // Ninja Teen Level 3 rider: grants GY-cast permission gated on Sneak.
-    let text = "You may cast creature spells from your graveyard using their sneak abilities.";
-    let def = parse_static_line(text).expect("should parse Ninja Teen rider");
-    assert!(matches!(
-        def.mode,
-        StaticMode::GraveyardCastPermission {
-            frequency: CastFrequency::Unlimited,
-            play_mode: CardPlayMode::Cast,
-            ..
-        }
-    ));
-    let filter = def.affected.expect("should have affected filter");
-    let TargetFilter::Typed(tf) = filter else {
-        panic!("expected Typed filter, got: {filter:?}");
-    };
-    assert!(tf.type_filters.contains(&TypeFilter::Creature));
+/// Positive reach guard for a declined rider: `text` without its `rider` parses
+/// as a graveyard-cast permission, so the rider is what declines it, and the
+/// rider parser reads the rider as `expected` (`None`: unrecognized).
+fn assert_rider_reaches_the_rider_branch(text: &str, rider: &str, expected: Option<KeywordKind>) {
+    let base = text.replacen(rider, "", 1);
+    assert_ne!(base, text, "{text}: the rider is in the line");
     assert!(
-        tf.properties.iter().any(|p| matches!(
-            p,
-            FilterProp::HasKeywordKind {
-                value: KeywordKind::Sneak
-            }
-        )),
-        "expected HasKeywordKind{{Sneak}} in properties, got: {:?}",
-        tf.properties
+        parse_static_line(&base)
+            .is_some_and(|def| matches!(def.mode, StaticMode::GraveyardCastPermission { .. })),
+        "reach: {base:?} parses as a graveyard permission, so only the rider declines {text:?}"
+    );
+    let read = super::grammar::parse_alt_cost_rider(rider)
+        .ok()
+        .map(|(rest, kind)| {
+            assert!(rest.is_empty(), "{rider:?}: the rider is fully read");
+            kind
+        });
+    assert_eq!(read, expected, "{rider:?}");
+}
+
+/// CR 118.9b: Ninja Teen's Level 3 rider requires sneak, which the engine can't
+/// cast from the graveyard, so the permission is declined (an honest gap)
+/// rather than modeled with a method that has no legal cast.
+#[test]
+fn graveyard_cast_permission_ninja_teen_sneak_rider_is_declined() {
+    let text = "You may cast creature spells from your graveyard using their sneak abilities.";
+    assert_rider_reaches_the_rider_branch(
+        text,
+        " using their sneak abilities",
+        Some(KeywordKind::Sneak),
+    );
+    assert!(
+        parse_static_line(text)
+            .is_none_or(|def| !matches!(def.mode, StaticMode::GraveyardCastPermission { .. })),
+        "a sneak-only graveyard permission must not be modeled"
     );
 }
 
+/// CR 118.9b: a "using its <keyword> ability" rider is the permission's typed
+/// required casting method, not a card selector. Blitz and Bestow are modeled;
+/// mutate and warp have no graveyard cast route and decline the permission.
 #[test]
 fn graveyard_cast_permission_self_ref_rider_all_keywords() {
-    // Self-referential riders on the 5 shipping cards (Brokkos/Mutate,
-    // Phoenix/Bestow, Sabin+Underdog/Blitz, Timeline Culler/Warp).
     let cases = [
-        ("mutate", KeywordKind::Mutate),
-        ("bestow", KeywordKind::Bestow),
-        ("blitz", KeywordKind::Blitz),
-        ("warp", KeywordKind::Warp),
+        ("mutate", None, KeywordKind::Mutate),
+        ("bestow", Some(KeywordKind::Bestow), KeywordKind::Bestow),
+        ("blitz", Some(KeywordKind::Blitz), KeywordKind::Blitz),
+        ("warp", None, KeywordKind::Warp),
     ];
-    for (name, expected_kind) in cases {
+    for (name, expected, rider_kind) in cases {
         let text = format!("You may cast this card from your graveyard using its {name} ability.");
-        let def = parse_static_line(&text)
-            .unwrap_or_else(|| panic!("should parse self-ref rider for {name}"));
-        let filter = def
-            .affected
-            .unwrap_or_else(|| panic!("missing affected filter for {name}"));
-        let has_kind = match filter {
-            TargetFilter::Typed(tf) => tf.properties.iter().any(|p| {
-                matches!(
-                    p,
-                    FilterProp::HasKeywordKind { value } if *value == expected_kind
-                )
-            }),
-            TargetFilter::And { filters } => filters.iter().any(|f| {
-                matches!(f, TargetFilter::Typed(tf)
-                    if tf.properties.iter().any(|p| matches!(
-                        p,
-                        FilterProp::HasKeywordKind { value } if *value == expected_kind
-                    ))
-                )
-            }),
-            _ => false,
-        };
-        assert!(
-            has_kind,
-            "missing HasKeywordKind{{{expected_kind:?}}} for {name}"
-        );
+        if expected.is_none() {
+            assert_rider_reaches_the_rider_branch(
+                &text,
+                &format!(" using its {name} ability"),
+                Some(rider_kind),
+            );
+        }
+        let permission = parse_static_line(&text)
+            .filter(|def| matches!(def.mode, StaticMode::GraveyardCastPermission { .. }));
+        match (expected, permission) {
+            (Some(kind), Some(def)) => {
+                let StaticMode::GraveyardCastPermission {
+                    required_cast_keyword,
+                    ..
+                } = def.mode
+                else {
+                    unreachable!()
+                };
+                assert_eq!(required_cast_keyword, Some(kind), "{name}");
+                let filter = def
+                    .affected
+                    .unwrap_or_else(|| panic!("missing affected filter for {name}"));
+                assert!(
+                    !format!("{filter:?}").contains("HasKeywordKind"),
+                    "{name}: the method must not also ride the card filter: {filter:?}"
+                );
+            }
+            (None, None) => {}
+            (expected, got) => panic!("{name}: expected {expected:?}, got {got:?}"),
+        }
     }
+}
+
+/// CR 118.9b: an unrecognized " using ... ability" rider declines the
+/// permission, so an unknown method never becomes an unrestricted permission.
+#[test]
+fn graveyard_cast_permission_unknown_rider_is_declined() {
+    let text = "You may cast this card from your graveyard using its frobnicate ability.";
+    assert_rider_reaches_the_rider_branch(text, " using its frobnicate ability", None);
+    assert!(
+        parse_static_line(text)
+            .is_none_or(|def| !matches!(def.mode, StaticMode::GraveyardCastPermission { .. })),
+        "an unrecognized rider must not parse as an open permission"
+    );
 }
 
 /// Issue #594 (Maralen, Fae Ascendant) — parser test for the new exile
@@ -15542,6 +15583,113 @@ fn persistent_exile_cast_permission_azula_flash_and_any_mana() {
         "full Oracle dispatch must route Azula's line to the flash+any-mana static, got {:?}",
         parsed.statics
     );
+}
+
+/// The exact permission Tibalt, Cosmic Impostor's emblem (and Rogue Class
+/// level 3) grants: play cards exiled with the source, any time, paying normal
+/// costs, with mana spendable as though it were mana of any color.
+fn persistent_play_any_color_permission() -> StaticMode {
+    StaticMode::ExileCastPermission {
+        frequency: CastFrequency::Unlimited,
+        // CR 305.1: "play cards" covers lands (played) and spells (cast).
+        play_mode: CardPlayMode::Play,
+        cost: ExileCastCost::PayNormalCost,
+        pool: ExileCardPool::Persistent,
+        timing: ExileCastTiming::AnyTime,
+        // CR 609.4b: "as though it were mana of any color".
+        mana_spend_permission: Some(crate::types::ability::ManaSpendPermission::AnyColor),
+        grants_flash: false,
+        extra_cost: None,
+        enters_with_counter: None,
+        grantee: crate::types::statics::ExileCastGrantee::SourceController,
+    }
+}
+
+/// Tibalt, Cosmic Impostor's emblem text, verbatim, with the self-reference
+/// normalized to `~` (as `replace_self_refs` leaves it).
+const TIBALT_EMBLEM_INNER: &str = "You may play cards exiled with ~, and you may spend mana as though it were mana of any color to cast those spells.";
+
+/// CR 609.4b + CR 118.14: the persistent exile-play permission composes the
+/// shared mana-spend rider grammar, joined by ", and ". Before the rider was
+/// composed, the ", and you may spend mana …" tail was an unmodeled remainder
+/// and the whole permission declined.
+#[test]
+fn persistent_exile_play_permission_composes_any_color_rider() {
+    let lower = TIBALT_EMBLEM_INNER.to_lowercase();
+    let def = try_parse_persistent_exile_play_permission(TIBALT_EMBLEM_INNER, &lower)
+        .expect("the emblem's play permission must parse");
+    assert_eq!(def.mode, persistent_play_any_color_permission());
+    assert_eq!(def.affected, Some(TargetFilter::Any));
+
+    let def = parse_static_line(TIBALT_EMBLEM_INNER).expect("static dispatch reaches it");
+    assert_eq!(def.mode, persistent_play_any_color_permission());
+}
+
+/// The emblem body is lowered through `parse_static_line_multi`
+/// (`try_parse_emblem_creation`): it must yield exactly the one permission.
+#[test]
+fn emblem_inner_static_lowers_to_single_persistent_permission() {
+    let defs = parse_static_line_multi(TIBALT_EMBLEM_INNER);
+    assert_eq!(defs.len(), 1, "exactly one static, got {defs:?}");
+    assert_eq!(defs[0].mode, persistent_play_any_color_permission());
+}
+
+/// CR 609.4b: a rider that relaxes one kind of mana only ("spend colorless
+/// mana as though …") has no `ManaSpendPermission` shape; the whole permission
+/// declines rather than widen to every mana.
+#[test]
+fn persistent_exile_play_permission_declines_single_kind_rider() {
+    let text = "You may play cards exiled with ~, and you may spend colorless mana as though it were mana of any color to cast those spells.";
+    assert!(
+        try_parse_persistent_exile_play_permission(text, &text.to_lowercase()).is_none(),
+        "a single-kind rider must decline the permission"
+    );
+    // Positive twin: the same frame with the any-color rider is accepted, so the
+    // decline above came from the rider leg, not an earlier clause.
+    assert!(try_parse_persistent_exile_play_permission(
+        TIBALT_EMBLEM_INNER,
+        &TIBALT_EMBLEM_INNER.to_lowercase()
+    )
+    .is_some());
+}
+
+/// Rogue Class (verbatim): the level-3 line is the same persistent permission,
+/// gated by the class level. Before the rider composed, the static parser
+/// declined it and the line fell to a bare `Spell` `CastFromZone` ability that
+/// nothing at cast time reads.
+#[test]
+fn rogue_class_level_three_play_permission_is_level_gated() {
+    let text = "(Gain the next level as a sorcery to add its ability.)\nWhenever a creature you control deals combat damage to a player, exile the top card of that player's library face down. You may look at it for as long as it remains exiled.\n{1}{U}{B}: Level 2\nCreatures you control have menace.\n{2}{U}{B}: Level 3\nYou may play cards exiled with this Class, and you may spend mana as though it were mana of any color to cast those spells.";
+    let parsed = crate::parser::oracle::parse_oracle_text(
+        text,
+        "Rogue Class",
+        &[],
+        &["Enchantment".to_string()],
+        &["Class".to_string()],
+    );
+    // CR 716.2a: a Class level's abilities apply only at that level or above.
+    assert!(
+        parsed
+            .statics
+            .iter()
+            .any(|def| def.mode == persistent_play_any_color_permission()
+                && def.condition == Some(StaticCondition::ClassLevelGE { level: 3 })),
+        "level 3 must be a level-gated persistent permission, got {:?}",
+        parsed.statics
+    );
+    assert!(
+        !parsed
+            .abilities
+            .iter()
+            .any(|ability| ability.description.is_none()
+                && matches!(*ability.effect, Effect::CastFromZone { .. })),
+        "the bare CastFromZone misparse must be gone, got {:?}",
+        parsed.abilities
+    );
+    // Reach-guard: the level-2 static still parses alongside it.
+    assert!(parsed.statics.iter().any(|def| def.condition
+        == Some(StaticCondition::ClassLevelGE { level: 2 })
+        && matches!(def.mode, StaticMode::Continuous)));
 }
 
 /// CR 113.6b: The persistent handler must NOT swallow the Maralen "this turn"

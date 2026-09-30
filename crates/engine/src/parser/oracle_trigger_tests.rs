@@ -17,9 +17,9 @@ use crate::types::ability::{
     Duration, Effect, EffectScope, FilterProp, ManaContribution, ManaProduction,
     ManaSpendPermission, ModalChoice, ObjectProperty, ObjectScope, PerpetualModification,
     PlayerFilter, PlayerScope, PropertyAggregate, PtStat, PtValue, PtValueScope, QuantityExpr,
-    QuantityRef, SeatDirection, SharedQuality, SiblingCondition, SubAbilityLink, TapStateChange,
-    TargetFilter, TriggerCondition, TriggerDefinition, TurnJournalKind, TypeFilter, TypedFilter,
-    ZoneRef,
+    QuantityRef, RoundingMode, SeatDirection, SharedQuality, SiblingCondition, SubAbilityLink,
+    TapStateChange, TargetFilter, TriggerCondition, TriggerDefinition, TurnJournalKind, TypeFilter,
+    TypedFilter, ZoneRef,
 };
 use crate::types::card_type::Supertype;
 use crate::types::counter::{CounterMatch, CounterType};
@@ -69,6 +69,228 @@ fn trigger_chain_effects(trigger: &TriggerDefinition) -> Vec<&Effect> {
     std::iter::successors(trigger.execute.as_deref(), |def| def.sub_ability.as_deref())
         .map(|def| def.effect.as_ref())
         .collect()
+}
+
+const GUT_TRUE_SOUL_ZEALOT_ORACLE: &str = "Whenever you attack, you may sacrifice another creature or an artifact. If you do, create a 4/1 black Skeleton creature token with menace that's tapped and attacking. (It can't be blocked except by two or more creatures.)\nChoose a Background (You can have a Background as a second commander.)";
+
+#[test]
+fn gut_attack_trigger_sacrifice_is_a_scoped_type_union() {
+    // CR 508.3d + CR 118.12: the optional sacrifice occurs on resolution of
+    // this "you attack" trigger, before its "If you do" token instruction.
+    let parsed = parse_oracle_text(
+        GUT_TRUE_SOUL_ZEALOT_ORACLE,
+        "Gut, True Soul Zealot",
+        &["Choose a background".to_string()],
+        &["Legendary".to_string(), "Creature".to_string()],
+        &["Goblin".to_string(), "Shaman".to_string()],
+    );
+    let trigger = parsed.triggers.first().expect("Gut's attack trigger");
+    assert_eq!(trigger.mode, TriggerMode::YouAttack);
+    let execute = trigger.execute.as_deref().expect("optional sacrifice");
+    assert!(execute.optional);
+    assert_no_unimplemented(execute);
+    let Effect::Sacrifice {
+        target: TargetFilter::Or { filters },
+        count: QuantityExpr::Fixed { value: 1 },
+        ..
+    } = execute.effect.as_ref()
+    else {
+        panic!("expected one sacrifice from type union: {execute:?}");
+    };
+    assert_eq!(filters.len(), 2);
+    for (leg, ty, another) in [
+        (&filters[0], TypeFilter::Creature, true),
+        (&filters[1], TypeFilter::Artifact, false),
+    ] {
+        let TargetFilter::Typed(typed) = leg else {
+            panic!("expected typed leg: {leg:?}");
+        };
+        assert!(typed.type_filters.contains(&ty), "{leg:?}");
+        assert_eq!(typed.controller, Some(ControllerRef::You));
+        assert_eq!(typed.properties.contains(&FilterProp::Another), another);
+    }
+    let followup = execute
+        .sub_ability
+        .as_deref()
+        .expect("If you do instruction");
+    assert_eq!(
+        followup.condition,
+        Some(AbilityCondition::effect_performed())
+    );
+    assert!(matches!(followup.effect.as_ref(), Effect::Token { .. }));
+    assert!(
+        !parsed.parse_warnings.iter().any(|warning| matches!(
+            warning,
+            OracleDiagnostic::SwallowedClause { description, .. }
+                if description.contains("sacrifice another creature or an artifact")
+        )),
+        "the supported sacrifice instruction must not be swallowed: {:?}",
+        parsed.parse_warnings
+    );
+}
+
+/// SHAPE — keep the real property-only alternative visible as unsupported.
+#[test]
+fn old_man_willow_token_rhs_remains_honestly_unsupported() {
+    let parsed = parse_oracle_text(
+        "Old Man Willow's power and toughness are each equal to the number of lands you control.\nWhenever Old Man Willow attacks, you may sacrifice another creature or a token. When you do, target creature an opponent controls gets -2/-2 until end of turn.",
+        "Old Man Willow",
+        &[],
+        &["Legendary".to_string(), "Creature".to_string()],
+        &["Treefolk".to_string()],
+    );
+    let trigger = parsed
+        .triggers
+        .first()
+        .expect("Willow's attack trigger reaches the production parser");
+    assert_eq!(trigger.mode, TriggerMode::Attacks);
+    assert_eq!(trigger.valid_card, Some(TargetFilter::SelfRef));
+    let effects = trigger_chain_effects(trigger);
+    assert!(
+        effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Unimplemented {
+                name,
+                description: Some(description),
+                ..
+            } if name == "unparsed_verb_arguments"
+                && description == "sacrifice another creature or a token"
+        )),
+        "the complete unsupported sacrifice must stay visible: {effects:?}"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Sacrifice { .. })),
+        "Willow must not claim a truncated creature-only sacrifice: {effects:?}"
+    );
+
+    // CR 608.2c: Gut's independently determined alternatives scope "another"
+    // to the creature leg, and both legal types remain in the instruction.
+    let supported = parse_oracle_text(
+        GUT_TRUE_SOUL_ZEALOT_ORACLE,
+        "Gut, True Soul Zealot",
+        &["Choose a background".to_string()],
+        &["Legendary".to_string(), "Creature".to_string()],
+        &["Goblin".to_string(), "Shaman".to_string()],
+    );
+    let control = supported.triggers.first().expect("Gut positive control");
+    assert_eq!(control.mode, TriggerMode::YouAttack);
+    let sacrifice = control.execute.as_deref().expect("Gut sacrifice control");
+    assert!(sacrifice.optional);
+    assert_no_unimplemented(sacrifice);
+    let Effect::Sacrifice {
+        target: TargetFilter::Or { filters },
+        count: QuantityExpr::Fixed { value: 1 },
+        ..
+    } = sacrifice.effect.as_ref()
+    else {
+        panic!("Gut must retain its complete supported sacrifice: {sacrifice:?}");
+    };
+    assert_eq!(filters.len(), 2);
+    for (leg, ty, properties) in [
+        (&filters[0], TypeFilter::Creature, vec![FilterProp::Another]),
+        (&filters[1], TypeFilter::Artifact, vec![]),
+    ] {
+        let TargetFilter::Typed(typed) = leg else {
+            panic!("expected typed Gut control leg: {leg:?}");
+        };
+        assert_eq!(typed.type_filters, vec![ty]);
+        assert_eq!(typed.controller, Some(ControllerRef::You));
+        assert_eq!(typed.properties, properties);
+    }
+    let token = sacrifice.sub_ability.as_deref().expect("Gut token control");
+    assert_eq!(token.condition, Some(AbilityCondition::effect_performed()));
+    assert!(matches!(token.effect.as_ref(), Effect::Token { .. }));
+}
+
+#[test]
+fn attack_trigger_refuses_truncated_third_sacrifice_type() {
+    // A third independently determined type must remain visible as unsupported
+    // whether the first two types were folded here or by the base type grammar.
+    for phrase in [
+        "sacrifice another creature or an artifact or an enchantment",
+        "sacrifice another creature or an artifact or enchantment",
+        "sacrifice another creature or an artifact, or an enchantment",
+        "sacrifice another creature or artifact or an enchantment",
+        "sacrifice another creature or an artifact, enchantment",
+        "sacrifice another creature or an artifact, a Vehicle",
+    ] {
+        let oracle = format!(
+            "Whenever you attack, you may {phrase}. If you do, create a 4/1 black Skeleton creature token with menace that's tapped and attacking."
+        );
+        let parsed = parse_oracle_text(
+            &oracle,
+            "Synthetic Attack Sacrifice",
+            &[],
+            &["Creature".to_string()],
+            &[],
+        );
+        let trigger = parsed
+            .triggers
+            .first()
+            .expect("attack trigger reached production parser");
+        assert_eq!(trigger.mode, TriggerMode::YouAttack);
+        let effects = trigger_chain_effects(trigger);
+        assert!(
+            effects.iter().any(|effect| matches!(
+                effect,
+                Effect::Unimplemented {
+                    description: Some(description),
+                    ..
+                } if description.contains(phrase)
+            )),
+            "{phrase}: unsupported clause must remain visible in coverage: {effects:?}"
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Sacrifice { .. })),
+            "{phrase}: truncated sacrifice must not be marked supported: {effects:?}"
+        );
+    }
+}
+
+#[test]
+fn attack_trigger_supports_complete_articleless_sacrifice_union() {
+    let parsed = parse_oracle_text(
+        "Whenever you attack, you may sacrifice another creature or artifact. If you do, create a 4/1 black Skeleton creature token with menace that's tapped and attacking.",
+        "Synthetic Attack Sacrifice",
+        &[],
+        &["Creature".to_string()],
+        &[],
+    );
+    let trigger = parsed.triggers.first().expect("production attack trigger");
+    assert_eq!(trigger.mode, TriggerMode::YouAttack);
+    let sacrifice = trigger.execute.as_deref().expect("optional sacrifice");
+    assert!(sacrifice.optional);
+    assert_no_unimplemented(sacrifice);
+    let Effect::Sacrifice {
+        target: TargetFilter::Or { filters },
+        count: QuantityExpr::Fixed { value: 1 },
+        ..
+    } = sacrifice.effect.as_ref()
+    else {
+        panic!("expected one sacrifice from complete article-less union: {sacrifice:?}");
+    };
+    assert_eq!(filters.len(), 2);
+    for (leg, ty) in filters
+        .iter()
+        .zip([TypeFilter::Creature, TypeFilter::Artifact])
+    {
+        let TargetFilter::Typed(typed) = leg else {
+            panic!("expected typed sacrifice leg: {leg:?}");
+        };
+        assert!(typed.type_filters.contains(&ty), "{leg:?}");
+        assert_eq!(typed.controller, Some(ControllerRef::You));
+        assert!(typed.properties.contains(&FilterProp::Another), "{leg:?}");
+    }
+    let followup = sacrifice.sub_ability.as_deref().expect("If you do");
+    assert_eq!(
+        followup.condition,
+        Some(AbilityCondition::effect_performed())
+    );
+    assert!(matches!(followup.effect.as_ref(), Effect::Token { .. }));
 }
 
 /// CR 608.2c: the scoped phase player stated once governs a same-sentence
@@ -1702,6 +1924,59 @@ fn while_saddled_fold_refused_for_non_attacks_trigger_is_strictly_unsupported() 
             );
         }
     }
+}
+
+#[test]
+fn intervening_if_n_or_more_damage_was_dealt_to_it_this_turn() {
+    // CR 107.1 + CR 120.1 + CR 603.4: quantity-first "if N or more damage was
+    // dealt to it this turn" on a dies trigger (Burning-Eye Zubera).
+    let def = parse_trigger_line(
+        "When this creature dies, if 4 or more damage was dealt to it this turn, \
+         this creature deals 3 damage to any target.",
+        "Burning-Eye Zubera",
+    );
+    match &def.condition {
+        Some(TriggerCondition::QuantityComparison {
+            lhs:
+                QuantityExpr::Ref {
+                    qty:
+                        QuantityRef::DamageDealtThisTurn {
+                            target, channel, ..
+                        },
+                },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 4 },
+        }) => {
+            assert_eq!(target.as_ref(), &TargetFilter::SelfRef);
+            assert_eq!(*channel, DamageChannel::Total);
+        }
+        other => panic!("expected DamageDealtThisTurn GE 4, got {other:?}"),
+    }
+    let exec = def.execute.as_deref().expect("execute");
+    assert!(matches!(exec.effect.as_ref(), Effect::DealDamage { .. }));
+    assert!(exec.condition.is_none());
+    assert_no_unimplemented(exec);
+
+    let tide = parse_trigger_line(
+        "When this creature dies, if 4 or more damage was dealt to it this turn, draw three cards.",
+        "Rushing-Tide Zubera",
+    );
+    match &tide.condition {
+        Some(TriggerCondition::QuantityComparison {
+            lhs:
+                QuantityExpr::Ref {
+                    qty: QuantityRef::DamageDealtThisTurn { target, .. },
+                },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 4 },
+        }) => {
+            assert_eq!(target.as_ref(), &TargetFilter::SelfRef);
+        }
+        other => panic!("expected DamageDealtThisTurn GE 4, got {other:?}"),
+    }
+    let tide_exec = tide.execute.as_deref().expect("execute");
+    assert!(matches!(tide_exec.effect.as_ref(), Effect::Draw { .. }));
+    assert_no_unimplemented(tide_exec);
 }
 
 #[test]
@@ -7410,12 +7685,10 @@ fn parse_ezio_damage_trigger_verbatim_oracle_text() {
 /// event-bound trigger and resolves to 0 — the reported silent no-op).
 #[test]
 fn parse_unstoppable_slasher_combat_damage_half_life() {
-    use crate::types::ability::{Effect, PlayerScope, QuantityExpr, QuantityRef, RoundingMode};
-
     let def = parse_trigger_line(
-            "Whenever this creature deals combat damage to a player, they lose half their life, rounded up.",
-            "Unstoppable Slasher",
-        );
+        "Whenever this creature deals combat damage to a player, they lose half their life, rounded up.",
+        "Unstoppable Slasher",
+    );
 
     let execute = def.execute.as_ref().expect("execute must be Some");
     match &*execute.effect {
@@ -7434,14 +7707,94 @@ fn parse_unstoppable_slasher_combat_damage_half_life() {
                     assert_eq!(*divisor, 2, "half ⇒ divisor 2");
                     assert_eq!(*rounding, RoundingMode::Up, "rounded up");
                     assert_eq!(
-                            **inner,
-                            QuantityExpr::Ref {
-                                qty: QuantityRef::LifeTotal {
-                                    player: PlayerScope::ScopedPlayer,
-                                },
+                        **inner,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::LifeTotal {
+                                player: PlayerScope::ScopedPlayer,
                             },
-                            "inner amount must read the event player's life (ScopedPlayer), got {inner:?}",
-                        );
+                        },
+                        "inner amount must read the event player's life (ScopedPlayer), got {inner:?}",
+                    );
+                }
+                other => panic!("amount must be DivideRounded, got {other:?}"),
+            }
+        }
+        other => panic!("effect must be LoseLife, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_virtus_the_veiled_combat_damage_half_life() {
+    let def = parse_trigger_line(
+        "Whenever Virtus the Veiled deals combat damage to a player, that player loses half their life, rounded up.",
+        "Virtus the Veiled",
+    );
+
+    let execute = def.execute.as_ref().expect("execute must be Some");
+    match &*execute.effect {
+        Effect::LoseLife { amount, target } => {
+            assert_eq!(
+                target.as_ref(),
+                Some(&TargetFilter::TriggeringPlayer),
+                "LoseLife.target must be TriggeringPlayer (the damaged player)",
+            );
+            match amount {
+                QuantityExpr::DivideRounded {
+                    inner,
+                    divisor,
+                    rounding,
+                } => {
+                    assert_eq!(*divisor, 2, "half ⇒ divisor 2");
+                    assert_eq!(*rounding, RoundingMode::Up, "rounded up");
+                    assert_eq!(
+                        **inner,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::LifeTotal {
+                                player: PlayerScope::ScopedPlayer,
+                            },
+                        },
+                        "inner amount must read ScopedPlayer, got {inner:?}",
+                    );
+                }
+                other => panic!("amount must be DivideRounded, got {other:?}"),
+            }
+        }
+        other => panic!("effect must be LoseLife, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_raving_dead_combat_damage_half_life() {
+    let def = parse_trigger_line(
+        "Whenever Raving Dead deals combat damage to a player, that player loses half their life, rounded down.",
+        "Raving Dead",
+    );
+
+    let execute = def.execute.as_ref().expect("execute must be Some");
+    match &*execute.effect {
+        Effect::LoseLife { amount, target } => {
+            assert_eq!(
+                target.as_ref(),
+                Some(&TargetFilter::TriggeringPlayer),
+                "LoseLife.target must be TriggeringPlayer (the damaged player)",
+            );
+            match amount {
+                QuantityExpr::DivideRounded {
+                    inner,
+                    divisor,
+                    rounding,
+                } => {
+                    assert_eq!(*divisor, 2, "half ⇒ divisor 2");
+                    assert_eq!(*rounding, RoundingMode::Down, "rounded down");
+                    assert_eq!(
+                        **inner,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::LifeTotal {
+                                player: PlayerScope::ScopedPlayer,
+                            },
+                        },
+                        "inner amount must read ScopedPlayer, got {inner:?}",
+                    );
                 }
                 other => panic!("amount must be DivideRounded, got {other:?}"),
             }
@@ -15610,6 +15963,21 @@ fn trigger_unless_they_pay_binds_to_that_player_damage_target() {
     );
 }
 
+/// Walk an `execute` chain and return the first node carrying `scope`, for
+/// asserting which clause a declined unless-hoist landed on.
+fn scoped_execute_node(def: &TriggerDefinition, scope: PlayerFilter) -> &AbilityDefinition {
+    let mut node = def.execute.as_deref().expect("should have execute");
+    loop {
+        if node.player_scope.as_ref() == Some(&scope) {
+            return node;
+        }
+        node = node
+            .sub_ability
+            .as_deref()
+            .unwrap_or_else(|| panic!("no execute node carries player_scope {scope:?}"));
+    }
+}
+
 #[test]
 fn trigger_unless_they_pay_binds_each_opponent_to_scoped_player() {
     let def = parse_trigger_line(
@@ -15617,13 +15985,28 @@ fn trigger_unless_they_pay_binds_each_opponent_to_scoped_player() {
             "Rishadan Footpad",
         );
 
-    let unless_pay = def.unless_pay.as_ref().expect("should have unless_pay");
     // CR 608.2f: the per-iteration scoped opponent pays, resolved via
     // `ability.scoped_player` (not `state.active_player` as `Controller`
-    // would yield on a non-active opponent's behalf).
-    assert_eq!(unless_pay.payer, TargetFilter::ScopedPlayer);
+    // would yield on a non-active opponent's behalf). Because that identity is
+    // bound by the fan-out, the payer travels with the scoped clause instead of
+    // being hoisted onto the trigger definition, where nothing rebinds it.
+    assert!(
+        def.unless_pay.is_none(),
+        "a scope-bound payer must not be hoisted onto the trigger, got {:?}",
+        def.unless_pay
+    );
     let execute = def.execute.as_ref().expect("should have execute");
     assert_eq!(execute.player_scope, Some(PlayerFilter::Opponent));
+    let unless_pay = execute
+        .unless_pay
+        .as_ref()
+        .expect("scoped clause should carry the unless_pay");
+    assert_eq!(unless_pay.payer, TargetFilter::ScopedPlayer);
+    assert!(
+        matches!(unless_pay.cost, AbilityCost::Mana { .. }),
+        "cost should be Fixed mana, got {:?}",
+        unless_pay.cost
+    );
 }
 
 // CR 118.12a: Trigger-side delegation to `parse_unless_they_alt_cost_chain`
@@ -15760,8 +16143,18 @@ fn trigger_unless_each_opponent_sacrifice_binds_scoped_player() {
         "When this creature enters, each opponent loses 3 life unless they sacrifice a creature.",
         "Test Scoped Punisher",
     );
-    let unless_pay = def.unless_pay.as_ref().expect("should have unless_pay");
-    // CR 608.2f: scoped opponent pays via per-iteration `scoped_player`.
+    // CR 608.2f: scoped opponent pays via per-iteration `scoped_player`, so the
+    // payment stays on the clause the fan-out iterates rather than hoisting.
+    assert!(
+        def.unless_pay.is_none(),
+        "a scope-bound payer must not be hoisted onto the trigger, got {:?}",
+        def.unless_pay
+    );
+    let execute = def.execute.as_ref().expect("should have execute");
+    let unless_pay = execute
+        .unless_pay
+        .as_ref()
+        .expect("scoped clause should carry the unless_pay");
     assert_eq!(unless_pay.payer, TargetFilter::ScopedPlayer);
     assert!(
         matches!(
@@ -15779,8 +16172,205 @@ fn trigger_unless_each_opponent_sacrifice_binds_scoped_player() {
         panic!("sacrifice target should be typed, got {:?}", cost.target);
     };
     assert_eq!(tf.controller, Some(ControllerRef::You));
-    let execute = def.execute.as_ref().expect("should have execute");
     assert_eq!(execute.player_scope, Some(PlayerFilter::Opponent));
+}
+
+/// CR 608.2f + CR 118.12a: Rottenmouth Viper's scoped clause is two links below
+/// the chain root, so a hoisted payer resolves against whatever stamped the
+/// root's `scoped_player` rather than against the fan-out's per-opponent seat.
+#[test]
+fn trigger_scoped_unless_stays_on_the_scoped_clause_under_an_unimplemented_parent() {
+    let def = parse_trigger_line(
+            "Whenever this creature enters or attacks, put a blight counter on it. Then for each blight counter on it, each opponent loses 4 life unless that player sacrifices a nonland permanent of their choice or discards a card.",
+            "Rottenmouth Viper",
+        );
+
+    assert!(
+        def.unless_pay.is_none(),
+        "a scope-bound payer must not be hoisted onto the trigger, got {:?}",
+        def.unless_pay
+    );
+    let scoped = scoped_execute_node(&def, PlayerFilter::Opponent);
+    assert!(
+        matches!(scoped.effect.as_ref(), Effect::LoseLife { .. }),
+        "the scoped clause should be the life loss, got {:?}",
+        scoped.effect
+    );
+    let unless_pay = scoped
+        .unless_pay
+        .as_ref()
+        .expect("scoped clause should carry the unless_pay");
+    assert_eq!(unless_pay.payer, TargetFilter::ScopedPlayer);
+    let AbilityCost::OneOf { costs } = &unless_pay.cost else {
+        panic!("cost should be OneOf, got {:?}", unless_pay.cost);
+    };
+    assert_eq!(costs.len(), 2, "OneOf should have two branches: {costs:?}");
+    assert!(
+        matches!(costs[0], AbilityCost::Sacrifice(_)),
+        "first branch should be Sacrifice, got {:?}",
+        costs[0]
+    );
+    assert!(
+        matches!(costs[1], AbilityCost::Discard { .. }),
+        "second branch should be Discard, got {:?}",
+        costs[1]
+    );
+}
+
+/// CR 608.2f: Bellowing Mauler's `each player` subject is scope-bearing exactly
+/// as `each opponent` is, so its payer is the fan-out's per-seat player rather
+/// than the single triggering player who would answer for the whole table.
+#[test]
+fn trigger_unless_each_player_binds_scoped_player() {
+    let def = parse_trigger_line(
+        "At the beginning of your end step, each player loses 4 life unless they sacrifice a nontoken creature of their choice.",
+        "Bellowing Mauler",
+    );
+
+    assert!(
+        def.unless_pay.is_none(),
+        "a scope-bound payer must not be hoisted onto the trigger, got {:?}",
+        def.unless_pay
+    );
+    let execute = def.execute.as_ref().expect("should have execute");
+    assert_eq!(execute.player_scope, Some(PlayerFilter::All));
+    let unless_pay = execute
+        .unless_pay
+        .as_ref()
+        .expect("scoped clause should carry the unless_pay");
+    assert_eq!(unless_pay.payer, TargetFilter::ScopedPlayer);
+    let AbilityCost::Sacrifice(cost) = &unless_pay.cost else {
+        panic!("cost should be Sacrifice, got {:?}", unless_pay.cost);
+    };
+    assert_eq!(cost.requirement, SacrificeRequirement::count(1));
+    let TargetFilter::Typed(tf) = &cost.target else {
+        panic!("sacrifice target should be typed, got {:?}", cost.target);
+    };
+    assert_eq!(tf.controller, Some(ControllerRef::You));
+    assert!(
+        tf.type_filters.contains(&TypeFilter::Creature),
+        "filter should include Creature, got {:?}",
+        tf.type_filters
+    );
+    assert!(
+        tf.properties.contains(&FilterProp::NonToken),
+        "filter should include NonToken, got {:?}",
+        tf.properties
+    );
+}
+
+/// CR 608.2f: sAnS mERcY repeats Rottenmouth Viper's shape under a different
+/// unrecognized root, so the guard is keyed on the payer rather than on any
+/// root effect. Its runtime is not claimed here — it is a Plane card and
+/// whether the engine reaches its chaos trigger is unestablished.
+#[test]
+fn trigger_scoped_unless_stays_on_the_scoped_clause_under_a_different_unimplemented_root() {
+    let def = parse_trigger_line(
+            "wHeNEveR cHoAS EnSUEs, pERfoRm tHe foLLowiNG pROceSs X tiMEs, wHErE X iS tHe nUmBEr oF tImeS yOU'vE roLLeD tHe PlaNAr diE tHIs tuRN. eAcH oPPonENt LOseS 3 LiFE uNLeSs tHAt pLAyEr sAcRiFicEs A nOnLaND pErManENt OR diSCaRds a cArD.",
+            "sAnS mERcY",
+        );
+
+    assert!(
+        def.unless_pay.is_none(),
+        "a scope-bound payer must not be hoisted onto the trigger, got {:?}",
+        def.unless_pay
+    );
+    let scoped = scoped_execute_node(&def, PlayerFilter::Opponent);
+    assert!(
+        matches!(scoped.effect.as_ref(), Effect::LoseLife { .. }),
+        "the scoped clause should be the life loss, got {:?}",
+        scoped.effect
+    );
+    let unless_pay = scoped
+        .unless_pay
+        .as_ref()
+        .expect("scoped clause should carry the unless_pay");
+    assert_eq!(unless_pay.payer, TargetFilter::ScopedPlayer);
+    let AbilityCost::OneOf { costs } = &unless_pay.cost else {
+        panic!("cost should be OneOf, got {:?}", unless_pay.cost);
+    };
+    assert_eq!(costs.len(), 2, "OneOf should have two branches: {costs:?}");
+}
+
+/// NEGATIVE, CR 118.12a: Acererak's subject is prepositional — "for each
+/// opponent," with a comma where the scope-subject combinator requires a
+/// trailing space — so the payer is not scope-bound and the hoist stands.
+/// Widening the combinator to swallow the comma form would redirect this card
+/// away from its own `begin_player_scope_token_unless_sacrifice` coordinator.
+#[test]
+fn trigger_prepositional_for_each_opponent_unless_still_hoists() {
+    let def = parse_trigger_line(
+            "Whenever Acererak attacks, for each opponent, you create a 2/2 black Zombie creature token unless that player sacrifices a creature of their choice.",
+            "Acererak the Archlich",
+        );
+
+    let unless_pay = def.unless_pay.as_ref().expect("should have unless_pay");
+    assert_eq!(unless_pay.payer, TargetFilter::TriggeringPlayer);
+    let AbilityCost::Sacrifice(cost) = &unless_pay.cost else {
+        panic!("cost should be Sacrifice, got {:?}", unless_pay.cost);
+    };
+    let TargetFilter::Typed(tf) = &cost.target else {
+        panic!("sacrifice target should be typed, got {:?}", cost.target);
+    };
+    assert_eq!(tf.controller, Some(ControllerRef::You));
+    let execute = def.execute.as_ref().expect("should have execute");
+    assert!(
+        matches!(execute.effect.as_ref(), Effect::Token { .. }),
+        "the token creation should still be the effect, got {:?}",
+        execute.effect
+    );
+}
+
+/// NEGATIVE, CR 118.12a: Lim-Dûl's Hex is refused one arm EARLIER than the
+/// scope-subject scan — `effect_references_that_player` matches "to that
+/// player" in "deals 1 damage to that player" and returns `TriggeringPlayer`.
+/// This pins that arm ordering. It does not assert the resulting payer is the
+/// right one for this card: `TriggeringPlayer` is unresolvable on a phase
+/// trigger, so the payment is skipped — a known residual; no follow-up issue filed yet.
+#[test]
+fn trigger_that_player_anaphor_unless_still_hoists_triggering_player() {
+    let def = parse_trigger_line(
+            "At the beginning of your upkeep, for each player, this enchantment deals 1 damage to that player unless they pay {B} or {3}.",
+            "Lim-Dûl's Hex",
+        );
+
+    let unless_pay = def.unless_pay.as_ref().expect("should have unless_pay");
+    assert_eq!(unless_pay.payer, TargetFilter::TriggeringPlayer);
+    let AbilityCost::OneOf { costs } = &unless_pay.cost else {
+        panic!("cost should be OneOf, got {:?}", unless_pay.cost);
+    };
+    assert_eq!(costs.len(), 2, "OneOf should have two branches: {costs:?}");
+    assert!(
+        costs.iter().all(|c| matches!(c, AbilityCost::Mana { .. })),
+        "both branches should be mana, got {costs:?}"
+    );
+}
+
+/// NEGATIVE, CR 603.2b: Mogis's phase-scoped "that player" is
+/// answered by the `condition_introduces_scoped_phase_player` arm, which
+/// precedes the scope-subject scan and must keep winning.
+#[test]
+fn trigger_scoped_phase_player_unless_keeps_controller_payer() {
+    let def = parse_trigger_line(
+            "At the beginning of each opponent's upkeep, Mogis deals 2 damage to that player unless they sacrifice a creature of their choice.",
+            "Mogis, God of Slaughter",
+        );
+
+    let unless_pay = def.unless_pay.as_ref().expect("should have unless_pay");
+    assert_eq!(unless_pay.payer, TargetFilter::Controller);
+    let AbilityCost::Sacrifice(cost) = &unless_pay.cost else {
+        panic!("cost should be Sacrifice, got {:?}", unless_pay.cost);
+    };
+    let TargetFilter::Typed(tf) = &cost.target else {
+        panic!("sacrifice target should be typed, got {:?}", cost.target);
+    };
+    assert_eq!(tf.controller, Some(ControllerRef::You));
+    let execute = def.execute.as_ref().expect("should have execute");
+    assert!(
+        matches!(execute.effect.as_ref(), Effect::DealDamage { .. }),
+        "the damage should still be the effect, got {:?}",
+        execute.effect
+    );
 }
 
 // NEGATIVE: bare "mill N" without "cards" suffix is NOT recognized as an
@@ -15928,6 +16518,36 @@ fn trigger_unless_you_pay_its_mana_cost_is_self_mana_cost() {
         "\"pay its mana cost\" must lower to Mana{{SelfManaCost}}, got {:?}",
         unless.cost
     );
+}
+
+#[test]
+fn unless_pay_its_mana_cost_reduced_by_generic() {
+    for phrase in [
+        "you pay its mana cost reduced by {2}.",
+        "you pay ~'s mana cost reduced by {2}",
+    ] {
+        assert_eq!(
+            parse_unless_alt_cost(phrase),
+            Some(AbilityCost::Mana {
+                cost: crate::types::mana::ManaCost::SelfManaCostReduced { reduction: 2 },
+            }),
+            "{phrase}"
+        );
+    }
+    assert_eq!(
+        parse_unless_alt_cost("you pay ~'s mana cost"),
+        Some(AbilityCost::Mana {
+            cost: crate::types::mana::ManaCost::SelfManaCost,
+        })
+    );
+    for phrase in [
+        "you pay its mana cost reduced by {U}",
+        "you pay its mana cost reduced by {2}{U}",
+        "you pay its mana cost reduced by {2} more",
+        "you pay their mana cost reduced by {2}",
+    ] {
+        assert_eq!(parse_unless_alt_cost(phrase), None, "{phrase}");
+    }
 }
 
 // NO-REGRESSION: bare "unless you pay {2}" still routes through the
@@ -20953,7 +21573,7 @@ fn balefire_dragon_damages_creatures_controlled_by_damaged_player() {
             assert_eq!(
                 *target,
                 TargetFilter::Typed(
-                    TypedFilter::creature().controller(ControllerRef::TargetPlayer)
+                    TypedFilter::creature().controller(ControllerRef::TriggeringPlayer)
                 )
             );
         }
@@ -22595,8 +23215,10 @@ fn trigger_cast_spell_while_attacking_gates_on_combat() {
     assert_eq!(def.valid_target, Some(TargetFilter::Controller));
     assert_eq!(
         def.condition,
-        Some(TriggerCondition::SourceIsAttacking),
-        "the `while ~ is attacking` gate must become a SourceIsAttacking condition"
+        Some(TriggerCondition::EventTime {
+            condition: Box::new(TriggerCondition::SourceIsAttacking),
+        }),
+        "the `while ~ is attacking` gate must become an event-time SourceIsAttacking condition"
     );
     // The remaining event clause still parses to the copy effect.
     assert!(matches!(
@@ -22619,7 +23241,9 @@ fn trigger_while_attacking_composes_with_existing_condition() {
     match def.condition {
         Some(TriggerCondition::And { conditions }) => {
             assert!(
-                conditions.contains(&TriggerCondition::SourceIsAttacking),
+                conditions.contains(&TriggerCondition::EventTime {
+                    condition: Box::new(TriggerCondition::SourceIsAttacking),
+                }),
                 "expected SourceIsAttacking among AND conditions, got {conditions:?}"
             );
             assert!(
@@ -22710,10 +23334,12 @@ fn trigger_cast_instant_sorcery_while_two_or_more_quest_counters() {
     assert_eq!(def.valid_target, Some(TargetFilter::Controller));
     assert_eq!(
         def.condition,
-        Some(TriggerCondition::HasCounters {
-            counters: CounterMatch::OfType(CounterType::Generic("quest".to_string())),
-            minimum: 2,
-            maximum: None,
+        Some(TriggerCondition::EventTime {
+            condition: Box::new(TriggerCondition::HasCounters {
+                counters: CounterMatch::OfType(CounterType::Generic("quest".to_string())),
+                minimum: 2,
+                maximum: None,
+            }),
         }),
         "the quest-counter gate must become a HasCounters condition"
     );
@@ -26666,6 +27292,57 @@ fn unadmitted_state_change_head_yields_an_honest_unknown_arm() {
     );
 }
 
+/// CR 508.1m + CR 109.4: Pugnacious Hammerskull's while-gate must survive. The
+/// negated "you don't control another Dinosaur" used to fail to parse, the gate
+/// was dropped (`condition: None`) and the stun counter landed on EVERY attack.
+#[test]
+fn attacks_while_you_dont_control_another_type_keeps_the_gate() {
+    let triggers = parse_trigger_lines(
+        "Whenever this creature attacks while you don't control another Dinosaur, put a stun counter on it.",
+        "Pugnacious Hammerskull",
+    );
+    assert_eq!(triggers.len(), 1);
+    assert_eq!(triggers[0].mode, TriggerMode::Attacks);
+    // The gate lowers to "count of OTHER Dinosaurs you control == 0" (the same
+    // shape as Kari Zev's "you don't control a legendary Monkey").
+    let cond = format!("{:?}", triggers[0].condition);
+    // CR 508.1m + CR 603.4: an event-time gate, never a resolution recheck.
+    assert!(
+        cond.starts_with("Some(EventTime"),
+        "the while-gate must be wrapped as EventTime, got {cond}"
+    );
+    assert!(
+        cond.contains("Another")
+            && cond.contains("Dinosaur")
+            && (cond.contains("Not {")
+                || (cond.contains("comparator: EQ") && cond.contains("Fixed { value: 0 }"))),
+        "expected the 'no other Dinosaur' gate, got {cond}"
+    );
+}
+
+/// CR 603.4 + CR 201.2: The Majestic Duo — the intervening-if reads "another
+/// permanent named The Majestic Duo" and stops at the comma, so the copy effect
+/// survives. Pins the name boundary the negated-control fix exposed: before it,
+/// the name swallowed ", create a token …" and the copy was dropped.
+#[test]
+fn majestic_duo_named_condition_stops_at_the_effect_comma() {
+    let triggers = parse_trigger_lines(
+        "When The Majestic Duo enters, if you don't control another permanent named The Majestic Duo, create a token that's a copy of it, except it's not legendary, it has \"Whenever this creature deals combat damage to a player, draw a card and earnestly tell them good luck,\" and it loses all other abilities.",
+        "The Majestic Duo",
+    );
+    assert_eq!(triggers.len(), 1);
+    let cond = format!("{:?}", triggers[0].condition);
+    assert!(
+        cond.contains("Another") && cond.to_lowercase().contains("name: \"the majestic duo\""),
+        "condition must name exactly The Majestic Duo, got {cond}"
+    );
+    let exec = format!("{:?}", triggers[0].execute);
+    assert!(
+        exec.contains("CopyTokenOf"),
+        "the copy effect must survive the condition, got {exec}"
+    );
+}
+
 /// CR 603.2 / CR 603.8 + CR 508.1m: an `or` inside a trigger's CONDITION is a
 /// condition disjunction, not an event list.
 #[test]
@@ -28497,9 +29174,7 @@ fn walk_to_fight_sub_ability(
 /// test for #1667 — ensures the DefendingPlayer fix doesn't break
 /// damage-to-player triggers.
 #[test]
-fn damage_to_player_trigger_uses_target_player() {
-    use crate::types::ability::Effect;
-
+fn damage_to_player_trigger_uses_triggering_player() {
     let def = parse_trigger_line(
         "Whenever ~ deals combat damage to a player, destroy target creature that player controls.",
         "Test Card",
@@ -28510,8 +29185,8 @@ fn damage_to_player_trigger_uses_target_player() {
         Effect::Destroy { target, .. } => match target {
             TargetFilter::Typed(t) => assert_eq!(
                 t.controller,
-                Some(ControllerRef::TargetPlayer),
-                "Damage-to-player trigger should use TargetPlayer, not DefendingPlayer",
+                Some(ControllerRef::TriggeringPlayer),
+                "Damage-to-player trigger should use TriggeringPlayer",
             ),
             other => panic!("expected Typed target filter, got {other:?}"),
         },
@@ -28519,23 +29194,22 @@ fn damage_to_player_trigger_uses_target_player() {
     }
 }
 
-/// CR 120.3: Damage-to-opponent triggers introduce the damaged player,
-/// which remains TargetPlayer even though attack-to-opponent triggers use
-/// DefendingPlayer.
+/// Damage-to-opponent triggers introduce the damaged opponent, which uses
+/// TriggeringPlayer (the event player), not DefendingPlayer or TargetPlayer.
 #[test]
-fn damage_to_opponent_trigger_uses_target_player() {
+fn damage_to_opponent_trigger_uses_triggering_player() {
     let def = parse_trigger_line(
-            "Whenever ~ deals combat damage to an opponent, destroy target creature that player controls.",
-            "Test Card",
-        );
+        "Whenever ~ deals combat damage to an opponent, destroy target creature that player controls.",
+        "Test Card",
+    );
     assert_eq!(def.mode, TriggerMode::DamageDone);
     let execute = def.execute.as_deref().expect("execute ability");
     match execute.effect.as_ref() {
         Effect::Destroy { target, .. } => match target {
             TargetFilter::Typed(t) => assert_eq!(
                 t.controller,
-                Some(ControllerRef::TargetPlayer),
-                "Damage-to-opponent trigger should use TargetPlayer, not DefendingPlayer",
+                Some(ControllerRef::TriggeringPlayer),
+                "Damage-to-opponent trigger should use TriggeringPlayer",
             ),
             other => panic!("expected Typed target filter, got {other:?}"),
         },
@@ -28549,8 +29223,6 @@ fn damage_to_opponent_trigger_uses_target_player() {
 /// `ControllerRef::You`. Guards against accidental scope leakage.
 #[test]
 fn non_attack_player_trigger_does_not_emit_target_player() {
-    use crate::types::ability::Effect;
-
     let def = parse_trigger_line(
         "Whenever you draw a card, tap target creature that player controls.",
         "Test Card",
@@ -34182,4 +34854,177 @@ fn split_graveyard_origin_owner_axes() {
             }
         );
     }
+}
+/// CR 120.3a + CR 109.4 + CR 603.2: Emissary of Despair and Emissary of Hope
+/// combat-damage triggers establish TriggeringPlayer as the relative player
+/// scope for "that player" / "they" references in their effect bodies.
+#[test]
+fn emissary_of_despair_and_hope_trigger_definitions() {
+    let despair = parse_trigger_line(
+        "Whenever this creature deals combat damage to a player, that player loses 1 life for each artifact they control.",
+        "Emissary of Despair",
+    );
+    assert_eq!(despair.mode, TriggerMode::DamageDone);
+    let despair_exec = despair.execute.as_deref().expect("despair body");
+    let Effect::LoseLife { amount, target } = &*despair_exec.effect else {
+        panic!("expected LoseLife, got {:?}", despair_exec.effect);
+    };
+    assert_eq!(
+        target.as_ref(),
+        Some(&TargetFilter::TriggeringPlayer),
+        "damaged player must be the directed life loss target"
+    );
+    assert_eq!(
+        amount,
+        &QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![TypeFilter::Artifact],
+                    controller: Some(ControllerRef::TriggeringPlayer),
+                    properties: Vec::new(),
+                })
+            }
+        },
+        "artifact count must be scoped to TriggeringPlayer"
+    );
+
+    let hope = parse_trigger_line(
+        "Whenever this creature deals combat damage to a player, you gain 1 life for each artifact that player controls.",
+        "Emissary of Hope",
+    );
+    assert_eq!(hope.mode, TriggerMode::DamageDone);
+    let hope_exec = hope.execute.as_deref().expect("hope body");
+    let Effect::GainLife { amount, player } = &*hope_exec.effect else {
+        panic!("expected GainLife, got {:?}", hope_exec.effect);
+    };
+    assert_eq!(
+        player,
+        &TargetFilter::Controller,
+        "ability controller gains the life"
+    );
+    assert_eq!(
+        amount,
+        &QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![TypeFilter::Artifact],
+                    controller: Some(ControllerRef::TriggeringPlayer),
+                    properties: Vec::new(),
+                })
+            }
+        },
+        "artifact count must be scoped to TriggeringPlayer"
+    );
+}
+
+/// CR 608.2c + CR 608.2d: a hand reveal that parks a card choice introduces the
+/// chosen revealed card as the referent of a later `ParentTarget`, so it is a
+/// chosen-object boundary for the event-source lift — whatever player the
+/// reveal targets (Valki's per-opponent reveal targets `Controller`, which the
+/// `Typed` chosen-filter arm cannot see). Without the boundary the lift rewrites
+/// Valki's "exile a creature card they revealed this way" to
+/// `TriggeringSource`, so Valki exiles itself and its ETB re-fires.
+#[test]
+fn card_parking_hand_reveal_is_a_chosen_object_boundary_for_the_event_source_lift() {
+    use crate::game::effects::reveal_hand::effect_parks_reveal_card_choice;
+
+    // (i) Valki, God of Lies — verbatim ETB.
+    let valki = parse_trigger_line(
+        "When Valki enters, each opponent reveals their hand. For each opponent, exile a creature card they revealed this way until Valki leaves the battlefield.",
+        "Valki, God of Lies",
+    );
+    assert_eq!(valki.mode, TriggerMode::ChangesZone);
+    let exec = valki.execute.as_deref().expect("Valki ETB execute");
+    // Reach-guards: the verbatim two-instruction shape reached trigger lowering.
+    assert!(
+        !effect_parks_reveal_card_choice(&exec.effect),
+        "the root reveal pass parks no card choice: {:?}",
+        exec.effect
+    );
+    assert_eq!(exec.player_scope, Some(PlayerFilter::Opponent));
+    let choice = exec.sub_ability.as_deref().expect("the choice step");
+    assert!(
+        effect_parks_reveal_card_choice(&choice.effect),
+        "the choice step parks the card choice: {:?}",
+        choice.effect
+    );
+    assert_eq!(choice.player_scope, Some(PlayerFilter::Opponent));
+    let sub = choice.sub_ability.as_deref().expect("the exile consumer");
+    assert_eq!(sub.duration, Some(Duration::UntilHostLeavesPlay));
+    match &*sub.effect {
+        Effect::ChangeZone {
+            destination,
+            target,
+            ..
+        } => {
+            assert_eq!(*destination, Zone::Exile);
+            assert_eq!(
+                *target,
+                TargetFilter::ParentTarget,
+                "the exile consumer keeps the chosen revealed card, not the trigger event"
+            );
+        }
+        other => panic!("expected the exile consumer, got {other:?}"),
+    }
+
+    // (ii) Reach-guard: the lift still runs where no card-parking reveal stops it.
+    let necroduality = parse_trigger_line(
+        "Whenever a nontoken Zombie you control enters, create a token that's a copy of that creature.",
+        "Necroduality",
+    );
+    assert!(matches!(
+        &*necroduality.execute.as_deref().expect("execute").effect,
+        Effect::CopyTokenOf {
+            target: TargetFilter::TriggeringSource,
+            ..
+        }
+    ));
+
+    // (iii) Sibling pin where the new stop fires with no liftable consumer after
+    // it: Armored Kincaller lowers exactly as before.
+    let kincaller = parse_trigger_line(
+        "When this creature enters, you may reveal a Dinosaur card from your hand. If you do or if you control another Dinosaur, you gain 3 life.",
+        "Armored Kincaller",
+    );
+    let kincaller_exec = kincaller.execute.as_deref().expect("execute");
+    assert!(effect_parks_reveal_card_choice(&kincaller_exec.effect));
+    assert!(matches!(
+        &*kincaller_exec.effect,
+        Effect::RevealHand {
+            target: TargetFilter::Controller,
+            ..
+        }
+    ));
+    let base_kincaller: serde_json::Value = serde_json::from_str(
+        r#"{"kind":"Spell","effect":{"type":"RevealHand","target":{"type":"Controller"},"card_filter":{"type":"Typed","type_filters":[{"Subtype":"Dinosaur"}],"controller":null,"properties":[]},"count":null,"reveal":true},"cost":null,"sub_ability":{"kind":"Spell","effect":{"type":"GainLife","amount":{"type":"Fixed","value":3}},"cost":null,"sub_ability":null,"duration":null,"description":null,"target_prompt":null,"condition":{"type":"Or","conditions":[{"type":"EffectOutcome","signal":"OptionalEffectPerformed"},{"type":"QuantityCheck","lhs":{"type":"Ref","qty":{"type":"ObjectCount","filter":{"type":"Typed","type_filters":[{"Subtype":"Dinosaur"}],"controller":"You","properties":[{"type":"Another"},{"type":"InZone","zone":"Battlefield"}]}}},"comparator":"GE","rhs":{"type":"Fixed","value":1}}]},"optional_targeting":false,"optional":false,"forward_result":false,"sub_link":"SequentialSibling"},"duration":null,"description":null,"target_prompt":null,"condition":null,"optional_targeting":false,"optional":true,"forward_result":false}"#,
+    )
+    .expect("base Kincaller JSON");
+    assert_eq!(
+        serde_json::to_value(kincaller_exec).expect("serialize"),
+        base_kincaller,
+        "Armored Kincaller's lowered trigger is unchanged"
+    );
+
+    // (iv) Predicate units: the new arm keys on card-parking, not on "is a
+    // RevealHand".
+    let reveal = |card_filter: TargetFilter, choice_optional: bool| Effect::RevealHand {
+        target: TargetFilter::Controller,
+        card_filter,
+        count: None,
+        selection: CardSelectionMode::default(),
+        choice_optional,
+        reveal: true,
+    };
+    assert!(introduces_chosen_object_target(&reveal(
+        TargetFilter::Typed(TypedFilter::creature()),
+        false
+    )));
+    assert!(introduces_chosen_object_target(&reveal(
+        TargetFilter::None,
+        true
+    )));
+    assert!(!introduces_chosen_object_target(&reveal(
+        TargetFilter::None,
+        false
+    )));
 }
