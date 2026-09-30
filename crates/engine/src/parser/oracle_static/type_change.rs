@@ -1739,7 +1739,7 @@ pub(crate) fn parse_bare_becomes_type_replacement_modifications(
 /// it grants, or `None` if no authority can model it.
 ///
 /// The sibling animation parser isolates a complete keyword list and any quoted
-/// remainder. The shared quoted-ability parser (CR 604.1) classifies the latter.
+/// remainder. The shared quoted-ability parser classifies the latter.
 ///
 /// `None` when neither claims the tail, so the caller declines the line instead
 /// of emitting the animation with its ability clause silently dropped.

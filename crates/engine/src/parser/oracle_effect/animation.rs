@@ -972,7 +972,7 @@ fn parse_animation_keyword_text(input: &str) -> OracleResult<'_, &str> {
     }
 }
 
-/// CR 613.1f: animation keyword grants apply in layer 6. Reject a list unless
+/// CR 113.10 + CR 613.1f: animation keyword grants apply in layer 6. Reject a list unless
 /// every keyword is modeled completely; an empty list is valid only before a
 /// quoted ability grant.
 fn parse_animation_keywords(raw_clause: &str, remaining: &str) -> Option<Vec<Keyword>> {
