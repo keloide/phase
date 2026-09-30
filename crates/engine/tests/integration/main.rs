@@ -1048,6 +1048,7 @@ mod mogg_fanatic_target_before_cost;
 mod mogg_war_marshal_echo_dies_trigger;
 mod mold_folk_sacrifice_type_union;
 mod mole_man_moloid_optional_mill;
+mod molten_lavamancer_damage_trigger;
 mod morbid_curiosity_cost_paid_mana_value_draw;
 mod morkrut_ashaya_self_sacrifice;
 mod morophon_chosen_type_1653;

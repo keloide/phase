@@ -4153,21 +4153,30 @@ fn renowned_creature_damage_subject_keeps_designation_filter() {
     ));
 }
 
-/// MSH Wave 2 (Molten Lavamancer): the batched "one or more of your opponents"
-/// recipient must parse as a noncombat damage trigger whose recipient is an
-/// opponent. Without the new `parse_opponent_player_recipient` arm, the
-/// recipient is unmatched, `try_parse_source_deals_damage_trigger` bails on the
-/// `valid_target.is_none()` guard, and `mode != DamageDone`.
+/// CR 603.2c + CR 120.4b: the recipient, event timing, and batched wording of
+/// Molten Lavamancer must all survive the source-led damage grammar.
 #[test]
 fn molten_lavamancer_one_or_more_opponents_recipient_parses() {
-    let def = parse_trigger_line(
-        "Whenever a source you control deals noncombat damage to one or more of your \
+    let parsed = parse_oracle_text(
+        "Prowess\nWhenever a source you control deals noncombat damage to one or more of your \
              opponents during your turn, you create a 1/1 red Elemental creature token. \
              This ability triggers only once each turn.",
         "Molten Lavamancer",
+        &[],
+        &["Creature".to_string()],
+        &[],
     );
+    assert!(parsed.extracted_keywords.contains(&Keyword::Prowess));
+    assert_eq!(parsed.triggers.len(), 1);
+    let def = &parsed.triggers[0];
     assert_eq!(def.mode, TriggerMode::DamageDone);
     assert_eq!(def.damage_kind, DamageKindFilter::NoncombatOnly);
+    assert_eq!(
+        def.valid_source,
+        Some(TargetFilter::Typed(
+            TypedFilter::default().controller(ControllerRef::You)
+        )),
+    );
     assert_eq!(
         def.valid_target,
         Some(TargetFilter::Typed(
@@ -4175,6 +4184,57 @@ fn molten_lavamancer_one_or_more_opponents_recipient_parses() {
         )),
         "recipient must be an opponent-controlled player filter"
     );
+    assert!(def.batched);
+    assert_eq!(
+        def.condition,
+        Some(TriggerCondition::DuringPlayersTurn {
+            player: PlayerFilter::Controller,
+        }),
+    );
+    assert_eq!(def.constraint, Some(TriggerConstraint::OncePerTurn));
+    assert!(matches!(
+        def.execute
+            .as_deref()
+            .map(|ability| ability.effect.as_ref()),
+        Some(Effect::Token { .. })
+    ));
+    assert_no_unimplemented(def.execute.as_deref().unwrap());
+}
+
+#[test]
+fn source_damage_recipient_timing_and_batching_are_independent_axes() {
+    let uncapped = parse_trigger_line(
+        "Whenever a source you control deals noncombat damage to one or more of your opponents during your turn, create a 1/1 red Elemental creature token.",
+        "Uncapped observer",
+    );
+    assert_eq!(uncapped.mode, TriggerMode::DamageDone);
+    assert!(uncapped.batched);
+    assert_eq!(uncapped.constraint, None);
+    assert_eq!(
+        uncapped.condition,
+        Some(TriggerCondition::DuringPlayersTurn {
+            player: PlayerFilter::Controller,
+        }),
+    );
+
+    let singular = parse_trigger_line(
+        "Whenever a source you control deals noncombat damage to an opponent during their turn, create a 1/1 red Elemental creature token.",
+        "Singular observer",
+    );
+    assert_eq!(singular.mode, TriggerMode::DamageDone);
+    assert!(!singular.batched);
+    assert_eq!(
+        singular.condition,
+        Some(TriggerCondition::DuringPlayersTurn {
+            player: PlayerFilter::TriggeringPlayer,
+        }),
+    );
+
+    let unsupported = parse_trigger_line(
+        "Whenever a source you control deals noncombat damage to an opponent during an impossible phase, create a 1/1 red Elemental creature token.",
+        "Unsupported tail",
+    );
+    assert!(matches!(unsupported.mode, TriggerMode::Unknown(_)));
 }
 
 #[test]

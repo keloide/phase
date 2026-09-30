@@ -15182,18 +15182,27 @@ fn try_parse_source_deals_damage_trigger(lower: &str) -> Option<(TriggerMode, Tr
     // means any damage target may satisfy the event. If a "to ..." tail exists
     // but is not one of this parser's recipient qualifiers, leave the line for
     // narrower parsers such as "a source deals damage to this creature".
-    let valid_target = parse_damage_to_qualifier(after_damage);
     if has_unmodelled_damage_recipient_predicate(after_damage) {
         return Some(unknown_trigger_definition(lower));
     }
     let has_recipient_tail = preceded(opt(space1), tag::<_, _, OracleError<'_>>("to "))
         .parse(after_damage)
         .is_ok();
-    if has_recipient_tail && valid_target.is_none() {
-        return None;
+    let (tail, valid_target) = match parse_damage_to_qualifier_with_rest(after_damage) {
+        Ok((tail, filter)) => (tail.trim(), Some(filter)),
+        Err(_) if has_recipient_tail => return None,
+        Err(_) => (after_damage.trim(), None),
+    };
+    // CR 603.2 + CR 102.1: A turn qualifier restricts the damage event itself.
+    // Consume the entire tail so an unrecognized rider cannot silently become
+    // an unrestricted DamageDone trigger.
+    if !tail.is_empty() && parse_timing_tail(tail).is_err() {
+        return Some(unknown_trigger_definition(lower));
     }
     def.valid_target = valid_target;
     def.damage_amount = threshold;
+    def.batched = scan_contains(after_damage, "one or more ");
+    attach_event_timing_tail(&mut def, tail);
     Some((TriggerMode::DamageDone, def))
 }
 
