@@ -1,0 +1,373 @@
+name: Temporary fork-only Gideon catalog-drift recovery
+permissions:
+  contents: read
+  actions: read
+jobs:
+  generate:
+    if: github.repository == 'keloide/phase'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_INCREMENTAL: '0'
+      GATED_SETS_AS_OF: '2026-10-04'
+      BASE_SHA: 9478227826ad1bc37ca38a821f1b773674e53328
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        fetch-depth: 0
+    - name: Reclaim unused hosted-image payloads as in repository CI
+      shell: bash
+      run: 'df -h /
+
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+
+        df -h /
+
+        '
+    - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
+      with:
+        cache: false
+    - name: Reuse authenticated complete inputs from successful same-source generation
+      shell: bash
+      env:
+        RTK_DISABLED: '1'
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        authored_sha=$(git rev-parse HEAD^)
+        test "$authored_sha" = 042a6e7d00273691f061542c2e848caa6c0879c7
+        base_sha="$BASE_SHA"
+        git merge-base --is-ancestor "$base_sha" "$authored_sha"
+        test "$(git diff --name-only "$authored_sha" HEAD)" = .github/workflows/gideon-generation.yml
+        test "$(awk '/MemTotal:/ {print $2}' /proc/meminfo)" -gt 8388608
+        evidence="$RUNNER_TEMP/evidence"
+        reuse="$evidence/prior-generation"
+        mkdir -p "$reuse" "$RUNNER_TEMP/pinned" "$RUNNER_TEMP/reuse-downloads"
+        printf 'workflow_sha=%s\nauthored_sha=%s\nbase_sha=%s\n' "$GITHUB_SHA" "$authored_sha" "$base_sha" > "$evidence/dispatch-source.txt"
+        head -5 /proc/meminfo > "$evidence/resource-before.txt"
+        for item in memory.current memory.max memory.events; do
+          if [ -f "/sys/fs/cgroup/$item" ]; then cat "/sys/fs/cgroup/$item" >> "$evidence/resource-before.txt"; fi
+        done
+        previous_workflow=509733d0c223921c945f98b0f08373bb01d738bb
+        command gh api repos/keloide/phase/actions/runs/37228406444 > "$reuse/run.json"
+        command gh api repos/keloide/phase/actions/runs/37228406444/jobs > "$reuse/jobs.json"
+        command gh api "repos/keloide/phase/commits/$previous_workflow" > "$reuse/workflow-commit.json"
+        jq -e --arg sha "$previous_workflow" '.id == 37228406444 and .head_sha == $sha and .path == ".github/workflows/gideon-generation.yml" and .event == "push" and .run_attempt == 1 and .status == "completed" and .conclusion == "cancelled"' "$reuse/run.json" > /dev/null
+        jq -e --arg sha "$previous_workflow" '.total_count == 1 and .jobs[0].head_sha == $sha and ([.jobs[0].steps[] | select(.name == "Full unchanged generation; preserve and exclude unrelated catalog side effects" or .name == "Preserve complete pinned generator inputs")] | length == 2 and all(.[]; .status == "completed" and .conclusion == "success"))' "$reuse/jobs.json" > /dev/null
+        jq -e --arg sha "$previous_workflow" --arg source "$authored_sha" '.sha == $sha and (.parents | length == 1) and .parents[0].sha == $source and (.files | length == 1) and .files[0].filename == ".github/workflows/gideon-generation.yml"' "$reuse/workflow-commit.json" > /dev/null
+        while read -r id digest size name; do
+          command gh api "repos/keloide/phase/actions/artifacts/$id" > "$reuse/artifact-$id.json"
+          jq -e --argjson id "$id" --arg digest "sha256:$digest" --argjson size "$size" --arg name "$name" --arg sha "$previous_workflow" '.id == $id and .name == $name and .digest == $digest and .size_in_bytes == $size and .expired == false and .workflow_run.id == 37228406444 and .workflow_run.head_sha == $sha and .workflow_run.repository_id == 1287671222' "$reuse/artifact-$id.json" > /dev/null
+          # gh follows the authenticated API redirect; retain stderr without exposing signed URLs in the job log.
+          if ! command gh api "repos/keloide/phase/actions/artifacts/$id/zip" > "$RUNNER_TEMP/reuse-downloads/$id.zip" 2> "$reuse/download-$id.stderr"; then
+            echo "Artifact API download failed for $id" >&2
+            exit 1
+          fi
+          test "$(stat -c %s "$RUNNER_TEMP/reuse-downloads/$id.zip")" -eq "$size"
+          printf '%s  %s\n' "$digest" "$RUNNER_TEMP/reuse-downloads/$id.zip" | sha256sum --check
+          if [ "$id" = 11314231369 ]; then
+            unzip -q "$RUNNER_TEMP/reuse-downloads/$id.zip" -d "$RUNNER_TEMP/pinned"
+          else
+            unzip -q "$RUNNER_TEMP/reuse-downloads/$id.zip" -d "$RUNNER_TEMP/reuse-downloads/parts"
+          fi
+        done <<'ARTIFACTS'
+        11314231369 aa86bdd6b67b4ed2dce4b4765abebaab5438201180d8b59ea39092f850faa425 446902530 gideon-pinned-inputs-509733d0c223921c945f98b0f08373bb01d738bb
+        11314436167 1d1900d51dd8d9b25c5365ccdae873f50da5f554d8093f46ff7663b20a3879e3 25173618 gideon-postsync-509733d0c223921c945f98b0f08373bb01d738bb-0
+        11314346413 87f7277d1439d534b9847058a8299f3610f72f8fcb4851e3bd97b520cbb28379 25173587 gideon-postsync-509733d0c223921c945f98b0f08373bb01d738bb-1
+        11314276481 cb34d4248fd93c821cfe92b1ee4dc2f21d6110f8313db075b14c5d6cde927508 490750 gideon-postsync-509733d0c223921c945f98b0f08373bb01d738bb-2
+        ARTIFACTS
+        cat "$RUNNER_TEMP/reuse-downloads/parts/part-0" "$RUNNER_TEMP/reuse-downloads/parts/part-1" "$RUNNER_TEMP/reuse-downloads/parts/part-2" > "$RUNNER_TEMP/reuse-downloads/evidence.tar.gz"
+        printf '%s  %s\n' fa86a4574a318a543293d9ed466102ec668b361b715a99033c1d7a2c6a2f031a "$RUNNER_TEMP/reuse-downloads/evidence.tar.gz" | sha256sum --check
+        tar -xzf "$RUNNER_TEMP/reuse-downloads/evidence.tar.gz" -C "$reuse"
+        grep -Fx "workflow_sha=$previous_workflow" "$reuse/dispatch-source.txt"
+        grep -Fx "authored_sha=$authored_sha" "$reuse/dispatch-source.txt"
+        grep -Fx "base_sha=$base_sha" "$reuse/dispatch-source.txt"
+        for item in generation.log catalog-generation.diff generator-diff-stat.txt catalog-classification.txt input-sha256.txt; do
+          test -s "$reuse/$item"
+          cp "$reuse/$item" "$evidence/$item"
+        done
+        test "$(wc -l < "$evidence/input-sha256.txt")" -eq 3441
+        test -z "$(find "$RUNNER_TEMP/pinned" -name '*.missing' -print -quit)"
+        test -z "$(find "$RUNNER_TEMP/pinned" -type l -print -quit)"
+        test "$(find "$RUNNER_TEMP/pinned/mtgjson/sets" -type f -name '*.json' | wc -l)" -eq 336
+        test "$(find "$RUNNER_TEMP/pinned/mtgjson/decks" -type f -name '*.json' | wc -l)" -eq 3098
+        chmod -R a-w "$RUNNER_TEMP/pinned"
+        (cd "$RUNNER_TEMP/pinned"; LC_ALL=C find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$evidence/reused-input-sha256.txt"
+        cmp "$evidence/input-sha256.txt" "$evidence/reused-input-sha256.txt"
+        printf 'reused_generation_run=37228406444\nreused_workflow_sha=%s\n' "$previous_workflow" > "$evidence/generation-reuse.txt"
+        git worktree add --detach "$RUNNER_TEMP/source" "$authored_sha"
+        test -z "$(git -C "$RUNNER_TEMP/source" status --porcelain)"
+        git -C "$RUNNER_TEMP/source" diff --exit-code "$base_sha" "$authored_sha" -- crates/engine/data/known-tokens.toml crates/engine/data/oracle-subtypes.json crates/engine/data/mtgjson-vintage
+        printf 'authored_sha=%s\nbase_sha=%s\n' "$authored_sha" "$base_sha" >> "$GITHUB_ENV"
+    - name: Preserve complete pinned generator inputs
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: gideon-pinned-inputs-${{ github.sha }}
+        path: ${{ runner.temp }}/pinned/
+        include-hidden-files: true
+        compression-level: 9
+        if-no-files-found: error
+    - name: Clean complete-input projections; canonical fixture checkpoint; exact-head parser measurement
+      shell: bash
+      run: "set -euo pipefail\nevidence=\"$RUNNER_TEMP/evidence\"\nfor side in base candidate; do\n  if [ \"$side\"\
+        \ = base ]; then side_sha=\"$base_sha\"; else side_sha=\"$authored_sha\"; fi\n  tree=\"$RUNNER_TEMP/$side\"\
+        \n  git worktree add --detach \"$tree\" \"$side_sha\"\n  cd \"$tree\"\n  test -z \"$(git status --porcelain)\"\
+        \n  ./scripts/engine-source-hash.sh \"$side_sha\" >> \"$evidence/provenance.txt\"\n  target=\"$RUNNER_TEMP/$side-target\"\
+        \n  CARGO_TARGET_DIR=\"$target\" CARGO_INCREMENTAL=0 cargo build --profile tool --features cli --bin oracle-gen\
+        \ --bin coverage-report --bin coverage-parse-diff --bin card-data-validate\n  mkdir -p client/public data\n\
+        \  \"$target/tool/oracle-gen\" \"$RUNNER_TEMP/pinned\" --stats --names-out client/public/card-names.json\
+        \ --sidecar-dir client/public > client/public/card-data.json\n  cp client/public/card-data.json data/card-data.json\n\
+        \  cp client/public/card-names.json data/card-names.json\n  \"$target/tool/card-data-validate\" data/card-data.json\n\
+        \  \"$target/tool/coverage-report\" data/ --all --brief --write-warning-patterns client/public/parser-warning-patterns.json\
+        \ > client/public/coverage-data.json\n  cp client/public/coverage-data.json \"$evidence/$side-coverage.json\"\
+        \n  jq '{total_cards, supported_cards, coverage_pct, coverage_by_format, coverage_by_set, token_coverage}'\
+        \ client/public/coverage-data.json > client/public/coverage-summary.json\n  \"$target/tool/oracle-gen\"\
+        \ semantic-audit data/ > \"$evidence/$side-semantic-audit.log\" 2>&1\n  cp data/semantic-audit.json \"$evidence/$side-semantic-audit.json\"\
+        \n  cp data/semantic-audit.md \"$evidence/$side-semantic-audit.md\"\n  cp data/card-data.json \"$evidence/$side-card-data.json\"\
+        \n  \"$target/tool/oracle-gen\" set-list \"$RUNNER_TEMP/pinned\" client/public/set-list.json\n  \"$target/tool/oracle-gen\"\
+        \ decks \"$RUNNER_TEMP/pinned\" client/public/decks.json --emit-skipped\n  # Use the repository's unchanged\
+        \ metadata-writing block, with this clean\n  # projection's export hash and the actual pinned Meta.json.\n\
+        \  OUTPUT=client/public/card-data.json\n  META_OUTPUT=client/public/card-data-meta.json\n  META_OUTPUT_TMP=\"\
+        $META_OUTPUT.tmp\"\n  MTGJSON_META_FILE=\"$RUNNER_TEMP/pinned/mtgjson/Meta.json\"\n  OUTPUT_DIR=client/public\n\
+        \  source <(sed -n '/^DATA_HASH=/,/# --- Group 2:/p' scripts/gen-card-data.sh)\n  track_tmp() { :; }\n \
+        \ promote_tmp() { mv -f \"$1\" \"$2\"; }\n  source <(sed -n '/# --- Group 3:/,/# --- Group 4:/p' scripts/gen-card-data.sh)\n\
+        \  test -z \"$(git status --porcelain)\"\ndone\n\"$RUNNER_TEMP/base-target/tool/coverage-parse-diff\" \"\
+        $evidence/base-coverage.json\" \"$evidence/candidate-coverage.json\" --base-sha \"$base_sha\" --head-sha\
+        \ \"$authored_sha\" --markdown \"$evidence/authored-parse-diff.md\" --json \"$evidence/authored-parse-diff.json\"\
+        \n# Refresh the fixture from the clean authored candidate, never from the\n# disposable generator export\
+        \ with its excluded catalog mutations.\ncd \"$RUNNER_TEMP/source\"\ncp \"$RUNNER_TEMP/candidate/client/public/card-data.json\"\
+        \ client/public/card-data.json\npython3 scripts/gen-test-fixture.py\npython3 scripts/gen-test-fixture.py\
+        \ --check\n# Inspect the exact fixture diff before making the artifact-only checkpoint.\ngit diff --binary\
+        \ > \"$evidence/generated.diff\"\ngit diff --stat\nchanged=$(git diff --name-only)\ntest -z \"$changed\"\
+        \ || test \"$changed\" = crates/engine/tests/fixtures/integration_cards.json.gz\ngit show HEAD:crates/engine/tests/fixtures/integration_cards.json.gz\
+        \ | gzip -dc | jq -S . > \"$evidence/fixture-before.json\"\ngzip -dc crates/engine/tests/fixtures/integration_cards.json.gz\
+        \ | jq -S . > \"$evidence/fixture-after.json\"\ndiff -u \"$evidence/fixture-before.json\" \"$evidence/fixture-after.json\"\
+        \ > \"$evidence/fixture-readable.diff\" || test \"$?\" -eq 1\npython3 - \"$evidence\" <<'INSPECT'\nimport\
+        \ json,sys\nfrom pathlib import Path\np=Path(sys.argv[1]); b=json.loads((p/'fixture-before.json').read_text());\
+        \ c=json.loads((p/'fixture-after.json').read_text())\nprint('Pre-commit fixture inspection:', 'added', sorted(c.keys()-b.keys()),\
+        \ 'removed', sorted(b.keys()-c.keys()), 'changed', sorted(k for k in b.keys()&c.keys() if b[k]!=c[k]))\n\
+        # All bytes were generated by the unchanged canonical fixture generator and\n# --check already compared\
+        \ the full subset against the clean committed parse.\nassert 'gideon the oathless' in c\nINSPECT\ngit add\
+        \ crates/engine/tests/fixtures/integration_cards.json.gz\nif ! git diff --cached --quiet; then\n  git -c\
+        \ user.name='luca cola' -c user.email='passandreaa@gmail.com' commit -m 'Refresh synchronized Gideon integration\
+        \ fixture' -- crates/engine/tests/fixtures/integration_cards.json.gz\nfi\ncandidate_sha=$(git rev-parse\
+        \ HEAD)\ntest -z \"$(git status --porcelain)\"\ngit diff --exit-code \"$authored_sha\" \"$candidate_sha\"\
+        \ -- crates/engine/src crates/engine/data scripts Cargo.toml Cargo.lock .cargo\nprintf 'workflow_sha=%s\\\
+        nauthored_sha=%s\\nbase_sha=%s\\ncandidate_sha=%s\\ngated_sets_as_of=%s\\n' \"$GITHUB_SHA\" \"$authored_sha\"\
+        \ \"$base_sha\" \"$candidate_sha\" \"$GATED_SETS_AS_OF\" >> \"$evidence/provenance.txt\"\nrustc -Vv >> \"\
+        $evidence/provenance.txt\"\ngit update-ref refs/heads/gideon-generated-candidate \"$candidate_sha\"\ngit\
+        \ bundle create \"$evidence/candidate.bundle\" \"$base_sha..refs/heads/gideon-generated-candidate\"\n# Sequentially\
+        \ reuse only this run's candidate target. Re-run the paired\n# head projection at the final fixture-only\
+        \ committed HEAD, with the same pin.\ncd \"$RUNNER_TEMP/candidate\"\ngit reset --hard \"$candidate_sha\"\
+        \ntest -z \"$(git status --porcelain)\"\n./scripts/engine-source-hash.sh \"$candidate_sha\" >> \"$evidence/provenance.txt\"\
+        \nCARGO_TARGET_DIR=\"$RUNNER_TEMP/candidate-target\" CARGO_INCREMENTAL=0 cargo build --profile tool --features\
+        \ cli --bin oracle-gen --bin coverage-report --bin coverage-parse-diff --bin card-data-validate\n\"$RUNNER_TEMP/candidate-target/tool/oracle-gen\"\
+        \ \"$RUNNER_TEMP/pinned\" --stats --names-out client/public/card-names.json --sidecar-dir client/public\
+        \ > client/public/card-data.json\ncp client/public/card-data.json data/card-data.json\ncp client/public/card-names.json\
+        \ data/card-names.json\n\"$RUNNER_TEMP/candidate-target/tool/card-data-validate\" data/card-data.json\n\"$RUNNER_TEMP/candidate-target/tool/coverage-report\"\
+        \ data/ --all --brief --write-warning-patterns client/public/parser-warning-patterns.json > client/public/coverage-data.json\n\
+        cp client/public/coverage-data.json \"$evidence/candidate-coverage.json\"\ncp data/card-data.json \"$evidence/candidate-card-data.json\"\
+        \njq '{total_cards, supported_cards, coverage_pct, coverage_by_format, coverage_by_set, token_coverage}'\
+        \ client/public/coverage-data.json > client/public/coverage-summary.json\n\"$RUNNER_TEMP/candidate-target/tool/oracle-gen\"\
+        \ semantic-audit data/ > \"$evidence/candidate-semantic-audit.log\" 2>&1\ncp data/semantic-audit.json \"\
+        $evidence/candidate-semantic-audit.json\"\ncp data/semantic-audit.md \"$evidence/candidate-semantic-audit.md\"\
+        \n# Retain the original exact clean export for fixture-check: repeated full\n# exports can have the documented\
+        \ nonsemantic face-selection noise.\ncp \"$RUNNER_TEMP/source/client/public/card-data.json\" client/public/card-data.json\n\
+        cp client/public/card-data.json data/card-data.json\nOUTPUT=client/public/card-data.json\nOUTPUT_DIR=client/public\n\
+        source <(sed -n '/^DATA_HASH=/,/# --- Group 2:/p' scripts/gen-card-data.sh)\nsource <(sed -n '/# --- Group\
+        \ 3:/,/# --- Group 4:/p' scripts/gen-card-data.sh)\npython3 scripts/gen-test-fixture.py --check\n\"$RUNNER_TEMP/base-target/tool/coverage-parse-diff\"\
+        \ \"$evidence/base-coverage.json\" \"$evidence/candidate-coverage.json\" --base-sha \"$base_sha\" --head-sha\
+        \ \"$candidate_sha\" --markdown \"$evidence/parse-diff.md\" --json \"$evidence/parse-diff.json\"\n./scripts/coverage-regression-check.sh\
+        \ \"$evidence/base-coverage.json\" \"$evidence/candidate-coverage.json\" --fail-on-engine > \"$evidence/coverage-regression.log\"\
+        \ 2>&1\npython3 - \"$evidence\" <<'AUDIT'\nimport json,sys\nfrom pathlib import Path\np=Path(sys.argv[1]);\
+        \ b=json.loads((p/'base-semantic-audit.json').read_text()); c=json.loads((p/'candidate-semantic-audit.json').read_text())\n\
+        def findings(v):\n return {(row['card_name'].casefold(),json.dumps(f,sort_keys=True)) for row in v['flagged_cards']\
+        \ for f in row['findings']}\nnew=findings(c)-findings(b)\nprint('New semantic-audit findings:',sorted(new))\n\
+        assert not new\nassert not any(row['card_name'].casefold()=='gideon the oathless' for row in c['flagged_cards'])\n\
+        coverage=json.loads((p/'candidate-coverage.json').read_text())\ngideon=next(row for row in coverage['cards']\
+        \ if row['card_name'].casefold()=='gideon the oathless')\nprint('Gideon coverage:',json.dumps(gideon,sort_keys=True))\n\
+        assert gideon['supported'] and gideon['gap_count']==0\nAUDIT\ntest -z \"$(git status --porcelain)\"\ntar\
+        \ -czf \"$evidence/generated-data.tar.gz\" client/public/*.json\nprintf 'candidate_sha=%s\\n' \"$candidate_sha\"\
+        \ >> \"$GITHUB_ENV\"\n"
+    - name: Exact committed-head completion; full engine suite; strict Clippy; discrimination and base controls
+      shell: bash
+      run: 'set -euo pipefail
+
+        evidence="$RUNNER_TEMP/evidence"
+
+        git worktree add --detach "$RUNNER_TEMP/completion" "$candidate_sha"
+
+        cd "$RUNNER_TEMP/completion"
+
+        tar -xzf "$evidence/generated-data.tar.gz"
+
+        test -z "$(git status --porcelain)"
+
+        python3 scripts/gen-test-fixture.py --check 2>&1 | tee "$evidence/fixture-check.log"
+
+        cargo fmt --all -- --check 2>&1 | tee "$evidence/fmt.log"
+
+        ./scripts/check-parser-combinators.sh "$base_sha"
+
+        ./scripts/check-prelowered-ratchet.sh
+
+        ./scripts/check-skill-doc.sh 2>&1 | tee "$evidence/skill-doc.log"
+
+        ./scripts/check-cr-citation-anchors.sh
+
+        ./scripts/check-engine-authorities.sh "$base_sha"
+
+        ./scripts/check-test-card-data-load.sh "$base_sha"
+
+        export CARGO_TARGET_DIR="$RUNNER_TEMP/completion-target"
+
+        ./scripts/check-interaction-bindings.sh --check 2>&1 | tee "$evidence/bindings.log"
+
+        cargo test -p phase-engine --test integration gideon_the_oathless 2>&1 | tee "$evidence/gideon-runtime.log"
+
+        set +e
+
+        cargo test -p phase-engine 2>&1 | tee "$evidence/engine-tests.log"
+
+        suite_exit=${PIPESTATUS[0]}
+
+        set -e
+
+        printf ''engine_suite_exit=%s\n'' "$suite_exit" >> "$evidence/provenance.txt"
+
+        set +e
+
+        cargo clippy-strict 2>&1 | tee "$evidence/clippy.log"
+
+        clippy_exit=${PIPESTATUS[0]}
+
+        set -e
+
+        printf ''clippy_exit=%s\n'' "$clippy_exit" >> "$evidence/provenance.txt"
+
+        # Diagnostic rollback preserves the exact parsed fixture and integration module.
+
+        git worktree add --detach "$RUNNER_TEMP/discrimination" "$candidate_sha"
+
+        cd "$RUNNER_TEMP/discrimination"
+
+        git show "$base_sha:crates/engine/src/game/trigger_matchers.rs" > crates/engine/src/game/trigger_matchers.rs
+
+        git diff -- crates/engine/src/game/trigger_matchers.rs > "$evidence/discrimination-rollback.diff"
+
+        set +e
+
+        cargo test -p phase-engine --test integration gideon_the_oathless::gideon_generated_fixture_loyalty_trigger_runs
+        -- --exact > "$evidence/discrimination.log" 2>&1
+
+        discrimination_exit=$?
+
+        set -e
+
+        printf ''discrimination_exit=%s\n'' "$discrimination_exit" >> "$evidence/provenance.txt"
+
+        test "$discrimination_exit" -eq 101
+
+        grep -F ''opponent loyalty activation must deal exactly one damage to its activator'' "$evidence/discrimination.log"
+
+        grep -F ''test result: FAILED. 0 passed; 1 failed;'' "$evidence/discrimination.log"
+
+        git restore -- crates/engine/src/game/trigger_matchers.rs
+
+        test -z "$(git status --porcelain)"
+
+        # Independently derived preservation readings are measured at the retained base.
+
+        cd "$RUNNER_TEMP/base"
+
+        test "$(git rev-parse HEAD)" = "$base_sha"
+
+        test -z "$(git status --porcelain)"
+
+        export CARGO_TARGET_DIR="$RUNNER_TEMP/base-test-target"
+
+        cargo test -p phase-engine --lib loyalty_ability_trigger_enchanted_ 2>&1 | tee "$evidence/base-parser-reference.log"
+
+        cargo test -p phase-engine --lib loyalty_ability_activation_enchanted_host_fires_non_host_does_not 2>&1
+        | tee "$evidence/base-matcher-reference.log"
+
+        cargo test -p phase-engine --test integration loyalty_ability_activated_trigger::enchanted_host_loyalty_fires_other_does_not
+        -- --exact 2>&1 | tee "$evidence/base-runtime-reference.log"
+
+        test -z "$(git status --porcelain)"
+
+        cd "$RUNNER_TEMP/completion"
+
+        test "$(git rev-parse HEAD)" = "$candidate_sha"
+
+        test -z "$(git status --porcelain)"
+
+        cd "$evidence"
+
+        sha256sum generated-data.tar.gz candidate.bundle *-coverage.json *-card-data.json parse-diff.json > artifact-sha256.txt
+
+        exit "$suite_exit"
+
+        '
+    - name: Package complete or partial evidence
+      if: always()
+      shell: bash
+      run: "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/evidence\" \"$RUNNER_TEMP/transfer\"\nhead -5 /proc/meminfo\
+        \ > \"$RUNNER_TEMP/evidence/resource-after.txt\"\nfor item in memory.current memory.max memory.events; do\n\
+        \  if [ -f \"/sys/fs/cgroup/$item\" ]; then cat \"/sys/fs/cgroup/$item\" >> \"$RUNNER_TEMP/evidence/resource-after.txt\"\
+        ; fi\ndone\ntar -czf \"$RUNNER_TEMP/evidence.tar.gz\" -C \"$RUNNER_TEMP/evidence\" .\nsha256sum \"$RUNNER_TEMP/evidence.tar.gz\"\
+        \nsplit -b 24M -d -a 1 \"$RUNNER_TEMP/evidence.tar.gz\" \"$RUNNER_TEMP/transfer/part-\"\ntest ! -e \"$RUNNER_TEMP/transfer/part-8\"\
+        \n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: gideon-postsync-${{ github.sha }}-0
+        path: ${{ runner.temp }}/transfer/part-0
+        if-no-files-found: ignore
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: gideon-postsync-${{ github.sha }}-1
+        path: ${{ runner.temp }}/transfer/part-1
+        if-no-files-found: ignore
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: gideon-postsync-${{ github.sha }}-2
+        path: ${{ runner.temp }}/transfer/part-2
+        if-no-files-found: ignore
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: gideon-postsync-${{ github.sha }}-3
+        path: ${{ runner.temp }}/transfer/part-3
+        if-no-files-found: ignore
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: gideon-postsync-${{ github.sha }}-4
+        path: ${{ runner.temp }}/transfer/part-4
+        if-no-files-found: ignore
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: gideon-postsync-${{ github.sha }}-5
+        path: ${{ runner.temp }}/transfer/part-5
+        if-no-files-found: ignore
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: gideon-postsync-${{ github.sha }}-6
+        path: ${{ runner.temp }}/transfer/part-6
+        if-no-files-found: ignore
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: gideon-postsync-${{ github.sha }}-7
+        path: ${{ runner.temp }}/transfer/part-7
+        if-no-files-found: ignore
+'on':
+  push:
+    branches:
+    - generation/gideon-candidate
