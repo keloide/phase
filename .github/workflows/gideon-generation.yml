@@ -1,0 +1,81 @@
+name: Temporary fork-only Gideon generation
+on:
+  push:
+    branches: [generation/gideon-candidate]
+permissions:
+  contents: read
+jobs:
+  generate:
+    if: github.repository == 'keloide/phase'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_INCREMENTAL: '0'
+      GATED_SETS_AS_OF: '2026-10-04'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
+        with:
+          cache: false
+      - name: Full generation and immutable paired parser measurement
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The triggering commit adds only this workflow on top of the product
+          # checkpoint. The product's parent is the synchronized upstream base.
+          authored_sha=$(git rev-parse HEAD^)
+          base_sha=$(git rev-parse "$authored_sha^")
+          test "$(git diff --name-only "$authored_sha" HEAD)" = .github/workflows/gideon-generation.yml
+          test "$(awk '/MemTotal:/ {print $2}' /proc/meminfo)" -gt 8388608
+          mkdir -p "$RUNNER_TEMP/evidence" "$RUNNER_TEMP/pinned/mtgjson"
+          evidence="$RUNNER_TEMP/evidence"
+          git worktree add --detach "$RUNNER_TEMP/source" "$authored_sha"
+          cd "$RUNNER_TEMP/source"
+          CARGO_TARGET_DIR="$RUNNER_TEMP/generator-target" ./scripts/gen-card-data.sh 2>&1 | tee "$evidence/generation.log"
+          test -z "$(find data/mtgjson/sets -name '*.missing' -print -quit)"
+          cp data/mtgjson/AtomicCards.json "$RUNNER_TEMP/pinned/mtgjson/AtomicCards.json"
+          chmod a-w "$RUNNER_TEMP/pinned/mtgjson/AtomicCards.json"
+          find data/mtgjson -type f -print0 | sort -z | xargs -0 sha256sum > "$evidence/input-sha256.txt"
+          python3 scripts/gen-test-fixture.py
+          python3 scripts/gen-test-fixture.py --check
+          ./scripts/check-parser-combinators.sh
+          ./scripts/check-prelowered-ratchet.sh
+          ./scripts/check-cr-citation-anchors.sh
+          git diff --binary > "$evidence/generated.diff"
+          git add crates/engine/data crates/engine/tests/fixtures/integration_cards.json.gz
+          if ! git diff --cached --quiet; then
+            git -c user.name='luca cola' -c user.email='passandreaa@gmail.com' commit -m 'Regenerate Gideon candidate artifacts with repository generators'
+          fi
+          candidate_sha=$(git rev-parse HEAD)
+          git update-ref refs/heads/gideon-generated-candidate "$candidate_sha"
+          printf 'workflow_sha=%s\nauthored_sha=%s\nbase_sha=%s\ncandidate_sha=%s\ngated_sets_as_of=%s\n' "$GITHUB_SHA" "$authored_sha" "$base_sha" "$candidate_sha" "$GATED_SETS_AS_OF" > "$evidence/provenance.txt"
+          rustc -Vv >> "$evidence/provenance.txt"
+          git bundle create "$evidence/candidate.bundle" refs/heads/gideon-generated-candidate
+          tar -czf "$evidence/generated-data.tar.gz" client/public/*.json data/mtgjson
+          for side in base candidate; do
+            if [ "$side" = base ]; then side_sha="$base_sha"; else side_sha="$candidate_sha"; fi
+            tree="$RUNNER_TEMP/$side"
+            git worktree add --detach "$tree" "$side_sha"
+            cd "$tree"
+            test -z "$(git status --porcelain)"
+            ./scripts/engine-source-hash.sh "$side_sha" >> "$evidence/provenance.txt"
+            target="$RUNNER_TEMP/$side-target"
+            CARGO_TARGET_DIR="$target" CARGO_INCREMENTAL=0 cargo build --profile tool --features cli --bin oracle-gen --bin coverage-report --bin coverage-parse-diff
+            mkdir -p data
+            "$target/tool/oracle-gen" "$RUNNER_TEMP/pinned" --stats --names-out data/card-names.json > data/card-data.json
+            "$target/tool/coverage-report" data/ > "$evidence/$side-coverage.json"
+            cp data/card-data.json "$evidence/$side-card-data.json"
+            test -z "$(git status --porcelain)"
+          done
+          "$RUNNER_TEMP/base-target/tool/coverage-parse-diff" "$evidence/base-coverage.json" "$evidence/candidate-coverage.json" --base-sha "$base_sha" --head-sha "$candidate_sha" --markdown "$evidence/parse-diff.md" --json "$evidence/parse-diff.json"
+          cmp "$evidence/candidate-card-data.json" "$RUNNER_TEMP/source/client/public/card-data.json"
+          cd "$evidence"
+          sha256sum generated-data.tar.gz candidate.bundle *-coverage.json *-card-data.json parse-diff.json > artifact-sha256.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gideon-generation-${{ github.sha }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
