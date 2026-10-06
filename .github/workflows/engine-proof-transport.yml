@@ -1,0 +1,139 @@
+# TEMPORARY FORK MACHINERY: install only on a separate fork transport branch.
+# Root must replace the one exact push-branch placeholder before committing.
+# Transfer existing completed proof3 normal outputs and all five job logs; no builds or pinned-inputs.
+name: Temporary engine proof output transport 4
+run-name: Engine proof output transport ${{ github.ref_name }}
+
+on:
+  push:
+    branches: [engine-proof/fra-stingerquill-transport-4]
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  RTK_DISABLED: '1'
+  SOURCE_RUN_ID: '37527656690'
+  SOURCE_PROOF_SHA: f6e8beff4503a6a7df37053003b01bc92892551b
+  RESULT_BRANCH: engine-proof/fra-stingerquill-results-3
+  ARCHIVE_PATH: engine-proof-results/fra-stingerquill-proof-outputs.tar.gz
+
+jobs:
+  transport:
+    if: github.repository == 'keloide/phase' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          # Used only for the exact result-branch push to this fork.
+          persist-credentials: true
+      - name: Verify exact fork checkout and completed source proof outputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          [[ "$RESULT_BRANCH" == engine-proof/* && "$RESULT_BRANCH" != "$GITHUB_REF_NAME" ]]
+          git check-ref-format "refs/heads/$RESULT_BRANCH"
+          test "$ARCHIVE_PATH" = engine-proof-results/fra-stingerquill-proof-outputs.tar.gz
+          test "$RESULT_BRANCH" = engine-proof/fra-stingerquill-results-3
+          test "$SOURCE_RUN_ID" = 37527656690
+          test "$SOURCE_PROOF_SHA" = f6e8beff4503a6a7df37053003b01bc92892551b
+          source_run=$(gh api "repos/keloide/phase/actions/runs/$SOURCE_RUN_ID")
+          test "$(jq -r '.head_sha' <<< "$source_run")" = "$SOURCE_PROOF_SHA"
+          test "$(jq -r '.status' <<< "$source_run")" = completed
+          normal_artifacts=$(gh api --paginate "repos/keloide/phase/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired == false) | select(.name == "candidate-outputs" or .name == "base-outputs-and-parse-diff" or .name == "completion-outputs" or .name == "runtime-red-log" or .name == "canonical-artifacts") | .name')
+          if [ -z "$normal_artifacts" ]; then
+            echo 'Missing normal proof output artifacts; transport cannot return proof outputs.' >&2
+            exit 1
+          fi
+      - name: Download only available normal source-run outputs including canonical
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          github-token: ${{ github.token }}
+          repository: keloide/phase
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          pattern: '{candidate-outputs,base-outputs-and-parse-diff,completion-outputs,runtime-red-log,canonical-artifacts}'
+          merge-multiple: false
+          path: ${{ runner.temp }}/fra-stingerquill-proof-outputs
+      - name: Retain all four source proof job logs and the failed source transport log
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fra-stingerquill-proof-outputs/raw-job-logs"
+          # The fixed source run is completed, including its failed transport job.
+          gh api --paginate "repos/keloide/phase/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | select(.status == "completed" and .conclusion != "skipped") | select(.name == "candidate" or .name == "base" or .name == "runtime-red" or .name == "completion" or .name == "transport") | [.id, .name] | @tsv' \
+            | while IFS=$'\t' read -r job_id job_name; do
+                gh run view "$SOURCE_RUN_ID" --repo keloide/phase --job "$job_id" --log \
+                  > "$RUNNER_TEMP/fra-stingerquill-proof-outputs/raw-job-logs/$job_name-$job_id.log"
+                test -s "$RUNNER_TEMP/fra-stingerquill-proof-outputs/raw-job-logs/$job_name-$job_id.log"
+              done
+          for job_name in candidate base runtime-red completion transport; do
+            compgen -G "$RUNNER_TEMP/fra-stingerquill-proof-outputs/raw-job-logs/$job_name-*.log" > /dev/null
+          done
+      - name: Archive complete outputs and split unchanged archive into at most two parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e "$RUNNER_TEMP/fra-stingerquill-proof-outputs/pinned-inputs"
+          test -s "$RUNNER_TEMP/fra-stingerquill-proof-outputs/candidate-outputs/card-data.json"
+          test -s "$RUNNER_TEMP/fra-stingerquill-proof-outputs/base-outputs-and-parse-diff/card-data.json"
+          # Every available normal artifact and all five raw job logs remain intact.
+          tar -czf "$RUNNER_TEMP/fra-stingerquill-proof-outputs.tar.gz" \
+            -C "$RUNNER_TEMP/fra-stingerquill-proof-outputs" .
+          split --bytes=90000000 --numeric-suffixes=0 --suffix-length=2 \
+            "$RUNNER_TEMP/fra-stingerquill-proof-outputs.tar.gz" \
+            "$RUNNER_TEMP/fra-stingerquill-proof-outputs.tar.gz.part-"
+          shopt -s nullglob
+          parts=("$RUNNER_TEMP"/fra-stingerquill-proof-outputs.tar.gz.part-*)
+          test "${#parts[@]}" -ge 1
+          test "${#parts[@]}" -le 2
+          test "${parts[0]}" = "$RUNNER_TEMP/fra-stingerquill-proof-outputs.tar.gz.part-00"
+          if [ "${#parts[@]}" -eq 2 ]; then
+            test "${parts[1]}" = "$RUNNER_TEMP/fra-stingerquill-proof-outputs.tar.gz.part-01"
+          fi
+          for part in "${parts[@]}"; do
+            test -s "$part"
+            test "$(stat -c '%s' "$part")" -le 90000000
+            test "$(stat -c '%s' "$part")" -lt 100000000
+          done
+      - name: Publish only archive parts on the exact attached fork result branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          [[ "$RESULT_BRANCH" == engine-proof/* && "$RESULT_BRANCH" != "$GITHUB_REF_NAME" ]]
+          test "$ARCHIVE_PATH" = engine-proof-results/fra-stingerquill-proof-outputs.tar.gz
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          test "$RESULT_BRANCH" = engine-proof/fra-stingerquill-results-3
+          git switch --create "$RESULT_BRANCH" "$GITHUB_SHA"
+          test "$(git symbolic-ref --short HEAD)" = "$RESULT_BRANCH"
+          mkdir -p engine-proof-results
+          part_paths=("$ARCHIVE_PATH.part-00")
+          if [ -f "$RUNNER_TEMP/fra-stingerquill-proof-outputs.tar.gz.part-01" ]; then
+            part_paths+=("$ARCHIVE_PATH.part-01")
+          fi
+          for path in "${part_paths[@]}"; do
+            cp "$RUNNER_TEMP/${path##*/}" "$path"
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --cached --quiet
+          git add -- "${part_paths[@]}"
+          git commit --only -m 'Transport Essence Burn proof outputs and raw job logs' -- "${part_paths[@]}"
+          test "$(git diff --name-only "$GITHUB_SHA" HEAD)" = "$(printf '%s\n' "${part_paths[@]}")"
+          test "$(git symbolic-ref --short HEAD)" = "$RESULT_BRANCH"
+          git push origin "HEAD:refs/heads/$RESULT_BRANCH"
