@@ -1,0 +1,97 @@
+# TEMPORARY FORK MACHINERY: install only on a separate fork transport branch.
+# Root must replace the one exact push-branch placeholder before committing.
+# Transfer existing normal outputs and failed-job logs only; no builds or pinned-inputs.
+name: Temporary engine proof output transport
+run-name: Engine proof output transport ${{ github.ref_name }}
+
+on:
+  push:
+    branches: [engine-proof/fra-stingerquill-transport-1]
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  RTK_DISABLED: '1'
+  SOURCE_RUN_ID: '37483983597'
+  SOURCE_PROOF_SHA: 1d4f60a1f5b6196a20b69413bd40dbc31d067e18
+  RESULT_BRANCH: engine-proof/fra-stingerquill-results-1
+  ARCHIVE_PATH: engine-proof-results/fra-stingerquill-37483983597.tar.gz
+
+jobs:
+  transport:
+    if: github.repository == 'keloide/phase' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          # Used only for the exact result-branch push to this fork.
+          persist-credentials: true
+      - name: Verify exact checkout and original source run before retrieval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          test "$SOURCE_RUN_ID" = 37483983597
+          test "$SOURCE_PROOF_SHA" = 1d4f60a1f5b6196a20b69413bd40dbc31d067e18
+          source_run=$(gh api "repos/keloide/phase/actions/runs/$SOURCE_RUN_ID")
+          test "$(jq -r '.head_sha' <<< "$source_run")" = "$SOURCE_PROOF_SHA"
+          test "$(jq -r '.status' <<< "$source_run")" = completed
+      - name: Download only the original run's normal output artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          github-token: ${{ github.token }}
+          repository: keloide/phase
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          pattern: '{candidate-outputs,base-outputs-and-parse-diff,completion-outputs,runtime-red-log}'
+          merge-multiple: false
+          path: ${{ runner.temp }}/fra-stingerquill-source-outputs
+      - name: Retain raw failed-job logs from the original run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run view "$SOURCE_RUN_ID" --repo keloide/phase --log-failed \
+            > "$RUNNER_TEMP/fra-stingerquill-source-outputs/failed-job-logs.log"
+          test -s "$RUNNER_TEMP/fra-stingerquill-source-outputs/failed-job-logs.log"
+      - name: Archive complete retrieved outputs without rewriting them
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/fra-stingerquill-source-outputs/candidate-outputs/card-data.json"
+          test -s "$RUNNER_TEMP/fra-stingerquill-source-outputs/base-outputs-and-parse-diff/card-data.json"
+          test ! -e "$RUNNER_TEMP/fra-stingerquill-source-outputs/pinned-inputs"
+          tar -czf "$RUNNER_TEMP/fra-stingerquill-37483983597.tar.gz" \
+            -C "$RUNNER_TEMP/fra-stingerquill-source-outputs" .
+          test "$(stat -c '%s' "$RUNNER_TEMP/fra-stingerquill-37483983597.tar.gz")" -lt 100000000
+      - name: Publish only the archive on the exact attached fork result branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          test "$RESULT_BRANCH" = engine-proof/fra-stingerquill-results-1
+          test "$ARCHIVE_PATH" = engine-proof-results/fra-stingerquill-37483983597.tar.gz
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          git switch --create "$RESULT_BRANCH" "$GITHUB_SHA"
+          test "$(git symbolic-ref --short HEAD)" = "$RESULT_BRANCH"
+          mkdir -p engine-proof-results
+          cp "$RUNNER_TEMP/fra-stingerquill-37483983597.tar.gz" "$ARCHIVE_PATH"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --cached --quiet
+          git add -- "$ARCHIVE_PATH"
+          git commit --only -m 'Transport original Essence Burn proof outputs' -- "$ARCHIVE_PATH"
+          test "$(git diff --name-only "$GITHUB_SHA" HEAD)" = "$ARCHIVE_PATH"
+          test "$(git symbolic-ref --short HEAD)" = "$RESULT_BRANCH"
+          git push origin "HEAD:refs/heads/$RESULT_BRANCH"
