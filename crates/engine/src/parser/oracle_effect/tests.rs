@@ -80435,3 +80435,107 @@ fn self_cost_modification_after_closed_quote_is_its_own_chunk() {
     let anaphoric = chunk_texts(&format!("{grant} The token is goaded."));
     assert_eq!(anaphoric.len(), 1, "{anaphoric:?}");
 }
+
+/// SHAPE: exact Oracle retains its complete target-bound temporary replacement.
+#[test]
+fn essence_burn_parses_target_bound_die_exile_rider() {
+    use crate::types::replacements::ReplacementEvent;
+    let parsed = parse_oracle_text(
+        "Essence Burn deals 5 damage to target black or green creature or planeswalker. If that permanent would die this turn, exile it instead.",
+        "Essence Burn", &[], &["Instant".into()], &[],
+    );
+    assert_eq!(parsed.abilities.len(), 1);
+    let def = &parsed.abilities[0];
+    assert!(matches!(
+        def.effect.as_ref(),
+        Effect::DealDamage {
+            amount: QuantityExpr::Fixed { value: 5 },
+            ..
+        }
+    ));
+    let mut riders = Vec::new();
+    chain_collect(
+        def,
+        &|d| matches!(d.effect.as_ref(), Effect::AddTargetReplacement { .. }),
+        &mut riders,
+    );
+    assert_eq!(riders.len(), 1);
+    let Effect::AddTargetReplacement {
+        replacement,
+        target,
+    } = riders[0].effect.as_ref()
+    else {
+        unreachable!()
+    };
+    assert_eq!(*target, TargetFilter::Any);
+    assert_eq!(replacement.event, ReplacementEvent::Moved);
+    assert_eq!(replacement.valid_card, Some(TargetFilter::SelfRef));
+    assert_eq!(replacement.destination_zone, Some(Zone::Graveyard));
+    assert_eq!(replacement.expiry, Some(RestrictionExpiry::EndOfTurn));
+    assert!(matches!(
+        replacement
+            .execute
+            .as_ref()
+            .expect("exile instruction")
+            .effect
+            .as_ref(),
+        Effect::ChangeZone {
+            origin: Some(Zone::Battlefield),
+            destination: Zone::Exile,
+            target: TargetFilter::SelfRef,
+            ..
+        }
+    ));
+    assert!(!chain_has_unimplemented(def));
+    assert!(
+        parsed.parse_warnings.is_empty(),
+        "{:?}",
+        parsed.parse_warnings
+    );
+}
+
+/// SHAPE: incomplete riders retain strict failure rather than swallowing their tails.
+#[test]
+fn demonstrative_die_exile_invalid_tail_remains_unsupported() {
+    for text in [
+        "Essence Burn deals 5 damage to target black creature. If that permanent would die next turn, exile it instead.",
+        "Essence Burn deals 5 damage to target black creature. If that permanent would die this turn, exile it instead and frobnicate it.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(matches!(def.effect.as_ref(), Effect::DealDamage { .. }), "damage head must survive");
+        assert!(chain_has_unimplemented(&def), "invalid rider must retain a strict-failure marker: {def:?}");
+    }
+    assert!(try_parse_die_exile_rider(
+        "if that permanent would die next turn, exile it instead.",
+        AbilityKind::Spell
+    )
+    .is_none());
+    assert!(try_parse_die_exile_rider(
+        "if that permanent would die this turn, exile it instead.",
+        AbilityKind::Spell
+    )
+    .is_some());
+    let unbound = parse_effect_chain(
+        "If that permanent would die this turn, exile it instead.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        chain_has_unimplemented(&unbound),
+        "missing parent target must remain unsupported: {unbound:?}"
+    );
+}
+
+#[test]
+fn demonstrative_die_exile_existing_subjects_preserved() {
+    for (name, text, keywords) in [
+        ("Agate Assault", "Choose one —\n• Agate Assault deals 4 damage to target creature. If that creature would die this turn, exile it instead.\n• Exile target artifact.", vec![]),
+        ("Brutal Expulsion", "Devoid (This card has no color.)\nChoose one or both —\n• Return target spell or creature to its owner's hand.\n• Brutal Expulsion deals 2 damage to target creature or planeswalker. If that creature or planeswalker would die this turn, exile it instead.", vec!["Devoid".into()]),
+    ] {
+        let types = if name == "Agate Assault" { vec!["Sorcery".into()] } else { vec!["Instant".into()] };
+        let parsed = parse_oracle_text(text, name, &keywords, &types, &[]);
+        let def = parsed.abilities.iter().find(|d| matches!(d.effect.as_ref(), Effect::DealDamage { .. })).expect("damage mode");
+        assert!(chain_any(def, &|d| matches!(d.effect.as_ref(), Effect::AddTargetReplacement { .. })));
+        assert!(parsed.abilities.iter().all(|d| !chain_has_unimplemented(d)));
+        assert!(parsed.parse_warnings.is_empty(), "{name}: {:?}", parsed.parse_warnings);
+    }
+}

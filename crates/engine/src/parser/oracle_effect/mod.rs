@@ -2913,6 +2913,7 @@ fn try_parse_die_exile_rider(lower: &str, kind: AbilityKind) -> Option<AbilityDe
         tag::<_, _, OracleError<'_>>("that creature or planeswalker"),
         tag("that creature"),
         tag("that planeswalker"),
+        tag("that permanent"),
         tag("that token"),
         tag("a permanent dealt damage by ~"),
         tag("a creature dealt damage by ~"),

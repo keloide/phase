@@ -2891,10 +2891,13 @@ pub fn parse_type_phrase_folding_with_ctx<'a>(
 
     // CR 105.1 + CR 105.2: Handle color adjective prefixes:
     // "white creature", "red spell", "colorless creature", "multicolored card", etc.
-    let color_prop =
-        parse_color_prefix(&lower[pos..]).or_else(|| parse_color_quality_prefix(&lower[pos..]));
-    if let Some((ref prop, color_len)) = color_prop {
-        properties.push(prop.clone());
+    let color_props = parse_color_prefix(&lower[pos..])
+        .or_else(|| parse_color_quality_prefix(&lower[pos..]).map(|(prop, len)| (vec![prop], len)));
+    if let Some((ref props, color_len)) = color_props {
+        if props.len() > 1 {
+            property_disjunction_ranges.push((properties.len(), props.len()));
+        }
+        properties.extend(props.iter().cloned());
         pos += color_len;
     }
 
@@ -2972,11 +2975,14 @@ pub fn parse_type_phrase_folding_with_ctx<'a>(
     // unparsed, silently degrading the cost to "sacrifice a nontoken
     // permanent" (which a land never is, so any permanent paid the alt cost).
     // Mirrors the post-negation `historic` re-check directly below.
-    if color_prop.is_none() {
-        if let Some((prop, color_len)) =
-            parse_color_prefix(&lower[pos..]).or_else(|| parse_color_quality_prefix(&lower[pos..]))
-        {
-            properties.push(prop);
+    if color_props.is_none() {
+        if let Some((props, color_len)) = parse_color_prefix(&lower[pos..]).or_else(|| {
+            parse_color_quality_prefix(&lower[pos..]).map(|(prop, len)| (vec![prop], len))
+        }) {
+            if props.len() > 1 {
+                property_disjunction_ranges.push((properties.len(), props.len()));
+            }
+            properties.extend(props);
             pos += color_len;
         }
     }
@@ -3381,13 +3387,6 @@ pub fn parse_type_phrase_folding_with_ctx<'a>(
                 let mut left_extras = std::mem::take(&mut adjective_type_filters);
                 left_extras.append(&mut extra_core_type_filters);
                 left_extras.append(&mut neg_type_filters);
-                let left = typed(
-                    card_type.unwrap_or(TypeFilter::Any),
-                    subtype,
-                    properties.clone(),
-                    left_extras,
-                );
-                let combined = merge_or_filters(left, other_filter);
                 // CR 105.1 + CR 205.2: an article-led disjunct ("… or *an*
                 // artifact creature card") is a syntactically self-contained noun
                 // phrase, so the left leg's leading adjective properties
@@ -3401,16 +3400,34 @@ pub fn parse_type_phrase_folding_with_ctx<'a>(
                 let right_is_article_led = alt((tag::<_, _, OracleError<'_>>("an "), tag("a ")))
                     .parse(after_trimmed)
                     .is_ok();
-                let shared_props: Vec<FilterProp> = if right_is_article_led {
-                    properties
-                        .iter()
-                        .filter(|prop| !is_adjective_prefix_prop(prop))
-                        .cloned()
-                        .collect()
-                } else {
-                    properties.clone()
-                };
-                return (finalize_or_disjunction(combined, &shared_props), final_rest);
+                let mut branches =
+                    expand_property_disjunctions(properties, &property_disjunction_ranges)
+                        .into_iter()
+                        .map(|branch_props| {
+                            let shared_props: Vec<FilterProp> = if right_is_article_led {
+                                branch_props
+                                    .iter()
+                                    .filter(|prop| !is_adjective_prefix_prop(prop))
+                                    .cloned()
+                                    .collect()
+                            } else {
+                                branch_props.clone()
+                            };
+                            let left = typed(
+                                card_type.clone().unwrap_or(TypeFilter::Any),
+                                subtype.clone(),
+                                branch_props,
+                                left_extras.clone(),
+                            );
+                            finalize_or_disjunction(
+                                merge_or_filters(left, other_filter.clone()),
+                                &shared_props,
+                            )
+                        });
+                let first = branches
+                    .next()
+                    .expect("property expansion always has a branch");
+                return (branches.fold(first, merge_or_filters), final_rest);
             }
         }
     }
@@ -4263,37 +4280,7 @@ pub fn parse_type_phrase_folding_with_ctx<'a>(
             .collect::<Vec<_>>()
     };
 
-    let property_branches = if property_disjunction_ranges.is_empty() {
-        vec![properties]
-    } else {
-        let mut disjunctive_indices = vec![false; properties.len()];
-        for (start, len) in &property_disjunction_ranges {
-            for is_disjunctive in disjunctive_indices.iter_mut().skip(*start).take(*len) {
-                *is_disjunctive = true;
-            }
-        }
-        let common_props = properties
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| !disjunctive_indices[*idx])
-            .map(|(_, prop)| prop.clone())
-            .collect::<Vec<_>>();
-        let mut branch_props = vec![common_props];
-        for (start, len) in property_disjunction_ranges {
-            let disjunctive_props = properties[start..start + len].to_vec();
-            branch_props = branch_props
-                .into_iter()
-                .flat_map(|common| {
-                    disjunctive_props.iter().cloned().map(move |prop| {
-                        let mut branch = common.clone();
-                        branch.push(prop);
-                        branch
-                    })
-                })
-                .collect();
-        }
-        branch_props
-    };
+    let property_branches = expand_property_disjunctions(properties, &property_disjunction_ranges);
 
     let mut filters = Vec::new();
     for type_filters in type_filter_branches {
@@ -6150,33 +6137,63 @@ fn parse_combat_relation_suffix(text: &str) -> Option<(FilterProp, usize)> {
     ))
 }
 
-/// Parse a color adjective prefix: "white ", "blue ", "black ", "red ", "green ".
-/// Returns (FilterProp::HasColor, bytes consumed including trailing space).
-///
-/// Delegates to `nom_primitives::parse_color` for color word recognition,
-/// then verifies a trailing space exists (color as adjective, not standalone).
-fn parse_color_prefix(text: &str) -> Option<(FilterProp, usize)> {
-    let (rest, color) = nom_primitives::parse_color(text).ok()?;
-    // CR 105.1: A color word is an adjective prefix only when a separator
-    // follows, so a bare color word ("whiteness") never matches. Two separators
-    // are accepted:
-    //   * a trailing space — the ordinary "white creature" prefix (consumed);
-    //   * a comma — the color-list continuation "white, blue, or black
-    //     creature", where the comma is left in place for the `TYPE_SEPARATORS`
-    //     recursion to consume as a ", " / ", or " disjunction separator. That
-    //     recursion + `distribute_core_type_to_or` then assemble the ≥3-color
-    //     prenominal chain into the same Or-of-legs shape the 2-color "green or
-    //     white creature" form already produces, with the core type backfilled
-    //     onto every color-only leg.
+/// Expand only grammar-recorded alternatives, preserving all common properties.
+/// Combat, keyword and leading-color lists share this Cartesian-product composition.
+fn expand_property_disjunctions(
+    properties: Vec<FilterProp>,
+    ranges: &[(usize, usize)],
+) -> Vec<Vec<FilterProp>> {
+    if ranges.is_empty() {
+        vec![properties]
+    } else {
+        let mut disjunctive_indices = vec![false; properties.len()];
+        for (start, len) in ranges {
+            for is_disjunctive in disjunctive_indices.iter_mut().skip(*start).take(*len) {
+                *is_disjunctive = true;
+            }
+        }
+        let common_props = properties
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| !disjunctive_indices[*idx])
+            .map(|(_, prop)| prop.clone())
+            .collect::<Vec<_>>();
+        let mut branch_props = vec![common_props];
+        for &(start, len) in ranges {
+            let disjunctive_props = properties[start..start + len].to_vec();
+            branch_props = branch_props
+                .into_iter()
+                .flat_map(|common| {
+                    disjunctive_props.iter().cloned().map(move |prop| {
+                        let mut branch = common.clone();
+                        branch.push(prop);
+                        branch
+                    })
+                })
+                .collect();
+        }
+        branch_props
+    }
+}
+
+/// Parse a leading color list, leaving the following noun/connector available.
+/// CR 105.2: any listed color satisfies this adjective; colors are alternatives.
+fn parse_color_prefix(text: &str) -> Option<(Vec<FilterProp>, usize)> {
+    let (rest, colors) = parse_color_disjunction(text).ok()?;
     let consumed = if let Ok((after_space, _)) = tag::<_, _, OracleError<'_>>(" ").parse(rest) {
         text.len() - after_space.len()
     } else if peek(tag::<_, _, OracleError<'_>>(",")).parse(rest).is_ok() {
-        // Comma left in place for the `TYPE_SEPARATORS` recursion to consume.
         text.len() - rest.len()
     } else {
         return None;
     };
-    Some((FilterProp::HasColor { color }, consumed))
+    Some((
+        colors
+            .into_iter()
+            .map(|color| FilterProp::HasColor { color })
+            .collect(),
+        consumed,
+    ))
 }
 
 /// Parse color-quality adjective prefixes: "colorless creature",
@@ -15740,6 +15757,241 @@ mod tests {
                 _ => None,
             })
         })
+    }
+
+    /// SHAPE: each color alternative retains a concrete shared noun (CR 105.2).
+    #[test]
+    fn essence_burn_color_and_type_disjunction_shape() {
+        let (filter, rest) = parse_target("target black or green creature or planeswalker");
+        assert_eq!(rest.trim(), "");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected noun/color alternatives");
+        };
+        assert_eq!(filters.len(), 4);
+        for color in [ManaColor::Black, ManaColor::Green] {
+            for ty in [TypeFilter::Creature, TypeFilter::Planeswalker] {
+                assert!(filters
+                    .iter()
+                    .any(|leg| typed_leg(leg)
+                        .is_some_and(|tf| tf.type_filters == vec![ty.clone()]
+                            && leg_color(leg) == Some(color))));
+            }
+        }
+        assert!(filters.iter().all(|leg| typed_leg(leg).is_some_and(|tf| !tf
+            .type_filters
+            .contains(&TypeFilter::Any)
+            && tf
+                .properties
+                .iter()
+                .filter(|p| matches!(p, FilterProp::HasColor { .. }))
+                .count()
+                == 1)));
+    }
+
+    /// SHAPE: Wort's two shared spell nouns both carry either leading color.
+    #[test]
+    fn wort_shared_spell_nouns_retain_each_color() {
+        let (filter, rest) =
+            parse_type_phrase_folding("red or green instant or sorcery spell you cast");
+        assert_eq!(
+            rest.trim(),
+            "you cast",
+            "the enclosing spell grammar owns this suffix"
+        );
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected spell alternatives");
+        };
+        assert_eq!(filters.len(), 4);
+        for color in [ManaColor::Red, ManaColor::Green] {
+            for ty in [TypeFilter::Instant, TypeFilter::Sorcery] {
+                assert!(filters
+                    .iter()
+                    .any(|leg| typed_leg(leg).is_some_and(
+                        |tf| tf.type_filters.contains(&ty) && leg_color(leg) == Some(color)
+                    )));
+            }
+        }
+        assert!(filters.iter().all(
+            |leg| typed_leg(leg).is_some_and(|tf| !tf.type_filters.contains(&TypeFilter::Any))
+        ));
+    }
+
+    /// SHAPE plus semantic filter evaluation: an article starts an independent noun.
+    #[test]
+    fn color_list_does_not_leak_across_article_led_branch() {
+        use crate::game::filter::{matches_target_filter, FilterContext};
+        use crate::game::scenario::{GameScenario, P0};
+        let (filter, rest) =
+            parse_type_phrase_folding("black or green creature card or an artifact creature card");
+        assert_eq!(rest.trim(), "");
+        let mut scenario = GameScenario::new();
+        let artifact = scenario
+            .add_creature_to_hand(P0, "Artifact", 2, 2)
+            .as_artifact_creature()
+            .id();
+        let black = scenario
+            .add_creature_to_hand(P0, "Black", 2, 2)
+            .with_color(vec![ManaColor::Black])
+            .id();
+        let green = scenario
+            .add_creature_to_hand(P0, "Green", 2, 2)
+            .with_color(vec![ManaColor::Green])
+            .id();
+        let red = scenario
+            .add_creature_to_hand(P0, "Red", 2, 2)
+            .with_color(vec![ManaColor::Red])
+            .id();
+        let runner = scenario.build();
+        let ctx = FilterContext::neutral();
+        for id in [artifact, black, green] {
+            assert!(matches_target_filter(runner.state(), id, &filter, &ctx));
+        }
+        assert!(!matches_target_filter(runner.state(), red, &filter, &ctx));
+    }
+
+    /// SHAPE: recurse into a color list on the right without widening its noun.
+    #[test]
+    fn right_leading_color_list_retains_noun_conjunctions() {
+        let (filter, rest) =
+            parse_type_phrase_folding("artifact card or a black or green creature card");
+        assert_eq!(rest.trim(), "");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected alternatives");
+        };
+        assert!(filters
+            .iter()
+            .any(|leg| typed_leg(leg)
+                .is_some_and(|tf| tf.type_filters == vec![TypeFilter::Artifact])));
+        for color in [ManaColor::Black, ManaColor::Green] {
+            assert!(filters.iter().any(|leg| typed_leg(leg)
+                .is_some_and(|tf| tf.type_filters == vec![TypeFilter::Creature]
+                    && leg_color(leg) == Some(color))));
+        }
+        assert!(filters.iter().all(
+            |leg| typed_leg(leg).is_some_and(|tf| !tf.type_filters.contains(&TypeFilter::Any))
+        ));
+    }
+
+    /// SHAPE: three colors and three shared noun legs form a Cartesian product.
+    #[test]
+    fn color_list_nested_nouns_and_comma_list_shape() {
+        let (filter, rest) =
+            parse_type_phrase_folding("white, blue, or black artifact or creature or enchantment");
+        assert_eq!(rest.trim(), "");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected alternatives");
+        };
+        assert_eq!(filters.len(), 9);
+        for color in [ManaColor::White, ManaColor::Blue, ManaColor::Black] {
+            for ty in [
+                TypeFilter::Artifact,
+                TypeFilter::Creature,
+                TypeFilter::Enchantment,
+            ] {
+                assert!(filters
+                    .iter()
+                    .any(|leg| typed_leg(leg)
+                        .is_some_and(|tf| tf.type_filters == vec![ty.clone()]
+                            && leg_color(leg) == Some(color))));
+            }
+        }
+    }
+
+    /// SHAPE: common negations and independent combat alternatives survive expansion.
+    #[test]
+    fn color_list_post_negation_and_combat_prefix_shape() {
+        let (filter, rest) = parse_type_phrase_folding("nontoken black or green creature");
+        assert_eq!(rest.trim(), "");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected alternatives");
+        };
+        assert_eq!(filters.len(), 2);
+        for leg in &filters {
+            let tf = typed_leg(leg).expect("concrete noun");
+            assert_eq!(tf.type_filters, vec![TypeFilter::Creature]);
+            assert!(tf.properties.contains(&FilterProp::NonToken));
+            assert!(leg_color(leg).is_some());
+        }
+        let (filter, rest) = parse_type_phrase_folding(
+            "attacking or blocking black or green creature or planeswalker",
+        );
+        assert_eq!(rest.trim(), "");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected alternatives");
+        };
+        assert_eq!(filters.len(), 8);
+        assert!(filters.iter().all(|leg| typed_leg(leg).is_some_and(|tf| !tf
+            .type_filters
+            .contains(&TypeFilter::Any)
+            && leg_color(leg).is_some()
+            && tf
+                .properties
+                .iter()
+                .filter(|p| matches!(p, FilterProp::Attacking { .. } | FilterProp::Blocking))
+                .count()
+                == 1)));
+    }
+
+    /// SHAPE: color expansion retains every conjoined and negated noun characteristic.
+    #[test]
+    fn color_list_retains_conjoined_and_negated_types() {
+        let (filter, rest) =
+            parse_type_phrase_folding("black or green artifact creature card or an artifact card");
+        assert_eq!(rest.trim(), "");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected alternatives");
+        };
+        for color in [ManaColor::Black, ManaColor::Green] {
+            let tf = filters
+                .iter()
+                .find(|leg| leg_color(leg) == Some(color))
+                .and_then(typed_leg)
+                .expect("color branch");
+            assert!(tf.type_filters.contains(&TypeFilter::Artifact));
+            assert!(tf.type_filters.contains(&TypeFilter::Creature));
+        }
+        assert!(filters
+            .iter()
+            .any(|leg| typed_leg(leg).is_some_and(|tf| tf.type_filters
+                == vec![TypeFilter::Artifact]
+                && leg_color(leg).is_none())));
+        let (filter, rest) = parse_type_phrase_folding("nonartifact black or green creature");
+        assert_eq!(rest.trim(), "");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected alternatives");
+        };
+        assert_eq!(filters.len(), 2);
+        for leg in &filters {
+            let tf = typed_leg(leg).expect("concrete negated noun");
+            assert!(tf.type_filters.contains(&TypeFilter::Creature));
+            assert!(tf
+                .type_filters
+                .contains(&TypeFilter::Non(Box::new(TypeFilter::Artifact))));
+            assert!(leg_color(leg).is_some());
+        }
+    }
+
+    /// SHAPE: recognizer boundaries and empty-range preservation are independent controls.
+    #[test]
+    fn color_prefix_boundaries_and_empty_property_ranges() {
+        assert!(parse_color_prefix("greenish creature").is_none());
+        assert!(parse_color_prefix("black").is_none());
+        let (props, used) =
+            parse_color_prefix("black or green creature or artifact").expect("color list");
+        assert_eq!(props.len(), 2);
+        assert_eq!(
+            &"black or green creature or artifact"[used..],
+            "creature or artifact"
+        );
+        let (props, used) =
+            parse_color_prefix("black or artifact").expect("one color before noun union");
+        assert_eq!(props.len(), 1);
+        assert_eq!(&"black or artifact"[used..], "or artifact");
+        assert_eq!(
+            expand_property_disjunctions(vec![FilterProp::NonToken], &[]),
+            vec![vec![FilterProp::NonToken]]
+        );
+        assert_eq!(expand_property_disjunctions(vec![], &[]), vec![vec![]]);
     }
 
     #[test]

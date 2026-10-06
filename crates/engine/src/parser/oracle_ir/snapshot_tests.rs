@@ -3306,3 +3306,34 @@ fn druid_of_the_emerald_grove_trigger_owns_all_three_printed_rows() {
          `apply_modifier` clamps it to 0) and the open-ended \"20+\" (u8::MAX)"
     );
 }
+
+/// SHAPE: canonical snapshots independently pin document IR and executable lowering.
+#[test]
+fn essence_burn_ir_and_lowered() {
+    let (ir, lowered) = parse_two_layer(
+        "Essence Burn deals 5 damage to target black or green creature or planeswalker. If that permanent would die this turn, exile it instead.",
+        "Essence Burn", &["Instant"], &[],
+    );
+    assert_eq!(lowered.abilities.len(), 1);
+    let def = &lowered.abilities[0];
+    assert!(matches!(
+        def.effect.as_ref(),
+        Effect::DealDamage {
+            amount: crate::types::ability::QuantityExpr::Fixed { value: 5 },
+            ..
+        }
+    ));
+    let rider = def.sub_ability.as_deref().expect("target-bound rider");
+    assert!(
+        matches!(rider.effect.as_ref(), Effect::AddTargetReplacement { replacement, .. }
+        if replacement.expiry == Some(crate::types::ability::RestrictionExpiry::EndOfTurn))
+    );
+    assert!(!ability_has_unimplemented(def));
+    assert!(
+        lowered.parse_warnings.is_empty(),
+        "{:?}",
+        lowered.parse_warnings
+    );
+    insta::assert_json_snapshot!("essence_burn_ir", &ir);
+    insta::assert_json_snapshot!("essence_burn_lowered", &lowered);
+}
