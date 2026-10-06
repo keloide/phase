@@ -94,7 +94,7 @@ fn legal(r: &GameRunner) -> Vec<TargetRef> {
 fn reject(r: &mut GameRunner, id: ObjectId) {
     let err = r
         .act(GameAction::ChooseTarget {
-            target: TargetRef::Object(id),
+            target: Some(TargetRef::Object(id)),
         })
         .expect_err("illegal target must reject");
     assert!(
@@ -181,7 +181,7 @@ fn essence_burn_target_legality() {
         reject(&mut r, id);
     }
     r.act(GameAction::ChooseTarget {
-        target: TargetRef::Object(black),
+        target: Some(TargetRef::Object(black)),
     })
     .expect("legal selection");
     r.advance_until_stack_empty();
