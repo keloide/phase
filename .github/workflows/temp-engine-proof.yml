@@ -1,0 +1,554 @@
+# TEMPORARY FORK MACHINERY: install only on a fork proof branch; never in the product PR.
+# Fill the env values and exact push branch before each root-authorized dispatch.
+# Run 1: MODE=generate, INPUT_RUN_ID=0. Retrieve and commit only the canonical fixture and named IR snapshot pair.
+# Run 2: MODE=final, CANDIDATE_SHA=artifact-inclusive commit, INPUT_RUN_ID=run 1 ID.
+# A further run needs a diagnosed failure, corrective change, and prediction; total cap 6.
+name: Temporary immutable engine proof
+run-name: Engine proof ${{ github.ref_name }}
+
+on:
+  push:
+    branches: [engine-proof/fra-stingerquill-1]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  RTK_DISABLED: '1'
+  CARGO_INCREMENTAL: '0'
+  BASE_SHA: ec27a8d1a09b3f3e0c0ded9a08b8e6c0aef190ff
+  CANDIDATE_SHA: c07f35d326117f3d67c32acc313dd2e710fb0caa
+  MODE: generate
+  INPUT_RUN_ID: '0'
+  GATED_SETS_AS_OF: '2026-10-05'
+  # An exact production-path test name, including its module path.
+  RUNTIME_TEST: essence_burn::essence_burn_exiles_lethal_black_creature
+  U1_RUNTIME_TEST: essence_burn::essence_burn_target_legality
+  U1_RED_ASSERTION_TEXT: Essence Burn must reject a black noncreature nonplaneswalker target
+  # Fixed Reference Readings controls from the reviewed plan; no test census.
+  REFERENCE_TESTS: |-
+    parser::oracle_target::tests::that_s_red_or_green_emits_color_disjunction
+    parser::oracle_target::tests::target_spell_or_permanent_thats_red_or_green_distributes_color_to_both_legs
+    essence_burn::aether_gust_shared_color_target_legality
+    parser::oracle_target::tests::comma_or_pt_suffix_stays_on_final_disjunct_only
+    parser::oracle_target::tests::creature_or_planeswalker_cmc_suffix_distributes_to_both_legs
+    parser::oracle_target::tests::comma_or_cmc_suffix_still_distributes_to_every_leg
+    parser::oracle_target::tests::comma_or_any_of_pt_suffix_stays_on_final_disjunct_only
+    parser::oracle_target::tests::pt_distribution_keys_on_core_type_pin_not_leg_position
+    parser::oracle_target::tests::pt_distribution_reaches_legs_that_also_pin_creature
+    parser::oracle_target::tests::pt_suffix_relocates_to_creature_leg_when_creature_is_not_final
+    parser::oracle_target::tests::pt_suffix_relocates_to_creature_leg_when_creature_is_first
+    parser::oracle_target::tests::pt_suffix_survives_on_origin_leg_when_no_creature_disjunct_exists
+    parser::oracle_target::tests::pt_suffix_survives_when_same_kind_dedupe_blocks_rehoming
+    parser::oracle_target::tests::shared_property_distribution_skips_noncreature_pinned_legs
+    parser::oracle_target::tests::shares_quality_power_is_registered_as_a_pt_reading_prop
+    parser::oracle_target::tests::finalize_or_disjunction_backfills_types_before_distributing_props
+    parser::oracle_target::tests::distribute_skips_pt_on_a_type_open_leg_but_still_distributes_cmc
+    parser::oracle_target::tests::comma_or_without_keyword_suffix_stays_on_final_disjunct_only
+    parser::oracle_target::tests::goaded_is_registered_as_leg_local_adjective_prefix
+    parser::oracle_effect::search::tests::distribute_or_keeps_named_leg_local_but_distributes_cmc
+  # Exactly one standard Insta test and its two expected IR/lowered outputs.
+  SNAPSHOT_TEST: parser::oracle_ir::snapshot_tests::essence_burn_ir_and_lowered
+  SNAPSHOT_PATHS: |-
+    crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_ir.snap
+    crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_lowered.snap
+  # Exact test failure assertion substring; compilation failures do not count as red.
+  RED_ASSERTION_TEXT: Essence Burn must exile its lethal black creature target
+  # Only integration-test Rust files (include main.rs when adding a module).
+  TEST_PATHS: |-
+    crates/engine/tests/integration/essence_burn.rs
+    crates/engine/tests/integration/main.rs
+
+jobs:
+  candidate:
+    if: github.repository == 'keloide/phase' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      mode: ${{ steps.parameters.outputs.mode }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate-projection
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable candidate and parameters
+        id: parameters
+        working-directory: candidate-projection
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$MODE" == generate || "$MODE" == final ]]
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          [[ "$INPUT_RUN_ID" =~ ^[0-9]+$ ]]
+          mapfile -t snapshot_paths <<< "$SNAPSHOT_PATHS"
+          test "${#snapshot_paths[@]}" -eq 2
+          test "${snapshot_paths[0]}" = crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_ir.snap
+          test "${snapshot_paths[1]}" = crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_lowered.snap
+          for path in "${snapshot_paths[@]}"; do
+            [[ "$path" == crates/engine/src/parser/oracle_ir/snapshots/*.snap && "$path" != *..* ]]
+            if [ "$MODE" = final ]; then test -s "$path"; fi
+          done
+          test "$SNAPSHOT_TEST" = parser::oracle_ir::snapshot_tests::essence_burn_ir_and_lowered
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          test ! -e .env
+          git cat-file -e "$BASE_SHA^{commit}"
+          git merge-base --is-ancestor "$BASE_SHA" "$CANDIDATE_SHA"
+          ./scripts/engine-source-hash.sh "$CANDIDATE_SHA"
+          printf '%s\n' "Candidate projection source: $CANDIDATE_SHA; base: $BASE_SHA; mode: $MODE"
+          while IFS= read -r path; do
+            [[ "$path" == crates/engine/tests/integration/*.rs && "$path" != *..* ]]
+            test -f "$path"
+          done <<< "$TEST_PATHS"
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - name: Restore pinned full inputs for subsequent run
+        if: env.INPUT_RUN_ID != '0'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pinned-inputs
+          path: restored-inputs
+          repository: keloide/phase
+          run-id: ${{ env.INPUT_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Download inputs with the supported pipeline, or unpack the original inputs
+        working-directory: candidate-projection
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/candidate-projection-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/outputs/candidate" "$GITHUB_WORKSPACE/outputs/inputs"
+          if [ "$INPUT_RUN_ID" = 0 ]; then
+            test "$MODE" = generate
+            ./scripts/gen-card-data.sh
+            # Capture the complete data root, including bracket/other tracked overrides,
+            # all MTGJSON sidecars, token sets + missing markers, and deck JSONs.
+            # Generated outputs are not inputs and must not seed the other projection.
+            tar --exclude='data/card-data.json' --exclude='data/coverage-data.json' \
+              --exclude='data/semantic-audit.*' -czf "$GITHUB_WORKSPACE/outputs/inputs/pinned-inputs.tar.gz" data
+            git restore --source="$CANDIDATE_SHA" -- \
+              crates/engine/data/known-tokens.toml crates/engine/data/oracle-subtypes.json \
+              crates/engine/data/mtgjson-vintage
+          else
+            tar -xzf "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz"
+            cp "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz" "$GITHUB_WORKSPACE/outputs/inputs/"
+          fi
+          test -s data/mtgjson/AtomicCards.json
+          test -s data/mtgjson/Meta.json
+          test -s data/mtgjson/CardTypes.json
+          test -s data/mtgjson/SetList.json
+          test -d data/mtgjson/sets
+          test -d data/mtgjson/decks
+          chmod -R a-w data/mtgjson
+          test -z "$(git status --porcelain --untracked-files=no)"
+      - name: Export exact committed source, coverage, semantic audit, and canonical fixture
+        working-directory: candidate-projection
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/candidate-projection-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --profile tool --features cli --bin tokens-gen --bin oracle-gen \
+            --bin coverage-report --bin card-data-validate --bin coverage-parse-diff
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats --output data/card-data.json
+          "$CARGO_TARGET_DIR/tool/card-data-validate" data/card-data.json
+          "$CARGO_TARGET_DIR/tool/coverage-report" data/ --all --brief > data/coverage-data.json
+          "$CARGO_TARGET_DIR/tool/oracle-gen" semantic-audit data/
+          cp data/card-data.json client/public/card-data.json
+          test -z "$(git status --porcelain --untracked-files=no)"
+          if [ "$MODE" = generate ]; then
+            python3 scripts/gen-test-fixture.py
+          else
+            python3 scripts/gen-test-fixture.py --check
+          fi
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/outputs/candidate/"
+          cp crates/engine/tests/fixtures/integration_cards.json.gz "$GITHUB_WORKSPACE/outputs/candidate/"
+          mapfile -t test_paths <<< "$TEST_PATHS"
+          tar -czf "$GITHUB_WORKSPACE/outputs/candidate/candidate-tests.tar.gz" "${test_paths[@]}"
+          git diff --name-only | while IFS= read -r path; do
+            test "$path" = crates/engine/tests/fixtures/integration_cards.json.gz
+          done
+          git status --short
+      - name: Upload pinned inputs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pinned-inputs
+          path: outputs/inputs/pinned-inputs.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload candidate normal outputs and fixture
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: candidate-outputs
+          path: outputs/candidate/
+          if-no-files-found: error
+          retention-days: 14
+
+  base:
+    needs: candidate
+    if: github.repository == 'keloide/phase'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.BASE_SHA }}
+          path: base-projection
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pinned-inputs
+          path: restored-inputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: candidate-outputs
+          path: candidate-outputs
+      - name: Project clean BASE against the same full input root and compare
+        working-directory: base-projection
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/base-projection-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          tar -xzf "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz"
+          chmod -R a-w data/mtgjson
+          test -z "$(git status --porcelain --untracked-files=no)"
+          ./scripts/engine-source-hash.sh "$BASE_SHA"
+          cargo build --profile tool --features cli --bin tokens-gen --bin oracle-gen \
+            --bin coverage-report --bin card-data-validate --bin coverage-parse-diff
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats --output data/card-data.json
+          "$CARGO_TARGET_DIR/tool/coverage-report" data/ --all --brief > data/coverage-data.json
+          "$CARGO_TARGET_DIR/tool/oracle-gen" semantic-audit data/
+          test -z "$(git status --porcelain --untracked-files=no)"
+          mkdir -p "$GITHUB_WORKSPACE/outputs/base"
+          "$CARGO_TARGET_DIR/tool/coverage-parse-diff" data/coverage-data.json \
+            "$GITHUB_WORKSPACE/candidate-outputs/coverage-data.json" \
+            --base-sha "$BASE_SHA" --head-sha "$CANDIDATE_SHA" \
+            --markdown "$GITHUB_WORKSPACE/outputs/base/parse-diff.md" \
+            --json "$GITHUB_WORKSPACE/outputs/base/parse-diff.json"
+          ./scripts/coverage-regression-check.sh data/coverage-data.json \
+            "$GITHUB_WORKSPACE/candidate-outputs/coverage-data.json" --fail-on-engine \
+            | tee "$GITHUB_WORKSPACE/outputs/base/coverage-regression.log"
+          grep -F "REGRESSED (coverage honesty) — 0 cards" "$GITHUB_WORKSPACE/outputs/base/coverage-regression.log"
+          # Retain complete comparator signatures/card lists and audits for review.
+          cat "$GITHUB_WORKSPACE/outputs/base/parse-diff.md"
+          jq '.clusters[] | {category,label,kind,key,before,after,cards}' \
+            "$GITHUB_WORKSPACE/outputs/base/parse-diff.json"
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/outputs/base/"
+          # A new finding is a (card_name, structured finding) pair absent at BASE.
+          jq -n --slurpfile base data/semantic-audit.json \
+            --slurpfile head "$GITHUB_WORKSPACE/candidate-outputs/semantic-audit.json" '
+            def findings: [.flagged_cards[]? | .card_name as $name | .findings[]? | {card_name:$name,finding:.}];
+            ($base[0] | findings) as $b | ($head[0] | findings) - $b
+          ' > "$GITHUB_WORKSPACE/outputs/base/new-semantic-findings.json"
+          jq -e 'length == 0' "$GITHUB_WORKSPACE/outputs/base/new-semantic-findings.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: base-outputs-and-parse-diff
+          path: outputs/base/
+          if-no-files-found: error
+          retention-days: 14
+
+  runtime-red:
+    needs: [candidate, base]
+    if: github.repository == 'keloide/phase' && needs.candidate.outputs.mode == 'generate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.BASE_SHA }}
+          path: base-negative
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: candidate-outputs
+          path: candidate-outputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: base-outputs-and-parse-diff
+          path: base-outputs
+      - name: Run new production-path test on clean BASE with tests only overlaid
+        working-directory: base-negative
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/base-negative-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          tar -xzf "$GITHUB_WORKSPACE/candidate-outputs/candidate-tests.tar.gz"
+          mkdir -p client/public
+          cp "$GITHUB_WORKSPACE/base-outputs/card-data.json" client/public/card-data.json
+          # BASE export is essential: a candidate parsed fixture would mask a parser regression.
+          python3 scripts/gen-test-fixture.py
+          cargo test -p phase-engine "$RUNTIME_TEST" -- --exact --list | tee "$RUNNER_TEMP/red-test-list.log"
+          grep -Fx "$RUNTIME_TEST: test" "$RUNNER_TEMP/red-test-list.log"
+          set +e
+          cargo test -p phase-engine "$RUNTIME_TEST" -- --exact --nocapture 2>&1 | tee "$RUNNER_TEMP/runtime-red.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -E 'test result: FAILED\..*1 failed' "$RUNNER_TEMP/runtime-red.log"
+          grep -F "$RED_ASSERTION_TEXT" "$RUNNER_TEMP/runtime-red.log"
+          cargo test -p phase-engine "$U1_RUNTIME_TEST" -- --exact --list 2>&1 \
+            | tee "$RUNNER_TEMP/u1-red-test-list.log"
+          grep -Fx "$U1_RUNTIME_TEST: test" "$RUNNER_TEMP/u1-red-test-list.log"
+          set +e
+          cargo test -p phase-engine "$U1_RUNTIME_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/runtime-u1-red.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -E 'test result: FAILED\..*1 failed' "$RUNNER_TEMP/runtime-u1-red.log"
+          grep -F "$U1_RED_ASSERTION_TEXT" "$RUNNER_TEMP/runtime-u1-red.log"
+      - name: Discover and run exact BASE reference controls with tests only overlaid
+        working-directory: base-negative
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/base-negative-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          while IFS= read -r REFERENCE_TEST; do
+            cargo test -p phase-engine "$REFERENCE_TEST" -- --exact --list 2>&1 \
+              | tee "$RUNNER_TEMP/base-reference-list-$REFERENCE_TEST.log"
+            grep -Fx "$REFERENCE_TEST: test" "$RUNNER_TEMP/base-reference-list-$REFERENCE_TEST.log"
+            cargo test -p phase-engine "$REFERENCE_TEST" -- --exact --nocapture 2>&1 \
+              | tee "$RUNNER_TEMP/base-reference-run-$REFERENCE_TEST.log"
+          done <<< "$REFERENCE_TESTS"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: runtime-red-log
+          path: |
+            ${{ runner.temp }}/runtime-red.log
+            ${{ runner.temp }}/red-test-list.log
+            ${{ runner.temp }}/runtime-u1-red.log
+            ${{ runner.temp }}/u1-red-test-list.log
+            ${{ runner.temp }}/base-reference-*.log
+          if-no-files-found: error
+          retention-days: 14
+
+  completion:
+    needs: [candidate, base]
+    if: github.repository == 'keloide/phase'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: completion
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pinned-inputs
+          path: restored-inputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: candidate-outputs
+          path: candidate-outputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: env.MODE == 'final'
+        with:
+          name: base-outputs-and-parse-diff
+          path: base-outputs
+      - name: Immutable candidate runtime discriminator (generation run is preparatory)
+        working-directory: completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          tar -xzf "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz"
+          chmod -R a-w data/mtgjson
+          cp "$GITHUB_WORKSPACE/candidate-outputs/card-data.json" client/public/card-data.json
+          if [ "$MODE" = generate ]; then
+            cp "$GITHUB_WORKSPACE/candidate-outputs/integration_cards.json.gz" crates/engine/tests/fixtures/
+            echo 'PREPARATORY ONLY: generated fixture is not yet committed at this candidate SHA.'
+          else
+            test -z "$(git status --porcelain --untracked-files=no)"
+            python3 scripts/gen-test-fixture.py --check
+          fi
+          mkdir -p "$GITHUB_WORKSPACE/outputs/completion"
+          cargo test -p phase-engine "$RUNTIME_TEST" -- --exact --list \
+            | tee "$RUNNER_TEMP/green-test-list.log" "$GITHUB_WORKSPACE/outputs/completion/green-test-list.log"
+          grep -Fx "$RUNTIME_TEST: test" "$RUNNER_TEMP/green-test-list.log"
+          cargo test -p phase-engine "$RUNTIME_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/outputs/completion/runtime-green.log"
+      - name: Generate only the named IR snapshot pair with the standard test runner
+        if: env.MODE == 'generate'
+        working-directory: completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          # The runtime step overlaid only the required generated fixture.
+          { git diff --name-only; git ls-files --others --exclude-standard; } \
+            | while IFS= read -r path; do
+                test "$path" = crates/engine/tests/fixtures/integration_cards.json.gz
+              done
+          cargo test -p phase-engine "$SNAPSHOT_TEST" -- --exact --list \
+            | tee "$RUNNER_TEMP/snapshot-test-list.log" "$GITHUB_WORKSPACE/outputs/completion/snapshot-test-list.log"
+          grep -Fx "$SNAPSHOT_TEST: test" "$RUNNER_TEMP/snapshot-test-list.log"
+          INSTA_UPDATE=always cargo test -p phase-engine "$SNAPSHOT_TEST" -- --exact
+          mapfile -t snapshot_paths <<< "$SNAPSHOT_PATHS"
+          for path in "${snapshot_paths[@]}"; do test -s "$path"; done
+          # Reject every unrelated generated/updated snapshot or source edit.
+          { git diff --name-only; git ls-files --others --exclude-standard; } \
+            | while IFS= read -r path; do
+                [[ "$path" == crates/engine/tests/fixtures/integration_cards.json.gz || "$path" == "${snapshot_paths[0]}" || "$path" == "${snapshot_paths[1]}" ]]
+              done
+          git diff --cached --quiet
+          mkdir -p "$GITHUB_WORKSPACE/outputs/canonical"
+          cp --parents -- crates/engine/tests/fixtures/integration_cards.json.gz \
+            "${snapshot_paths[@]}" "$GITHUB_WORKSPACE/outputs/canonical/"
+          echo 'PREPARATORY ONLY: canonical fixture and named IR snapshot pair must be committed before final verification.'
+      - name: Upload canonical generated fixture and named IR snapshot pair
+        if: always() && env.MODE == 'generate'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: canonical-artifacts
+          path: outputs/canonical/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Run all committed Essence Burn runtime companions after canonical generation
+        if: env.MODE == 'generate'
+        working-directory: completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          cargo test -p phase-engine essence_burn:: -- --list 2>&1 \
+            | tee "$GITHUB_WORKSPACE/outputs/completion/essence-module-test-list.log"
+          grep -E '^essence_burn::[^ ]+: test$' "$GITHUB_WORKSPACE/outputs/completion/essence-module-test-list.log"
+          cargo test -p phase-engine essence_burn:: -- --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/outputs/completion/essence-module-tests.log"
+          grep -E 'test result: ok\. [1-9][0-9]* passed;' "$GITHUB_WORKSPACE/outputs/completion/essence-module-tests.log"
+      - name: Discover and run exact candidate reference controls
+        working-directory: completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          while IFS= read -r REFERENCE_TEST; do
+            cargo test -p phase-engine "$REFERENCE_TEST" -- --exact --list 2>&1 \
+              | tee "$GITHUB_WORKSPACE/outputs/completion/candidate-reference-list-$REFERENCE_TEST.log"
+            grep -Fx "$REFERENCE_TEST: test" "$GITHUB_WORKSPACE/outputs/completion/candidate-reference-list-$REFERENCE_TEST.log"
+            cargo test -p phase-engine "$REFERENCE_TEST" -- --exact --nocapture 2>&1 \
+              | tee "$GITHUB_WORKSPACE/outputs/completion/candidate-reference-run-$REFERENCE_TEST.log"
+          done <<< "$REFERENCE_TESTS"
+      - name: Full Step 5 at the artifact-inclusive committed candidate
+        if: env.MODE == 'final'
+        working-directory: completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/completion-target
+          MTGJSON_SKIP_REFRESH: '1'
+          PHASE_REFRESH_MTGJSON: '0'
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          cargo fmt --all -- --check
+          cargo clippy-strict
+          cargo test -p phase-engine
+          ./scripts/check-interaction-bindings.sh --check
+          ./scripts/check-parser-combinators.sh "$BASE_SHA"
+          ./scripts/check-prelowered-ratchet.sh
+          ./scripts/check-skill-doc.sh
+          ./scripts/check-engine-authorities.sh "$BASE_SHA"
+          ./scripts/gen-card-data.sh
+          git restore --source="$CANDIDATE_SHA" -- \
+            crates/engine/data/known-tokens.toml crates/engine/data/oracle-subtypes.json \
+            crates/engine/data/mtgjson-vintage
+          # Recompile exact source after incidental catalog writes, then export without write-subtypes.
+          cargo build --profile tool --features cli --bin tokens-gen --bin oracle-gen \
+            --bin coverage-report --bin card-data-validate --bin coverage-parse-diff
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats --output data/card-data.json
+          "$CARGO_TARGET_DIR/tool/card-data-validate" data/card-data.json
+          "$CARGO_TARGET_DIR/tool/coverage-report" data/ --all --brief > data/coverage-data.json
+          "$CARGO_TARGET_DIR/tool/oracle-gen" semantic-audit data/
+          ./scripts/coverage-regression-check.sh "$GITHUB_WORKSPACE/base-outputs/coverage-data.json" \
+            data/coverage-data.json --fail-on-engine | tee "$RUNNER_TEMP/completion-coverage-regression.log"
+          grep -F "REGRESSED (coverage honesty) — 0 cards" "$RUNNER_TEMP/completion-coverage-regression.log"
+          mkdir -p "$GITHUB_WORKSPACE/outputs/completion"
+          cp "$RUNNER_TEMP/completion-coverage-regression.log" "$GITHUB_WORKSPACE/outputs/completion/coverage-regression.log"
+          "$CARGO_TARGET_DIR/tool/coverage-parse-diff" "$GITHUB_WORKSPACE/base-outputs/coverage-data.json" \
+            data/coverage-data.json --base-sha "$BASE_SHA" --head-sha "$CANDIDATE_SHA" \
+            --markdown "$GITHUB_WORKSPACE/outputs/completion/parse-diff.md" \
+            --json "$GITHUB_WORKSPACE/outputs/completion/parse-diff.json"
+          jq -n --slurpfile base "$GITHUB_WORKSPACE/base-outputs/semantic-audit.json" \
+            --slurpfile head data/semantic-audit.json '
+            def findings: [.flagged_cards[]? | .card_name as $name | .findings[]? | {card_name:$name,finding:.}];
+            ($base[0] | findings) as $b | ($head[0] | findings) - $b
+          ' > "$GITHUB_WORKSPACE/outputs/completion/new-semantic-findings.json"
+          jq -e 'length == 0' "$GITHUB_WORKSPACE/outputs/completion/new-semantic-findings.json"
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/outputs/completion/"
+          cp data/card-data.json client/public/card-data.json
+          python3 scripts/gen-test-fixture.py --check
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          echo "Full Step 5 passed on source $CANDIDATE_SHA (workflow SHA $GITHUB_SHA)."
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: completion-outputs
+          path: outputs/completion/
+          if-no-files-found: error
+          retention-days: 14
