@@ -15849,27 +15849,105 @@ mod tests {
         assert!(!matches_target_filter(runner.state(), red, &filter, &ctx));
     }
 
-    /// SHAPE: recurse into a color list on the right without widening its noun.
+    /// SHAPE: the search-card union owns independent article-led card members.
+    /// CR 701.23a + CR 105.2: either an artifact card or a black/green creature
+    /// card matches the description; the creature colors do not bind artifacts.
     #[test]
     fn right_leading_color_list_retains_noun_conjunctions() {
-        let (filter, rest) =
-            parse_type_phrase_folding("artifact card or a black or green creature card");
-        assert_eq!(rest.trim(), "");
+        use crate::game::filter::{matches_target_filter, FilterContext};
+        use crate::game::scenario::{GameScenario, P0};
+        use crate::types::ability::Effect;
+
+        let parsed = crate::parser::parse_oracle_text(
+            "Search your library for an artifact card or a black or green creature card, reveal it, put it into your hand, then shuffle.",
+            "Card Union Shape", &[], &["Sorcery".into()], &[],
+        );
+        assert_eq!(parsed.abilities.len(), 1, "{parsed:?}");
+        let ability = &parsed.abilities[0];
+        let Effect::SearchLibrary {
+            filter,
+            count,
+            source_zones,
+            reveal,
+            ..
+        } = ability.effect.as_ref()
+        else {
+            panic!("expected complete search instruction: {ability:?}");
+        };
+        assert_eq!(*count, QuantityExpr::Fixed { value: 1 });
+        assert_eq!(*source_zones, vec![Zone::Library]);
+        assert!(*reveal);
+        assert!(
+            std::iter::successors(Some(ability), |d| d.sub_ability.as_deref())
+                .all(|d| d.effect.unimplemented_description().is_none()),
+            "all search instructions must be consumed: {ability:?}"
+        );
+        assert!(
+            std::iter::successors(Some(ability), |d| d.sub_ability.as_deref()).any(|d| matches!(
+                d.effect.as_ref(),
+                Effect::ChangeZone {
+                    destination: Zone::Hand,
+                    ..
+                }
+            )),
+            "the found card must be put into hand: {ability:?}"
+        );
+        assert!(
+            std::iter::successors(Some(ability), |d| d.sub_ability.as_deref())
+                .any(|d| matches!(d.effect.as_ref(), Effect::Shuffle { .. })),
+            "the trailing shuffle must be retained: {ability:?}"
+        );
+        assert!(
+            parsed.parse_warnings.is_empty(),
+            "{:?}",
+            parsed.parse_warnings
+        );
         let TargetFilter::Or { filters } = filter else {
             panic!("expected alternatives");
         };
+        assert_eq!(filters.len(), 3, "{filters:?}");
         assert!(filters
             .iter()
-            .any(|leg| typed_leg(leg)
-                .is_some_and(|tf| tf.type_filters == vec![TypeFilter::Artifact])));
+            .any(|leg| typed_leg(leg).is_some_and(|tf| tf.type_filters
+                == vec![TypeFilter::Artifact]
+                && tf.properties.is_empty())));
         for color in [ManaColor::Black, ManaColor::Green] {
             assert!(filters.iter().any(|leg| typed_leg(leg)
                 .is_some_and(|tf| tf.type_filters == vec![TypeFilter::Creature]
-                    && leg_color(leg) == Some(color))));
+                    && tf.properties == vec![FilterProp::HasColor { color }])));
         }
         assert!(filters.iter().all(
             |leg| typed_leg(leg).is_some_and(|tf| !tf.type_filters.contains(&TypeFilter::Any))
         ));
+
+        let mut scenario = GameScenario::new();
+        let artifact = scenario
+            .add_creature_to_hand(P0, "Colorless Artifact", 2, 2)
+            .as_artifact_creature()
+            .id();
+        let black = scenario
+            .add_creature_to_hand(P0, "Black Creature", 2, 2)
+            .with_color(vec![ManaColor::Black])
+            .id();
+        let green = scenario
+            .add_creature_to_hand(P0, "Green Creature", 2, 2)
+            .with_color(vec![ManaColor::Green])
+            .id();
+        let red = scenario
+            .add_creature_to_hand(P0, "Red Creature", 2, 2)
+            .with_color(vec![ManaColor::Red])
+            .id();
+        let colorless = scenario
+            .add_creature_to_hand(P0, "Colorless Creature", 2, 2)
+            .id();
+        let runner = scenario.build();
+        let ctx = FilterContext::neutral();
+        for id in [artifact, black, green] {
+            assert!(matches_target_filter(runner.state(), id, filter, &ctx));
+        }
+        for id in [red, colorless] {
+            assert!(!matches_target_filter(runner.state(), id, filter, &ctx));
+        }
     }
 
     /// SHAPE: three colors and three shared noun legs form a Cartesian product.

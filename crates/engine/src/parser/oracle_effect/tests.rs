@@ -80497,13 +80497,38 @@ fn essence_burn_parses_target_bound_die_exile_rider() {
 /// SHAPE: incomplete riders retain strict failure rather than swallowing their tails.
 #[test]
 fn demonstrative_die_exile_invalid_tail_remains_unsupported() {
-    for text in [
-        "Essence Burn deals 5 damage to target black creature. If that permanent would die next turn, exile it instead.",
-        "Essence Burn deals 5 damage to target black creature. If that permanent would die this turn, exile it instead and frobnicate it.",
+    // Guard ownership is settled after document lowering, so inspect the same
+    // finished pipeline that exports card data, not its intermediate chain.
+    for rider in [
+        "If that permanent would die next turn, exile it instead",
+        "If that permanent would die this turn, exile it instead and frobnicate it",
     ] {
-        let def = parse_effect_chain(text, AbilityKind::Spell);
-        assert!(matches!(def.effect.as_ref(), Effect::DealDamage { .. }), "damage head must survive");
-        assert!(chain_has_unimplemented(&def), "invalid rider must retain a strict-failure marker: {def:?}");
+        let text = format!("Essence Burn deals 5 damage to target black creature. {rider}.");
+        let parsed = parse_oracle_text(&text, "Essence Burn", &[], &["Instant".into()], &[]);
+        assert_eq!(parsed.abilities.len(), 1, "{parsed:?}");
+        let def = &parsed.abilities[0];
+        assert!(
+            matches!(def.effect.as_ref(), Effect::DealDamage { .. }),
+            "damage head must survive"
+        );
+        assert!(
+            chain_has_unimplemented(def),
+            "invalid rider must retain a strict-failure marker: {def:?}"
+        );
+        assert!(
+            chain_any(def, &|d| d.effect.unimplemented_description().is_some_and(
+                |text| text.trim_end_matches('.').eq_ignore_ascii_case(rider)
+            )),
+            "strict failure must retain the complete invalid rider: {def:?}"
+        );
+        assert!(
+            !chain_has_add_target_replacement(def),
+            "invalid rider must not install a replacement: {def:?}"
+        );
+        assert!(
+            !chain_has_change_zone_exile(def),
+            "invalid event guard must not become immediate exile: {def:?}"
+        );
     }
     assert!(try_parse_die_exile_rider(
         "if that permanent would die next turn, exile it instead.",
@@ -80515,13 +80540,48 @@ fn demonstrative_die_exile_invalid_tail_remains_unsupported() {
         AbilityKind::Spell
     )
     .is_some());
-    let unbound = parse_effect_chain(
+    let valid = parse_oracle_text(
+        "Essence Burn deals 5 damage to target black creature. If that permanent would die this turn, exile it instead.",
+        "Essence Burn", &[], &["Instant".into()], &[],
+    );
+    assert_eq!(valid.abilities.len(), 1);
+    assert!(matches!(
+        valid.abilities[0].effect.as_ref(),
+        Effect::DealDamage { .. }
+    ));
+    assert!(
+        chain_has_add_target_replacement(&valid.abilities[0]),
+        "valid rider must reach the same full pipeline"
+    );
+    assert!(!chain_has_unimplemented(&valid.abilities[0]));
+    assert!(
+        valid.parse_warnings.is_empty(),
+        "{:?}",
+        valid.parse_warnings
+    );
+
+    let unbound = parse_oracle_text(
         "If that permanent would die this turn, exile it instead.",
-        AbilityKind::Spell,
+        "Essence Burn",
+        &[],
+        &["Instant".into()],
+        &[],
+    );
+    assert_eq!(unbound.abilities.len(), 1, "{unbound:?}");
+    assert!(
+        chain_has_unimplemented(&unbound.abilities[0]),
+        "missing parent target must remain unsupported: {unbound:?}"
     );
     assert!(
-        chain_has_unimplemented(&unbound),
-        "missing parent target must remain unsupported: {unbound:?}"
+        chain_any(&unbound.abilities[0], &|d| d
+            .effect
+            .unimplemented_description()
+            .is_some_and(|text| text
+                .trim_end_matches('.')
+                .eq_ignore_ascii_case(
+                    "If that permanent would die this turn, exile it instead"
+                ))),
+        "missing parent target must retain the complete rider: {unbound:?}"
     );
 }
 
