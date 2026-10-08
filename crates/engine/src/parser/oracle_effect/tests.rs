@@ -80560,28 +80560,38 @@ fn demonstrative_die_exile_invalid_tail_remains_unsupported() {
         valid.parse_warnings
     );
 
-    let unbound = parse_oracle_text(
-        "If that permanent would die this turn, exile it instead.",
-        "Essence Burn",
-        &[],
-        &["Instant".into()],
-        &[],
-    );
+    let unbound_text = "If that permanent would die this turn, exile it instead.";
+    let unbound = parse_oracle_text(unbound_text, "Essence Burn", &[], &["Instant".into()], &[]);
     assert_eq!(unbound.abilities.len(), 1, "{unbound:?}");
     assert!(
         chain_has_unimplemented(&unbound.abilities[0]),
         "missing parent target must remain unsupported: {unbound:?}"
     );
+    let unbound_def = &unbound.abilities[0];
     assert!(
-        chain_any(&unbound.abilities[0], &|d| d
-            .effect
-            .unimplemented_description()
-            .is_some_and(|text| text
-                .trim_end_matches('.')
-                .eq_ignore_ascii_case(
-                    "If that permanent would die this turn, exile it instead"
-                ))),
-        "missing parent target must retain the complete rider: {unbound:?}"
+        matches!(unbound_def.effect.as_ref(), Effect::Unimplemented { name, .. } if name == "unparsed_replacement"),
+        "the unbound event must be an explicit replacement gap: {unbound:?}"
+    );
+    // The standalone spell-line parser strips trailing "instead" before effect
+    // parsing. Its gap retains that complete input fragment; the ability's
+    // description owns the full source sentence, including the stripped suffix.
+    assert_eq!(
+        unbound_def.effect.unimplemented_description(),
+        Some("If that permanent would die this turn, exile it"),
+        "missing parent target must retain the complete unparsed fragment"
+    );
+    assert_eq!(
+        unbound_def.description.as_deref(),
+        Some(unbound_text),
+        "missing parent target must retain the complete rider source"
+    );
+    assert!(
+        !chain_has_add_target_replacement(unbound_def),
+        "missing parent target must not install a replacement: {unbound:?}"
+    );
+    assert!(
+        !chain_has_change_zone_exile(unbound_def),
+        "unbound event guard must not become immediate exile: {unbound:?}"
     );
 }
 
