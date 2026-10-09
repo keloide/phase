@@ -2290,7 +2290,7 @@ fn parse_explicit_self_source_subject(input: &str) -> OracleResult<'_, &str> {
 /// audit + recipient-gating pass (CR 611.3a). Only the combat-state predicate is
 /// narrowed here — it uses `parse_self_source_subject` (below), which excludes
 /// the attached prefixes, because an Equipment/Aura is never an attacker.
-fn parse_source_subject(input: &str) -> OracleResult<'_, &str> {
+pub(crate) fn parse_source_subject(input: &str) -> OracleResult<'_, &str> {
     alt((
         parse_explicit_self_source_subject,
         tag("equipped creature "),
