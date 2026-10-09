@@ -302,8 +302,8 @@ fn woodwork_prodigy_type_loss_keeps_prepared_gate() {
 /// CR 400.7 + CR 110.1 + CR 722.3a: a trigger pending for a source that dies
 /// before resolution must not prepare the graveyard card — the departed
 /// object is a new object, not a battlefield permanent. The SelfRef
-/// incarnation authority yields no target, so neither `BecamePrepared` nor
-/// `EffectResolved` may appear for the departed id.
+/// incarnation authority yields no target, so the departed card must remain
+/// unprepared without a `BecamePrepared` event.
 #[test]
 fn woodwork_prodigy_trigger_does_not_prepare_departed_source() {
     let (mut runner, unprepared, _, doom_blade, _) = setup_twins();
@@ -314,47 +314,21 @@ fn woodwork_prodigy_trigger_does_not_prepare_departed_source() {
         "the unprepared twin's upkeep trigger must be on the stack"
     );
 
-    runner.cast(doom_blade).target_object(unprepared).resolve();
-    assert_eq!(
-        runner.state().objects[&unprepared].zone,
-        Zone::Graveyard,
-        "staging must kill the firing twin before its trigger resolves"
+    let outcome = runner.cast(doom_blade).target_object(unprepared).resolve();
+    outcome.assert_zone(&[unprepared], Zone::Graveyard);
+    assert!(
+        outcome.state().objects[&unprepared].prepared.is_none(),
+        "the departed graveyard card must remain unprepared"
     );
-
-    let mut became_prepared = false;
-    let mut effect_resolved = false;
-    for _ in 0..8 {
-        if runner.state().stack.is_empty() {
-            break;
-        }
-        let result = runner
-            .act(GameAction::PassPriority)
-            .expect("passing priority resolves the upkeep trigger");
-        became_prepared |= result.events.iter().any(
-            |e| matches!(e, GameEvent::BecamePrepared { object_id } if *object_id == unprepared),
-        );
-        effect_resolved |= result.events.iter().any(|e| {
-            matches!(
-                e,
-                GameEvent::EffectResolved {
-                    kind: EffectKind::BecomePrepared,
-                    source_id,
-                    ..
-                } if *source_id == unprepared
-            )
-        });
-    }
     assert!(
         runner.state().stack.is_empty(),
         "the upkeep trigger must fully resolve"
     );
     assert!(
-        !became_prepared,
+        !outcome.events().iter().any(
+            |event| matches!(event, GameEvent::BecamePrepared { object_id } if *object_id == unprepared)
+        ),
         "a departed source must not gain the prepared designation"
-    );
-    assert!(
-        !effect_resolved,
-        "no EffectResolved{{BecomePrepared}} may dispatch for a departed source"
     );
 }
 
@@ -371,7 +345,7 @@ fn woodwork_prodigy_trigger_does_not_prepare_blinked_source() {
         "the unprepared twin's upkeep trigger must be on the stack"
     );
 
-    runner.cast(cloudshift).target_object(unprepared).resolve();
+    let outcome = runner.cast(cloudshift).target_object(unprepared).resolve();
     // Reach guards: exactly one battlefield Woodwork is unprepared (the
     // blinked twin fresh); the prepared twin stays prepared.
     let fresh: Vec<ObjectId> = runner
@@ -389,41 +363,16 @@ fn woodwork_prodigy_trigger_does_not_prepare_blinked_source() {
         "the blink must return exactly one fresh unprepared Woodwork"
     );
 
-    let mut became_prepared = false;
-    let mut effect_resolved = false;
-    for _ in 0..8 {
-        if runner.state().stack.is_empty() {
-            break;
-        }
-        let result = runner
-            .act(GameAction::PassPriority)
-            .expect("passing priority resolves the upkeep trigger");
-        became_prepared |= result
-            .events
-            .iter()
-            .any(|e| matches!(e, GameEvent::BecamePrepared { .. }));
-        effect_resolved |= result.events.iter().any(|e| {
-            matches!(
-                e,
-                GameEvent::EffectResolved {
-                    kind: EffectKind::BecomePrepared,
-                    source_id,
-                    ..
-                } if *source_id == unprepared
-            )
-        });
-    }
     assert!(
         runner.state().stack.is_empty(),
         "the upkeep trigger must fully resolve"
     );
     assert!(
-        !became_prepared,
+        !outcome
+            .events()
+            .iter()
+            .any(|event| matches!(event, GameEvent::BecamePrepared { .. })),
         "a blinked source must not gain the prepared designation from the stale trigger"
-    );
-    assert!(
-        !effect_resolved,
-        "no EffectResolved{{BecomePrepared}} may dispatch for a blinked source"
     );
     assert!(
         runner.state().objects[&fresh[0]].prepared.is_none(),

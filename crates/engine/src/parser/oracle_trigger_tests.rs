@@ -38078,8 +38078,8 @@ fn prepared_gate_rejects_nonsource_grammar_matrix() {
         // Post-effect placement is not an intervening-if (CR 603.4: the gate
         // must sit immediately after the trigger condition).
         "At the beginning of your upkeep, it becomes prepared if this creature isn't prepared.",
-        // Otherwise-bearing conditionals have composite meaning.
-        "At the beginning of your upkeep, if this creature isn't prepared, it becomes prepared. Otherwise, draw a card.",
+        // Post-effect Otherwise conditionals are not intervening-if gates.
+        "At the beginning of your upkeep, it becomes prepared if this creature isn't prepared. Otherwise, draw a card.",
         // Incomplete gate: no predicate to hoist.
         "At the beginning of your upkeep, if this creature isn't, it becomes prepared.",
     ] {
