@@ -32,8 +32,7 @@ use super::oracle_ir::trigger::{
 use super::oracle_modal::try_parse_inline_modal_ir;
 use super::oracle_nom::bridge::nom_on_lower;
 use super::oracle_nom::condition::{
-    parse_affirmative_reflexive_connector, parse_copula_is_or_isnt,
-    parse_elided_subject_state_condition, parse_source_subject,
+    parse_affirmative_reflexive_connector, parse_elided_subject_state_condition,
 };
 use super::oracle_nom::condition::{
     parse_inner_condition, parse_spell_history_filter, parse_there_are_battlefield_count_clause,
@@ -6374,6 +6373,18 @@ pub(crate) fn static_condition_to_trigger_condition(
             StaticCondition::SourceIsTapped => Some(TriggerCondition::Not {
                 condition: Box::new(TriggerCondition::SourceIsTapped),
             }),
+            // CR 722.3a + CR 603.4: Not(SourceMatchesFilter) → the source does
+            // not match the filter. General compositional negation: the
+            // affirmative arm bridges the filter 1:1, so negating both sides
+            // preserves semantics for every filter — including the
+            // property-only prepared-designation filter ("if ~/this creature
+            // isn't prepared"). A source that lost its creature type (CR 700.7
+            // keeps "this creature" bound) still gates on the designation.
+            StaticCondition::SourceMatchesFilter { filter } => Some(TriggerCondition::Not {
+                condition: Box::new(TriggerCondition::SourceMatchesFilter {
+                    filter: filter.clone(),
+                }),
+            }),
             // CR 725.1 + CR 109.5: "if you're not the monarch" / "if an opponent
             // is the monarch". The subject scope must survive the bridge —
             // collapsing it to `Controller` here would silently rebind
@@ -6827,42 +6838,6 @@ fn parse_source_suspected_intervening_if(input: &str) -> OracleResult<'_, Trigge
     let filter = TargetFilter::Typed(TypedFilter::creature().properties(vec![prop]));
     let condition = TriggerCondition::SourceMatchesFilter { filter };
     let condition = if negated.is_some() {
-        TriggerCondition::Not {
-            condition: Box::new(condition),
-        }
-    } else {
-        condition
-    };
-    Ok((rest, condition))
-}
-
-/// CR 603.4 + CR 722.3a: "if ~/this creature is[n']t prepared" — source-
-/// designation intervening-if (Woodwork Prodigy: "if this creature isn't
-/// prepared, it becomes prepared"; same sentence on Stingerquill Voxmancer and
-/// Paradox Shaper). Composes `parse_source_subject` × `parse_copula_is_or_isnt`
-/// (both apostrophes, plus "is not") × `tag("prepared")`, mirroring
-/// `parse_source_is_saddled`, but emits `TriggerCondition::SourceMatchesFilter`
-/// like `parse_source_suspected_intervening_if` since the upkeep trigger needs
-/// source context a `StaticCondition` cannot express. The negated form wraps in
-/// `Not`. Bare `Prepared` matches the Suspected/Renowned/Goaded
-/// designation-leaf convention.
-///
-/// "it"-subjects are deliberately NOT accepted here: on the three printed
-/// cards the gate subject is always the self-reference ("this creature",
-/// normalized to `~` before this seam runs); recipient-anaphoric "it" belongs
-/// to the generic `parse_inner_condition` bridge below, not to a
-/// source-designation gate. INHERITED DEFER: attached prefixes ("equipped/
-/// enchanted creature ") collapse to Source* checks per parse_source_subject's
-/// audit note (CR 611.3a).
-fn parse_source_prepared_intervening_if(input: &str) -> OracleResult<'_, TriggerCondition> {
-    let (rest, _) = tag("if ").parse(input)?;
-    let (rest, _) = parse_source_subject(rest)?;
-    let (rest, negated) = parse_copula_is_or_isnt(rest)?;
-    let (rest, _) = tag("prepared").parse(rest)?;
-    let filter =
-        TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Prepared]));
-    let condition = TriggerCondition::SourceMatchesFilter { filter };
-    let condition = if negated {
         TriggerCondition::Not {
             condition: Box::new(condition),
         }
@@ -7962,22 +7937,6 @@ fn extract_if_condition_with_card_name(
     // `parse_inner_condition` bridge, whose "it's" subject is recipient-scoped.
     if let Some((before, condition, rest)) =
         scan_preceded(&lower, parse_source_suspected_intervening_if)
-    {
-        let pos = before.len();
-        let clause_len = lower.len() - before.len() - rest.len();
-        return (
-            strip_condition_clause(text, pos, clause_len),
-            Some(condition),
-        );
-    }
-
-    // CR 603.4 + CR 722.3a: "if ~/this creature isn't prepared" —
-    // source-designation intervening-if (Woodwork Prodigy; same sentence on
-    // Stingerquill Voxmancer and Paradox Shaper). Source-referential like the
-    // suspected arm above, so it is handled here rather than through the
-    // generic `parse_inner_condition` bridge.
-    if let Some((before, condition, rest)) =
-        scan_preceded(&lower, parse_source_prepared_intervening_if)
     {
         let pos = before.len();
         let clause_len = lower.len() - before.len() - rest.len();
