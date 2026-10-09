@@ -38002,7 +38002,7 @@ fn prepared_gate_affirmative_polarity_reach_guard() {
         "Prepared Probe",
     );
     let expected = Some(TriggerCondition::SourceMatchesFilter {
-        filter: TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Prepared])),
+        filter: TargetFilter::Typed(TypedFilter::default().properties(vec![FilterProp::Prepared])),
     });
     assert_eq!(def.condition, expected);
     assert!(def.execute.is_some());
