@@ -81,7 +81,7 @@ fn molten_tide_bonus_only_for_controller_taps_own_mountain_then_expires() {
     assert_eq!(
         red(&runner, P0),
         2,
-        "P0 taps its own Mountain: base {R} + additional {R} = 2 red"
+        "P0 taps its own Mountain: base {{R}} + additional {{R}} = 2 red"
     );
     assert_eq!(red(&runner, P1), 0, "P1 gets nothing when P0 taps");
 
@@ -103,7 +103,7 @@ fn molten_tide_bonus_only_for_controller_taps_own_mountain_then_expires() {
     assert_eq!(
         red(&runner, P0),
         4,
-        "second Mountain the same turn fires again: 2 + base {R} + additional {R} = 4 red"
+        "second Mountain the same turn fires again: 2 + base {{R}} + additional {{R}} = 4 red"
     );
 
     // (3) HOSTILE F1: P1 taps a Mountain CONTROLLED BY P0. The tapper is not
@@ -167,6 +167,6 @@ fn molten_tide_bonus_only_for_controller_taps_own_mountain_then_expires() {
     assert_eq!(
         red(&runner, P0),
         1,
-        "after cleanup: only the base {R}, no bonus — the delayed trigger expired"
+        "after cleanup: only the base {{R}}, no bonus — the delayed trigger expired"
     );
 }
