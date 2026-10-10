@@ -1350,8 +1350,8 @@ fn parse_cards_put_into_graveyard_from_zones_quantity(
     Ok((rest, expr))
 }
 
-/// CR 107.3c + CR 701.17a (mill = library to graveyard) + CR 400.7
-/// + CR 404.1 + CR 111.7: "the number of [type] cards [that were] put into
+/// CR 107.3c + CR 701.17a (mill = library to graveyard) + CR 400.7 +
+/// CR 404.1 + CR 111.7: "the number of [type] cards [that were] put into
 /// target player's graveyard from their hand or library this turn" (Cruel
 /// Calculations). Sole owner of the target-player zone-list forms (1..n origin
 /// zones): a single origin collapses to a bare `Ref`, several build a `Sum`

@@ -6559,7 +6559,19 @@ fn parse_put_into_graveyard_origin_zones_for_owner(
     let possessive = match owner {
         ControllerRef::You => "your ",
         ControllerRef::TargetPlayer => "their ",
-        _ => return Err(oracle_err(input)),
+        ControllerRef::Opponent
+        | ControllerRef::ScopedPlayer
+        | ControllerRef::TargetOpponent
+        | ControllerRef::ParentTargetController
+        | ControllerRef::EventTargetController
+        | ControllerRef::ParentTargetOwner
+        | ControllerRef::DefendingPlayer
+        | ControllerRef::ChosenPlayer { .. }
+        | ControllerRef::SourceChosenPlayer
+        | ControllerRef::TriggeringPlayer
+        | ControllerRef::EnchantedPlayer
+        | ControllerRef::ActivePlayer
+        | ControllerRef::SpecificPlayer { .. } => return Err(oracle_err(input)),
     };
     verify(
         map(
