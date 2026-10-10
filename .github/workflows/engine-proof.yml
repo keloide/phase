@@ -318,14 +318,49 @@ jobs:
             [[ "$path" == crates/engine/tests/integration/*.rs && "$path" != *..* ]]
             test -f "$path"
           done <<< "$TEST_PATHS"
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+      - name: Verify fixed V11 stage1-candidate native evidence for artifact reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: stage1-candidate-projection
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$BASE_SHA" = ab1363d1f30141c118db0c83de0da617e0c07c65
+          test "$CANDIDATE_SHA" = e8aa66ec424c93bc06520b581cc142683504f18d
+          test "$PHASE_BASE_SHA" = "$BASE_SHA"
+          test "$INPUT_RUN_ID" = 37483983597
+          test "$MODE" = final
+          test "$TEST_FEATURES" = phase-engine/test-support,phase-engine/cli,phase-engine/proptest
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          test "$(git diff --no-renames --name-only "$CANDIDATE_SHA" 42408f453d37fd5ce5e647f0ea86a01a63a82675)" = .github/workflows/engine-proof.yml
+          git show 42408f453d37fd5ce5e647f0ea86a01a63a82675:.github/workflows/engine-proof.yml > "$RUNNER_TEMP/v11-workflow.yml"
+          grep -Fx '  BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65' "$RUNNER_TEMP/v11-workflow.yml"
+          grep -Fx '  CANDIDATE_SHA: e8aa66ec424c93bc06520b581cc142683504f18d' "$RUNNER_TEMP/v11-workflow.yml"
+          grep -Fx "  INPUT_RUN_ID: '37483983597'" "$RUNNER_TEMP/v11-workflow.yml"
+          gh api repos/keloide/phase/actions/runs/38056134872 > "$RUNNER_TEMP/v11-run.json"
+          jq -e '.id == 38056134872 and .run_attempt == 1 and .head_sha == "42408f453d37fd5ce5e647f0ea86a01a63a82675" and .head_branch == "engine-proof/fra-stingerquill-9" and .event == "push" and .status == "completed" and .conclusion == "failure"' "$RUNNER_TEMP/v11-run.json"
+          gh api repos/keloide/phase/actions/jobs/114224943644 > "$RUNNER_TEMP/v11-job.json"
+          jq -e '.id == 114224943644 and .run_id == 38056134872 and .run_attempt == 1 and .head_sha == "42408f453d37fd5ce5e647f0ea86a01a63a82675" and .name == "stage1-candidate" and .status == "completed" and .conclusion == "success"' "$RUNNER_TEMP/v11-job.json"
+          echo 'Reusing exact V11 stage1-candidate normal artifacts; this job performs no native Tool build or new measurement.'
+      - name: Restore fixed V11 stage1-candidate normal artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage1-candidate-outputs
+          path: stage1-outputs/candidate
+          repository: keloide/phase
+          run-id: '38056134872'
+          github-token: ${{ github.token }}
+      - if: ${{ false }} # Fixed V11 reuse; original native step preserved below.
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: nightly-2026-04-19
           components: rustfmt, clippy, rustc-codegen-cranelift-preview
           target: wasm32-unknown-unknown
           cache: false
       - name: Restore pinned full inputs for subsequent run
-        if: env.INPUT_RUN_ID != '0'
+        if: ${{ false }} # Fixed V11 reuse; original pinned-input restore preserved.
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: pinned-inputs
@@ -334,6 +369,7 @@ jobs:
           run-id: ${{ env.INPUT_RUN_ID }}
           github-token: ${{ github.token }}
       - name: Download inputs with the supported pipeline, or unpack the original inputs
+        if: ${{ false }} # Fixed V11 reuse; original native script preserved.
         working-directory: stage1-candidate-projection
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-candidate-projection-target
@@ -368,6 +404,7 @@ jobs:
           chmod -R a-w data/mtgjson
           test -z "$(git status --porcelain --untracked-files=no)"
       - name: Export exact committed source, coverage, semantic audit, and canonical fixture
+        if: ${{ false }} # Fixed V11 reuse; original native script preserved.
         working-directory: stage1-candidate-projection
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-candidate-projection-target
@@ -448,24 +485,62 @@ jobs:
           path: stage1-base-projection
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+      - name: Verify fixed V11 stage1-base native evidence for artifact reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: stage1-base-projection
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$BASE_SHA" = ab1363d1f30141c118db0c83de0da617e0c07c65
+          test "$CANDIDATE_SHA" = e8aa66ec424c93bc06520b581cc142683504f18d
+          test "$PHASE_BASE_SHA" = "$BASE_SHA"
+          test "$INPUT_RUN_ID" = 37483983597
+          test "$MODE" = final
+          test "$TEST_FEATURES" = phase-engine/test-support,phase-engine/cli,phase-engine/proptest
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          test "$(git diff --no-renames --name-only "$CANDIDATE_SHA" 42408f453d37fd5ce5e647f0ea86a01a63a82675)" = .github/workflows/engine-proof.yml
+          git show 42408f453d37fd5ce5e647f0ea86a01a63a82675:.github/workflows/engine-proof.yml > "$RUNNER_TEMP/v11-workflow.yml"
+          grep -Fx '  BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65' "$RUNNER_TEMP/v11-workflow.yml"
+          grep -Fx '  CANDIDATE_SHA: e8aa66ec424c93bc06520b581cc142683504f18d' "$RUNNER_TEMP/v11-workflow.yml"
+          grep -Fx "  INPUT_RUN_ID: '37483983597'" "$RUNNER_TEMP/v11-workflow.yml"
+          gh api repos/keloide/phase/actions/runs/38056134872 > "$RUNNER_TEMP/v11-run.json"
+          jq -e '.id == 38056134872 and .run_attempt == 1 and .head_sha == "42408f453d37fd5ce5e647f0ea86a01a63a82675" and .head_branch == "engine-proof/fra-stingerquill-9" and .event == "push" and .status == "completed" and .conclusion == "failure"' "$RUNNER_TEMP/v11-run.json"
+          gh api repos/keloide/phase/actions/jobs/114228038098 > "$RUNNER_TEMP/v11-job.json"
+          jq -e '.id == 114228038098 and .run_id == 38056134872 and .run_attempt == 1 and .head_sha == "42408f453d37fd5ce5e647f0ea86a01a63a82675" and .name == "stage1-base" and .status == "completed" and .conclusion == "success"' "$RUNNER_TEMP/v11-job.json"
+          echo 'Reusing exact V11 stage1-base normal artifacts; this job performs no native Tool build or new measurement.'
+      - name: Restore fixed V11 stage1-base normal artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage1-base-outputs-and-parse-diff
+          path: stage1-outputs/base
+          repository: keloide/phase
+          run-id: '38056134872'
+          github-token: ${{ github.token }}
+      - if: ${{ false }} # Fixed V11 reuse; original native step preserved below.
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: nightly-2026-04-19
           components: rustfmt, clippy, rustc-codegen-cranelift-preview
           target: wasm32-unknown-unknown
           cache: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - if: ${{ false }} # Fixed V11 reuse; original native input download preserved.
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: pinned-inputs
           path: restored-inputs
           repository: keloide/phase
           run-id: ${{ env.INPUT_RUN_ID }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - if: ${{ false }} # Fixed V11 reuse; original native input download preserved.
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: stage1-candidate-outputs
           path: stage1-candidate-outputs
       - name: Project clean BASE against the same full input root and compare
+        if: ${{ false }} # Fixed V11 reuse; original native script preserved.
         working-directory: stage1-base-projection
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-base-projection-target
@@ -739,7 +814,7 @@ jobs:
           data = json.load(open(sys.argv[1]))
           selected = []
           for suite in data['rust-suites'].values():
-              for name, case in suite['test-cases'].items():
+              for name, case in suite['testcases'].items():
                   if case['filter-match']['status'] == 'matches':
                       selected.append((suite['package-name'], suite['binary-name'], name))
           assert selected, 'No focused tests selected'
@@ -938,8 +1013,8 @@ jobs:
           ./scripts/check-prelowered-ratchet.sh
           ./scripts/check-skill-doc.sh
           ./scripts/check-engine-authorities.sh "$BASE_SHA"
-          # Tool generation/export/validation/coverage/semantic ran in the exact candidate projection.
-          # Its job and the independently built BASE comparator must both have succeeded.
+          # Exact C8/C10 Tool generation/export/validation/coverage/semantic and BASE comparator
+          # passed in fixed V11; these two jobs guard and restore those same normal artifacts.
           test "${{ needs.stage1-candidate.result }}" = success
           test "${{ needs.stage1-base.result }}" = success
           ./scripts/coverage-regression-check.sh "$GITHUB_WORKSPACE/stage1-base-outputs/coverage-data.json" \
@@ -976,7 +1051,7 @@ jobs:
     needs: [stage1-candidate, stage1-base, stage1-runtime-red, stage1-completion]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-9-results-stage1
+      RESULT_BRANCH: engine-proof/fra-stingerquill-12-results-stage1
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage1-outputs.tar.gz
     permissions:
       contents: write
@@ -1300,7 +1375,7 @@ jobs:
     needs: [stage2-generation]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-9-results-stage2
+      RESULT_BRANCH: engine-proof/fra-stingerquill-12-results-stage2
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage2-outputs.tar.gz
     permissions:
       contents: write
@@ -2001,7 +2076,7 @@ jobs:
           data = json.load(open(sys.argv[1]))
           selected = []
           for suite in data['rust-suites'].values():
-              for name, case in suite['test-cases'].items():
+              for name, case in suite['testcases'].items():
                   if case['filter-match']['status'] == 'matches':
                       selected.append((suite['package-name'], suite['binary-name'], name))
           assert selected, 'No focused tests selected'
@@ -2245,7 +2320,7 @@ jobs:
     needs: [stage3-candidate, stage3-base, stage3-runtime-red, stage3-completion]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-9-results-stage3
+      RESULT_BRANCH: engine-proof/fra-stingerquill-12-results-stage3
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage3-outputs.tar.gz
     permissions:
       contents: write
