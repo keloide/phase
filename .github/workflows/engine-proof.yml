@@ -1,0 +1,2364 @@
+# TEMPORARY FORK-ONLY V9 MACHINERY; C10-FILLED, STATIC TRIGGER-READY; RUNTIME UNPROBED. Never include this YAML in product history/PR.
+# Exactly three fixed stages and two one-shot API-only waits; no retry or self-dispatch.
+# Root fills the initial SHA pair, exact proof branch, three publication and three result refs.
+# The original pinned inputs are always restored from run 37483983597.
+# Initial/final MODE=final requires committed canonical bytes before each full proof.
+# Only root may accept stage 1, once-fetch/merge, copy/commit stage-2 canonical bytes,
+# and publish final HEAD. Wait jobs are not candidate verification or acceptance.
+# Root adjudicated source-idle interpretation: phase-fit 109; temporary workflow SHA differs.
+name: Temporary finite immutable engine proof 9
+run-name: Engine proof 9 ${{ github.ref_name }}
+
+on:
+  push:
+    branches: [engine-proof/fra-stingerquill-9]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  RTK_DISABLED: '1'
+  CARGO_INCREMENTAL: '0'
+  BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
+  CANDIDATE_SHA: e8aa66ec424c93bc06520b581cc142683504f18d
+  MODE: final
+  PHASE_BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
+  TEST_FEATURES: phase-engine/test-support,phase-engine/cli,phase-engine/proptest
+  FOCUSED_FILTER: 'package(phase-engine) | (package(phase-ai) & (binary(gate_cli) | test(/policies::x_reference::/))) | (package(probe-pin) & binary(pure_logic))'
+  U3_RUNTIME_TEST: essence_burn::essence_burn_face_down_keeps_die_exile
+  U3_RED_ASSERTION_TEXT: "Essence Burn's this-turn replacement must exile the same host after Cyber Conversion"
+  # Actual immutable C10 production-only patch audited against C8; final post-sync audit remains root-owned.
+  U3_PRODUCTION_PATCH: |-
+    diff --git a/crates/engine/src/game/effects/add_target_replacement.rs b/crates/engine/src/game/effects/add_target_replacement.rs
+    --- a/crates/engine/src/game/effects/add_target_replacement.rs
+    +++ b/crates/engine/src/game/effects/add_target_replacement.rs
+    @@ -606,15 +607,10 @@
+                         // early — an under-prune, strictly safer than a revival; rare
+                         // corner, out of scope.
+    -                    let durable_die_exile =
+    -                        crate::game::printed_cards::is_runtime_target_die_exile_replacement(
+    -                            &replacement,
+    -                        );
+                         let host_lifetime =
+                             crate::game::printed_cards::is_runtime_host_lifetime_replacement(
+                                 &replacement,
+                             );
+    -                    let install_to_base = durable_die_exile
+    -                        || host_lifetime
+    +                    let install_to_base = host_lifetime
+                             || matches!(
+                                 replacement.condition,
+                                 Some(ReplacementCondition::ControllerControlsSource { .. })
+    diff --git a/crates/engine/src/game/morph.rs b/crates/engine/src/game/morph.rs
+    --- a/crates/engine/src/game/morph.rs
+    +++ b/crates/engine/src/game/morph.rs
+    @@ -258,5 +260,10 @@
+    -    obj.replacement_definitions = crate::types::definitions::Definitions::default();
+    -    obj.base_replacement_definitions = Arc::new(Vec::new());
+    +    let replacements = Arc::new(Vec::new());
+    +    obj.replacement_definitions =
+    +        super::game_object::reseed_replacements_carrying_resolution_effects(
+    +            &obj.replacement_definitions,
+    +            &replacements,
+    +        );
+    +    obj.base_replacement_definitions = replacements;
+         obj.static_definitions = crate::types::definitions::Definitions::default();
+         obj.base_static_definitions = Arc::new(Vec::new());
+         obj.color = Vec::new();
+    diff --git a/crates/engine/src/game/printed_cards.rs b/crates/engine/src/game/printed_cards.rs
+    --- a/crates/engine/src/game/printed_cards.rs
+    +++ b/crates/engine/src/game/printed_cards.rs
+    @@ -162,4 +164,9 @@
+    -    obj.replacement_definitions = replacements.clone().into();
+    +    let replacements = Arc::new(replacements);
+    +    obj.replacement_definitions =
+    +        super::game_object::reseed_replacements_carrying_resolution_effects(
+    +            &obj.replacement_definitions,
+    +            &replacements,
+    +        );
+         obj.static_definitions = card_face.static_abilities.clone().into();
+         // CR 702.148a-b: Carry the cleave-cost ability set onto the object so the
+         // casting flow can swap it in when the spell is cast for its cleave cost.
+    @@ -190,7 +197,7 @@
+             obj.install_trigger_base_definitions(trigger_definitions)
+                 .expect("trigger base-set generation must not overflow");
+         }
+    -    obj.base_replacement_definitions = Arc::new(replacements);
+    +    obj.base_replacement_definitions = replacements;
+         obj.base_static_definitions = Arc::new(card_face.static_abilities.clone());
+         obj.base_color = color;
+         obj.base_characteristics_initialized = true;
+    @@ -334,4 +343,15 @@
+    -    obj.replacement_definitions = back_face.replacement_definitions.clone();
+    +    let replacements = Arc::new(
+    +        back_face
+    +            .replacement_definitions
+    +            .iter_all()
+    +            .cloned()
+    +            .collect(),
+    +    );
+    +    obj.replacement_definitions =
+    +        super::game_object::reseed_replacements_carrying_resolution_effects(
+    +            &obj.replacement_definitions,
+    +            &replacements,
+    +        );
+         obj.static_definitions = back_face.static_definitions.clone();
+         obj.color = back_face.color.clone();
+         obj.base_power = back_face.power;
+    @@ -357,13 +377,7 @@
+             )
+             .expect("trigger base-set generation must not overflow");
+         }
+    -    obj.base_replacement_definitions = Arc::new(
+    -        back_face
+    -            .replacement_definitions
+    -            .iter_all()
+    -            .cloned()
+    -            .collect(),
+    -    );
+    +    obj.base_replacement_definitions = replacements;
+         obj.base_static_definitions =
+             Arc::new(back_face.static_definitions.iter_all().cloned().collect());
+         obj.base_color = back_face.color;
+    diff --git a/crates/engine/src/game/flip.rs b/crates/engine/src/game/flip.rs
+    --- a/crates/engine/src/game/flip.rs
+    +++ b/crates/engine/src/game/flip.rs
+    @@ -373,6 +375,10 @@
+    -    obj.replacement_definitions = face.replacement_definitions.clone();
+    -    obj.base_replacement_definitions =
+    -        Arc::new(face.replacement_definitions.iter_all().cloned().collect());
+    +    let replacements = Arc::new(face.replacement_definitions.iter_all().cloned().collect());
+    +    obj.replacement_definitions =
+    +        super::game_object::reseed_replacements_carrying_resolution_effects(
+    +            &obj.replacement_definitions,
+    +            &replacements,
+    +        );
+    +    obj.base_replacement_definitions = replacements;
+         obj.static_definitions = face.static_definitions.clone();
+         obj.base_static_definitions = Arc::new(face.static_definitions.iter_all().cloned().collect());
+         obj.install_trigger_base_definitions(Arc::new(
+  U3_PRODUCTION_PATHS: |-
+    crates/engine/src/game/effects/add_target_replacement.rs
+    crates/engine/src/game/morph.rs
+    crates/engine/src/game/printed_cards.rs
+    crates/engine/src/game/flip.rs
+  PHASE_SCOPE_PATHS: |-
+    crates/engine/src/game/effects/add_target_replacement.rs
+    crates/engine/src/game/flip.rs
+    crates/engine/src/game/game_object.rs
+    crates/engine/src/game/morph.rs
+    crates/engine/src/game/printed_cards.rs
+    crates/engine/src/game/turns.rs
+    crates/engine/tests/fixtures/integration_cards.json.gz
+    crates/engine/tests/integration/essence_burn.rs
+  INPUT_RUN_ID: '37483983597'
+  FROZEN_BASE_BRANCH: engine-proof/fra-stingerquill-9-frozen-base
+  MERGED_SOURCE_BRANCH: engine-proof/fra-stingerquill-9-merged-source
+  FINAL_HEAD_BRANCH: engine-proof/fra-stingerquill-9-final-head
+  GATED_SETS_AS_OF: '2026-10-05'
+  # An exact production-path test name, including its module path.
+  RUNTIME_TEST: essence_burn::essence_burn_exiles_lethal_black_creature
+  U1_RUNTIME_TEST: essence_burn::essence_burn_target_legality
+  U1_RED_ASSERTION_TEXT: Essence Burn must reject a black noncreature nonplaneswalker target
+  # Fixed Reference Readings controls from the reviewed plan; no test census.
+  REFERENCE_TESTS: |-
+    parser::oracle_target::tests::that_s_red_or_green_emits_color_disjunction
+    parser::oracle_target::tests::target_spell_or_permanent_thats_red_or_green_distributes_color_to_both_legs
+    essence_burn::aether_gust_shared_color_target_legality
+    parser::oracle_target::tests::comma_or_pt_suffix_stays_on_final_disjunct_only
+    parser::oracle_target::tests::creature_or_planeswalker_cmc_suffix_distributes_to_both_legs
+    parser::oracle_target::tests::comma_or_cmc_suffix_still_distributes_to_every_leg
+    parser::oracle_target::tests::comma_or_any_of_pt_suffix_stays_on_final_disjunct_only
+    parser::oracle_target::tests::pt_distribution_keys_on_core_type_pin_not_leg_position
+    parser::oracle_target::tests::pt_distribution_reaches_legs_that_also_pin_creature
+    parser::oracle_target::tests::pt_suffix_relocates_to_creature_leg_when_creature_is_not_final
+    parser::oracle_target::tests::pt_suffix_relocates_to_creature_leg_when_creature_is_first
+    parser::oracle_target::tests::pt_suffix_survives_on_origin_leg_when_no_creature_disjunct_exists
+    parser::oracle_target::tests::pt_suffix_survives_when_same_kind_dedupe_blocks_rehoming
+    parser::oracle_target::tests::shared_property_distribution_skips_noncreature_pinned_legs
+    parser::oracle_target::tests::shares_quality_power_is_registered_as_a_pt_reading_prop
+    parser::oracle_target::tests::finalize_or_disjunction_backfills_types_before_distributing_props
+    parser::oracle_target::tests::distribute_skips_pt_on_a_type_open_leg_but_still_distributes_cmc
+    parser::oracle_target::tests::comma_or_without_keyword_suffix_stays_on_final_disjunct_only
+    parser::oracle_target::tests::goaded_is_registered_as_leg_local_adjective_prefix
+    parser::oracle_effect::search::tests::distribute_or_keeps_named_leg_local_but_distributes_cmc
+  # Exactly one standard Insta test and its two expected IR/lowered outputs.
+  SNAPSHOT_TEST: parser::oracle_ir::snapshot_tests::essence_burn_ir_and_lowered
+  SNAPSHOT_PATHS: |-
+    crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_ir.snap
+    crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_lowered.snap
+  # Exact test failure assertion substring; compilation failures do not count as red.
+  RED_ASSERTION_TEXT: Essence Burn must exile its lethal black creature target
+  # Only integration-test Rust files (include main.rs when adding a module).
+  TEST_PATHS: |-
+    crates/engine/tests/integration/essence_burn.rs
+    crates/engine/tests/integration/main.rs
+  SCOPE_PATHS: |-
+    crates/engine/src/game/effects/add_target_replacement.rs
+    crates/engine/src/game/flip.rs
+    crates/engine/src/game/game_object.rs
+    crates/engine/src/game/morph.rs
+    crates/engine/src/game/printed_cards.rs
+    crates/engine/src/game/turns.rs
+    crates/engine/src/parser/oracle_effect/mod.rs
+    crates/engine/src/parser/oracle_effect/tests.rs
+    crates/engine/src/parser/oracle_ir/snapshot_tests.rs
+    crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_ir.snap
+    crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_lowered.snap
+    crates/engine/src/parser/oracle_target.rs
+    crates/engine/tests/fixtures/integration_cards.json.gz
+    crates/engine/tests/integration/essence_burn.rs
+    crates/engine/tests/integration/main.rs
+    docs/parser-misparse-backlog.md
+  CANONICAL_PATHS: |-
+    crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_ir.snap
+    crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_lowered.snap
+    crates/engine/tests/fixtures/integration_cards.json.gz
+
+jobs:
+  stage1-candidate:
+    name: stage1-candidate
+    if: github.repository == 'keloide/phase' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      mode: ${{ steps.parameters.outputs.mode }}
+      candidate_sha: ${{ steps.parameters.outputs.candidate_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: stage1-candidate-projection
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable candidate and parameters
+        id: parameters
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: stage1-candidate-projection
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$MODE" == generate || "$MODE" == final ]]
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          test "$INPUT_RUN_ID" = 37483983597
+          test "$GATED_SETS_AS_OF" = 2026-10-05
+          test "$MODE" = final
+          test "$BASE_SHA" = "$PHASE_BASE_SHA"
+          test "$PHASE_BASE_SHA" = ab1363d1f30141c118db0c83de0da617e0c07c65
+          test "$GITHUB_REF_NAME" = engine-proof/fra-stingerquill-9
+          ! grep -F 'REPLACE_' <<< "$U3_PRODUCTION_PATCH"
+          while IFS= read -r -d '' path; do
+            grep -Fx -- "$path" <<< "$PHASE_SCOPE_PATHS" > /dev/null
+          done < <(git diff --no-renames --name-only -z "$PHASE_BASE_SHA" "$CANDIDATE_SHA")
+          echo "candidate_sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          mapfile -t snapshot_paths <<< "$SNAPSHOT_PATHS"
+          test "${#snapshot_paths[@]}" -eq 2
+          test "${snapshot_paths[0]}" = crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_ir.snap
+          test "${snapshot_paths[1]}" = crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_lowered.snap
+          for path in "${snapshot_paths[@]}"; do
+            [[ "$path" == crates/engine/src/parser/oracle_ir/snapshots/*.snap && "$path" != *..* ]]
+            if [ "$MODE" = final ]; then test -s "$path"; fi
+          done
+          test "$SNAPSHOT_TEST" = parser::oracle_ir::snapshot_tests::essence_burn_ir_and_lowered
+          test "$CANDIDATE_SHA" != "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          test ! -e .env
+          test -z "${PHASE_FORGE_PATH:-}"
+          python3 - <<'PYFEATURES'
+          from pathlib import Path
+          import re, tomllib
+          manifest = tomllib.loads(Path('crates/engine/Cargo.toml').read_text())
+          assert manifest['package']['name'] == 'phase-engine'
+          for name, expected in [('cli', ['tracing-subscriber']), ('proptest', ['dep:proptest']), ('test-support', [])]:
+              assert manifest['features'][name] == expected, (name, manifest['features'][name])
+          print('Actual required feature definitions:', {n: manifest['features'][n] for n in ['test-support', 'cli', 'proptest']})
+          hits = []
+          for path in sorted(Path('crates').rglob('*.rs')):
+              source = path.read_text()
+              # Match across Rust attribute line breaks; any extra CLI/proptest occurrence refuses a presumed additive run.
+              for match in re.finditer(r'feature\s*=\s*"(?:cli|proptest)"', source):
+                  before, after = source[:match.start()], source[match.end():]
+                  hits.append((str(path), before.count('\n') + 1, before[-50:] + match.group() + after[:50]))
+          assert len(hits) == 1, ('Unaudited feature/cfg drift; root must inspect actual source. Non-additivity requires eleven cold configurations and blocks this ten-configuration protocol', hits)
+          path, line, excerpt = hits[0]
+          assert path == 'crates/engine/tests/integration/main.rs'
+          source = Path(path).read_text()
+          assert re.search(r'#\s*\[\s*cfg\s*\(\s*feature\s*=\s*"proptest"\s*\)\s*\]\s*mod\s+engine_invariants\s*;', source)
+          assert re.search(r'cases\s*:\s*16\s*,', Path('crates/engine/tests/integration/engine_invariants.rs').read_text())
+          print('Actual source has only the positive proptest registration:', path, line, excerpt)
+          PYFEATURES
+          git cat-file -e "$BASE_SHA^{commit}"
+          git merge-base --is-ancestor "$BASE_SHA" "$CANDIDATE_SHA"
+          while IFS= read -r -d '' path; do
+            grep -Fx -- "$path" <<< "$SCOPE_PATHS" > /dev/null
+          done < <(git diff --no-renames --name-only -z "$BASE_SHA" "$CANDIDATE_SHA")
+          refs=("$FROZEN_BASE_BRANCH" "$MERGED_SOURCE_BRANCH" "$FINAL_HEAD_BRANCH")
+          test "${refs[0]}" != "${refs[1]}"
+          test "${refs[0]}" != "${refs[2]}"
+          test "${refs[1]}" != "${refs[2]}"
+          for ref in "${refs[@]}"; do
+            [[ "$ref" == engine-proof/* && "$ref" != "$GITHUB_REF_NAME" ]]
+            git check-ref-format "refs/heads/$ref"
+            if gh api "repos/keloide/phase/git/ref/heads/$ref" > /dev/null 2> "$RUNNER_TEMP/publication-ref-error"; then
+              echo 'Publication ref already exists; refuse stale continuation.' >&2
+              exit 1
+            else
+              grep -q 'HTTP 404' "$RUNNER_TEMP/publication-ref-error"
+            fi
+          done
+          ./scripts/engine-source-hash.sh "$CANDIDATE_SHA"
+          printf '%s\n' "Candidate projection source: $CANDIDATE_SHA; base: $BASE_SHA; mode: $MODE"
+          while IFS= read -r path; do
+            [[ "$path" == crates/engine/tests/integration/*.rs && "$path" != *..* ]]
+            test -f "$path"
+          done <<< "$TEST_PATHS"
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - name: Restore pinned full inputs for subsequent run
+        if: env.INPUT_RUN_ID != '0'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pinned-inputs
+          path: restored-inputs
+          repository: keloide/phase
+          run-id: ${{ env.INPUT_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Download inputs with the supported pipeline, or unpack the original inputs
+        working-directory: stage1-candidate-projection
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-candidate-projection-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/stage1-outputs/candidate" "$GITHUB_WORKSPACE/stage1-outputs/inputs"
+          if [ "$INPUT_RUN_ID" = 0 ]; then
+            test "$MODE" = generate
+            ./scripts/gen-card-data.sh
+            # Capture the complete data root, including bracket/other tracked overrides,
+            # all MTGJSON sidecars, token sets + missing markers, and deck JSONs.
+            # Generated outputs are not inputs and must not seed the other projection.
+            tar --exclude='data/card-data.json' --exclude='data/coverage-data.json' \
+              --exclude='data/semantic-audit.*' -czf "$GITHUB_WORKSPACE/stage1-outputs/inputs/pinned-inputs.tar.gz" data
+            git restore --source="$CANDIDATE_SHA" -- \
+              crates/engine/data/known-tokens.toml crates/engine/data/oracle-subtypes.json \
+              crates/engine/data/mtgjson-vintage
+          else
+            tar -xzf "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz"
+            cp "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz" "$GITHUB_WORKSPACE/stage1-outputs/inputs/"
+          fi
+          test -s data/mtgjson/AtomicCards.json
+          test -s data/mtgjson/Meta.json
+          test -s data/mtgjson/CardTypes.json
+          test -s data/mtgjson/SetList.json
+          test -d data/mtgjson/sets
+          test -d data/mtgjson/decks
+          test ! -e .env
+          test -z "${PHASE_FORGE_PATH:-}"
+          test ! -e data/forge-cardsfolder
+          chmod -R a-w data/mtgjson
+          test -z "$(git status --porcelain --untracked-files=no)"
+      - name: Export exact committed source, coverage, semantic audit, and canonical fixture
+        working-directory: stage1-candidate-projection
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-candidate-projection-target
+          MTGJSON_SKIP_REFRESH: '1'
+          PHASE_REFRESH_MTGJSON: '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          test ! -e .env
+          test -z "${PHASE_FORGE_PATH:-}"
+          test ! -e data/forge-cardsfolder
+          ./scripts/gen-card-data.sh
+          git restore --source="$CANDIDATE_SHA" -- \
+            crates/engine/data/known-tokens.toml crates/engine/data/oracle-subtypes.json \
+            crates/engine/data/mtgjson-vintage
+          test -z "$(git status --porcelain --untracked-files=no)"
+          # Rebuild the same five bins on restored exact source; this is real warm work.
+          cargo build --profile tool --features cli --bin tokens-gen --bin oracle-gen \
+            --bin coverage-report --bin card-data-validate --bin coverage-parse-diff
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats --output data/card-data.json
+          "$CARGO_TARGET_DIR/tool/card-data-validate" data/card-data.json
+          "$CARGO_TARGET_DIR/tool/coverage-report" data/ --all --brief > data/coverage-data.json
+          "$CARGO_TARGET_DIR/tool/oracle-gen" semantic-audit data/
+          test "$(jq length data/card-data.json)" -eq 35880
+          cp data/card-data.json client/public/card-data.json
+          test -z "$(git status --porcelain --untracked-files=no)"
+          if [ "$MODE" = generate ]; then
+            python3 scripts/gen-test-fixture.py
+          else
+            python3 scripts/gen-test-fixture.py --check
+          fi
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/stage1-outputs/candidate/"
+          cp crates/engine/tests/fixtures/integration_cards.json.gz "$GITHUB_WORKSPACE/stage1-outputs/candidate/"
+          mapfile -t test_paths <<< "$TEST_PATHS"
+          tar -czf "$GITHUB_WORKSPACE/stage1-outputs/candidate/candidate-tests.tar.gz" "${test_paths[@]}"
+          # One repeat from the SAME built binary and complete pinned input root.
+          # All repeat outputs live outside data; the primary export/fixture stays intact.
+          chmod -R a-w data
+          mkdir -p "$GITHUB_WORKSPACE/stage1-outputs/candidate/repeat"
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats \
+            --output "$GITHUB_WORKSPACE/stage1-outputs/candidate/repeat/card-data.json" \
+            2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/candidate/repeat/oracle-gen.log"
+          "$CARGO_TARGET_DIR/tool/coverage-report" "$GITHUB_WORKSPACE/stage1-outputs/candidate/repeat/" \
+            --all --brief > "$GITHUB_WORKSPACE/stage1-outputs/candidate/repeat/coverage-data.json" \
+            2> "$GITHUB_WORKSPACE/stage1-outputs/candidate/repeat/coverage-report.log"
+          git diff --name-only | while IFS= read -r path; do
+            test "$path" = crates/engine/tests/fixtures/integration_cards.json.gz
+          done
+          test "$(jq length "$GITHUB_WORKSPACE/stage1-outputs/candidate/repeat/card-data.json")" -eq 35880
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          git diff --cached --quiet
+          git status --short
+          echo "Projection tool part of Step 5 passed on exact $CANDIDATE_SHA; BASE $BASE_SHA; pin $INPUT_RUN_ID."
+      - name: Upload candidate normal outputs and fixture
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stage1-candidate-outputs
+          path: stage1-outputs/candidate/
+          if-no-files-found: error
+          retention-days: 14
+
+  stage1-base:
+    name: stage1-base
+    needs: stage1-candidate
+    if: github.repository == 'keloide/phase'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.BASE_SHA }}
+          path: stage1-base-projection
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pinned-inputs
+          path: restored-inputs
+          repository: keloide/phase
+          run-id: ${{ env.INPUT_RUN_ID }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage1-candidate-outputs
+          path: stage1-candidate-outputs
+      - name: Project clean BASE against the same full input root and compare
+        working-directory: stage1-base-projection
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-base-projection-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          tar -xzf "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz"
+          test ! -e .env
+          test -z "${PHASE_FORGE_PATH:-}"
+          test ! -e data/forge-cardsfolder
+          chmod -R a-w data/mtgjson
+          test -z "$(git status --porcelain --untracked-files=no)"
+          ./scripts/engine-source-hash.sh "$BASE_SHA"
+          cargo build --profile tool --features cli --bin tokens-gen --bin oracle-gen \
+            --bin coverage-report --bin card-data-validate --bin coverage-parse-diff
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats --output data/card-data.json
+          test "$(jq length data/card-data.json)" -eq 35880
+          "$CARGO_TARGET_DIR/tool/coverage-report" data/ --all --brief > data/coverage-data.json
+          "$CARGO_TARGET_DIR/tool/oracle-gen" semantic-audit data/
+          test -z "$(git status --porcelain --untracked-files=no)"
+          mkdir -p "$GITHUB_WORKSPACE/stage1-outputs/base"
+          # Retain primary raw exports even if a later product gate fails.
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/stage1-outputs/base/"
+          # One repeat from the SAME BASE binary and complete pinned input root.
+          chmod -R a-w data
+          mkdir -p "$GITHUB_WORKSPACE/stage1-outputs/base/repeat"
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats \
+            --output "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/card-data.json" \
+            2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/oracle-gen.log"
+          "$CARGO_TARGET_DIR/tool/coverage-report" "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/" \
+            --all --brief > "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/coverage-data.json" \
+            2> "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/coverage-report.log"
+          test "$(jq length "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/card-data.json")" -eq 35880
+          test -z "$(git status --porcelain --untracked-files=no)"
+          # All comparisons use the existing BASE-built comparator. Self comparisons
+          # carry identical source SHAs and retain any noise without imposing a zero gate.
+          "$CARGO_TARGET_DIR/tool/coverage-parse-diff" data/coverage-data.json \
+            "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/coverage-data.json" \
+            --base-sha "$BASE_SHA" --head-sha "$BASE_SHA" \
+            --markdown "$GITHUB_WORKSPACE/stage1-outputs/base/base-repeat-diff.md" \
+            --json "$GITHUB_WORKSPACE/stage1-outputs/base/base-repeat-diff.json"
+          "$CARGO_TARGET_DIR/tool/coverage-parse-diff" "$GITHUB_WORKSPACE/stage1-candidate-outputs/coverage-data.json" \
+            "$GITHUB_WORKSPACE/stage1-candidate-outputs/repeat/coverage-data.json" \
+            --base-sha "$CANDIDATE_SHA" --head-sha "$CANDIDATE_SHA" \
+            --markdown "$GITHUB_WORKSPACE/stage1-outputs/base/candidate-repeat-diff.md" \
+            --json "$GITHUB_WORKSPACE/stage1-outputs/base/candidate-repeat-diff.json"
+          "$CARGO_TARGET_DIR/tool/coverage-parse-diff" "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/coverage-data.json" \
+            "$GITHUB_WORKSPACE/stage1-candidate-outputs/repeat/coverage-data.json" \
+            --base-sha "$BASE_SHA" --head-sha "$CANDIDATE_SHA" \
+            --markdown "$GITHUB_WORKSPACE/stage1-outputs/base/repeat-parse-diff.md" \
+            --json "$GITHUB_WORKSPACE/stage1-outputs/base/repeat-parse-diff.json"
+          "$CARGO_TARGET_DIR/tool/coverage-parse-diff" data/coverage-data.json \
+            "$GITHUB_WORKSPACE/stage1-candidate-outputs/coverage-data.json" \
+            --base-sha "$BASE_SHA" --head-sha "$CANDIDATE_SHA" \
+            --markdown "$GITHUB_WORKSPACE/stage1-outputs/base/parse-diff.md" \
+            --json "$GITHUB_WORKSPACE/stage1-outputs/base/parse-diff.json"
+          ./scripts/coverage-regression-check.sh data/coverage-data.json \
+            "$GITHUB_WORKSPACE/stage1-candidate-outputs/coverage-data.json" --fail-on-engine \
+            | tee "$GITHUB_WORKSPACE/stage1-outputs/base/coverage-regression.log"
+          grep -F "REGRESSED (coverage honesty) — 0 cards" "$GITHUB_WORKSPACE/stage1-outputs/base/coverage-regression.log"
+          # Retain complete comparator signatures/card lists and audits for review.
+          cat "$GITHUB_WORKSPACE/stage1-outputs/base/parse-diff.md"
+          jq '.clusters[] | {category,label,kind,key,before,after,cards}' \
+            "$GITHUB_WORKSPACE/stage1-outputs/base/parse-diff.json"
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/stage1-outputs/base/"
+          # A new finding is a (card_name, structured finding) pair absent at BASE.
+          jq -n --slurpfile base data/semantic-audit.json \
+            --slurpfile head "$GITHUB_WORKSPACE/stage1-candidate-outputs/semantic-audit.json" '
+            def findings: [.flagged_cards[]? | .card_name as $name | .findings[]? | {card_name:$name,finding:.}];
+            ($base[0] | findings) as $b | ($head[0] | findings) - $b
+          ' > "$GITHUB_WORKSPACE/stage1-outputs/base/new-semantic-findings.json"
+          jq -e 'length == 0' "$GITHUB_WORKSPACE/stage1-outputs/base/new-semantic-findings.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: stage1-base-outputs-and-parse-diff
+          path: stage1-outputs/base/
+          if-no-files-found: error
+          retention-days: 14
+
+  stage1-runtime-red:
+    name: stage1-runtime-red
+    needs: [stage1-candidate, stage1-base]
+    if: github.repository == 'keloide/phase' && needs.stage1-candidate.outputs.mode == 'generate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.BASE_SHA }}
+          path: stage1-base-negative
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage1-candidate-outputs
+          path: stage1-candidate-outputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage1-base-outputs-and-parse-diff
+          path: stage1-base-outputs
+      - name: Run new production-path test on clean BASE with tests only overlaid
+        working-directory: stage1-base-negative
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-base-negative-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          tar -xzf "$GITHUB_WORKSPACE/stage1-candidate-outputs/candidate-tests.tar.gz"
+          mkdir -p client/public
+          cp "$GITHUB_WORKSPACE/stage1-base-outputs/card-data.json" client/public/card-data.json
+          # BASE export is essential: a candidate parsed fixture would mask a parser regression.
+          python3 scripts/gen-test-fixture.py
+          cargo test -p phase-engine "$RUNTIME_TEST" -- --exact --list | tee "$RUNNER_TEMP/red-test-list.log"
+          grep -Fx "$RUNTIME_TEST: test" "$RUNNER_TEMP/red-test-list.log"
+          set +e
+          cargo test -p phase-engine "$RUNTIME_TEST" -- --exact --nocapture 2>&1 | tee "$RUNNER_TEMP/runtime-red.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -E 'test result: FAILED\..*1 failed' "$RUNNER_TEMP/runtime-red.log"
+          grep -F "$RED_ASSERTION_TEXT" "$RUNNER_TEMP/runtime-red.log"
+          cargo test -p phase-engine "$U1_RUNTIME_TEST" -- --exact --list 2>&1 \
+            | tee "$RUNNER_TEMP/u1-red-test-list.log"
+          grep -Fx "$U1_RUNTIME_TEST: test" "$RUNNER_TEMP/u1-red-test-list.log"
+          set +e
+          cargo test -p phase-engine "$U1_RUNTIME_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/runtime-u1-red.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -E 'test result: FAILED\..*1 failed' "$RUNNER_TEMP/runtime-u1-red.log"
+          grep -F "$U1_RED_ASSERTION_TEXT" "$RUNNER_TEMP/runtime-u1-red.log"
+      - name: Discover and run exact BASE reference controls with tests only overlaid
+        working-directory: stage1-base-negative
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-base-negative-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          while IFS= read -r REFERENCE_TEST; do
+            reference_log_name=${REFERENCE_TEST//:/_}
+            cargo test -p phase-engine "$REFERENCE_TEST" -- --exact --list 2>&1 \
+              | tee "$RUNNER_TEMP/base-reference-list-$reference_log_name.log"
+            grep -Fx "$REFERENCE_TEST: test" "$RUNNER_TEMP/base-reference-list-$reference_log_name.log"
+            cargo test -p phase-engine "$REFERENCE_TEST" -- --exact --nocapture 2>&1 \
+              | tee "$RUNNER_TEMP/base-reference-run-$reference_log_name.log"
+          done <<< "$REFERENCE_TESTS"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: stage1-runtime-red-log
+          path: |
+            ${{ runner.temp }}/runtime-red.log
+            ${{ runner.temp }}/red-test-list.log
+            ${{ runner.temp }}/runtime-u1-red.log
+            ${{ runner.temp }}/u1-red-test-list.log
+            ${{ runner.temp }}/base-reference-*.log
+          if-no-files-found: error
+          retention-days: 14
+
+  stage1-completion:
+    name: stage1-completion
+    needs: [stage1-candidate, stage1-base]
+    if: github.repository == 'keloide/phase'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: stage1-completion
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20, existing CURRENT CI action pin
+        with:
+          tool: cargo-nextest
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pinned-inputs
+          path: restored-inputs
+          repository: keloide/phase
+          run-id: ${{ env.INPUT_RUN_ID }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage1-candidate-outputs
+          path: stage1-candidate-outputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: env.MODE == 'final'
+        with:
+          name: stage1-base-outputs-and-parse-diff
+          path: stage1-base-outputs
+      - name: Immutable candidate runtime discriminator (generation run is preparatory)
+        working-directory: stage1-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          tar -xzf "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz"
+          test ! -e .env
+          test -z "${PHASE_FORGE_PATH:-}"
+          test ! -e data/forge-cardsfolder
+          chmod -R a-w data/mtgjson
+          cp "$GITHUB_WORKSPACE/stage1-candidate-outputs/card-data.json" client/public/card-data.json
+          cp "$GITHUB_WORKSPACE/stage1-candidate-outputs/"{card-data.json,coverage-data.json,semantic-audit.json,semantic-audit.md} data/
+          if [ "$MODE" = generate ]; then
+            cp "$GITHUB_WORKSPACE/stage1-candidate-outputs/integration_cards.json.gz" crates/engine/tests/fixtures/
+            echo 'PREPARATORY ONLY: generated fixture is not yet committed at this candidate SHA.'
+          else
+            test -z "$(git status --porcelain --untracked-files=no)"
+            python3 scripts/gen-test-fixture.py --check
+          fi
+          mkdir -p "$GITHUB_WORKSPACE/stage1-outputs/completion"
+          test "$TEST_FEATURES" = phase-engine/test-support,phase-engine/cli,phase-engine/proptest
+          python3 - <<'PYFEATURES'
+          from pathlib import Path
+          import re, tomllib
+          manifest = tomllib.loads(Path('crates/engine/Cargo.toml').read_text())
+          assert manifest['package']['name'] == 'phase-engine'
+          for name, expected in [('cli', ['tracing-subscriber']), ('proptest', ['dep:proptest']), ('test-support', [])]:
+              assert manifest['features'][name] == expected, (name, manifest['features'][name])
+          print('Actual required feature definitions:', {n: manifest['features'][n] for n in ['test-support', 'cli', 'proptest']})
+          hits = []
+          for path in sorted(Path('crates').rglob('*.rs')):
+              source = path.read_text()
+              # Match across Rust attribute line breaks; any extra CLI/proptest occurrence refuses a presumed additive run.
+              for match in re.finditer(r'feature\s*=\s*"(?:cli|proptest)"', source):
+                  before, after = source[:match.start()], source[match.end():]
+                  hits.append((str(path), before.count('\n') + 1, before[-50:] + match.group() + after[:50]))
+          assert len(hits) == 1, ('Unaudited feature/cfg drift; root must inspect actual source. Non-additivity requires eleven cold configurations and blocks this ten-configuration protocol', hits)
+          path, line, excerpt = hits[0]
+          assert path == 'crates/engine/tests/integration/main.rs'
+          source = Path(path).read_text()
+          assert re.search(r'#\s*\[\s*cfg\s*\(\s*feature\s*=\s*"proptest"\s*\)\s*\]\s*mod\s+engine_invariants\s*;', source)
+          assert re.search(r'cases\s*:\s*16\s*,', Path('crates/engine/tests/integration/engine_invariants.rs').read_text())
+          print('Actual source has only the positive proptest registration:', path, line, excerpt)
+          PYFEATURES
+          cargo nextest list -p phase-engine -p phase-ai -p probe-pin \
+            --features "$TEST_FEATURES" -E "$FOCUSED_FILTER" --message-format json \
+            > "$GITHUB_WORKSPACE/stage1-outputs/completion/focused-nextest-list.json" \
+            2> "$GITHUB_WORKSPACE/stage1-outputs/completion/focused-nextest-list.stderr.log"
+          python3 - "$GITHUB_WORKSPACE/stage1-outputs/completion/focused-nextest-list.json" <<'PYLIST'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          selected = []
+          for suite in data['rust-suites'].values():
+              for name, case in suite['test-cases'].items():
+                  if case['filter-match']['status'] == 'matches':
+                      selected.append((suite['package-name'], suite['binary-name'], name))
+          assert selected, 'No focused tests selected'
+          for package in ['phase-engine', 'phase-ai', 'probe-pin']:
+              count = sum(p == package for p, b, n in selected)
+              assert count > 0, package
+              print('Collected selected tests:', package, count)
+          for owner in ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::']:
+              count = sum(p == 'phase-engine' and n.startswith(owner) for p, b, n in selected)
+              assert count > 0, owner
+              print('Collected owner:', owner, count)
+          for binary in ['resolution-face-census', 'oracle-gen']:
+              assert any(p == 'phase-engine' and b == binary for p, b, n in selected), binary
+          required = [
+              ('phase-engine', 'integration', 'essence_burn::essence_burn_face_down_keeps_die_exile'),
+              ('phase-engine', 'integration', 'engine_invariants::legal_action_driven_sequences_preserve_engine_invariants'),
+              ('phase-engine', 'integration', 'engine_invariants::generated_priority_actions_remain_reducer_legal_in_default_opening_state'),
+              ('phase-ai', 'gate_cli', 'every_binary_an_integration_test_spawns_is_shipped_to_the_test_shards'),
+              ('phase-ai', 'gate_cli', 'every_workflow_gate_invocation_spells_the_baseline_workload'),
+              ('probe-pin', 'pure_logic', 'every_write_of_the_pinned_file_routes_through_splice'),
+          ]
+          for item in required:
+              assert selected.count(item) == 1, item
+              print('Required selected test:', *item)
+          assert any(p == 'phase-ai' and n.startswith('policies::x_reference::') for p, b, n in selected)
+          assert any(p == 'phase-engine' and 'census' in n for p, b, n in selected)
+          print('Total focused selected test count:', len(selected))
+          PYLIST
+          cargo nextest run -p phase-engine -p phase-ai -p probe-pin \
+            --features "$TEST_FEATURES" -E "$FOCUSED_FILTER" 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/focused-nextest-run.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" "$RUNTIME_TEST" -- --exact --list \
+            | tee "$RUNNER_TEMP/green-test-list.log" "$GITHUB_WORKSPACE/stage1-outputs/completion/green-test-list.log"
+          grep -Fx "$RUNTIME_TEST: test" "$RUNNER_TEMP/green-test-list.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" "$RUNTIME_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/runtime-green.log"
+      - name: Generate only the named IR snapshot pair with the standard test runner
+        if: env.MODE == 'generate'
+        working-directory: stage1-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          # The runtime step overlaid only the required generated fixture.
+          { git diff --name-only; git ls-files --others --exclude-standard; } \
+            | while IFS= read -r path; do
+                test "$path" = crates/engine/tests/fixtures/integration_cards.json.gz
+              done
+          cargo test -p phase-engine --features "$TEST_FEATURES" "$SNAPSHOT_TEST" -- --exact --list \
+            | tee "$RUNNER_TEMP/snapshot-test-list.log" "$GITHUB_WORKSPACE/stage1-outputs/completion/snapshot-test-list.log"
+          grep -Fx "$SNAPSHOT_TEST: test" "$RUNNER_TEMP/snapshot-test-list.log"
+          INSTA_UPDATE=always cargo test -p phase-engine --features "$TEST_FEATURES" "$SNAPSHOT_TEST" -- --exact
+          mapfile -t snapshot_paths <<< "$SNAPSHOT_PATHS"
+          for path in "${snapshot_paths[@]}"; do test -s "$path"; done
+          # Reject every unrelated generated/updated snapshot or source edit.
+          { git diff --name-only; git ls-files --others --exclude-standard; } \
+            | while IFS= read -r path; do
+                [[ "$path" == crates/engine/tests/fixtures/integration_cards.json.gz || "$path" == "${snapshot_paths[0]}" || "$path" == "${snapshot_paths[1]}" ]]
+              done
+          git diff --cached --quiet
+          mkdir -p "$GITHUB_WORKSPACE/stage1-outputs/canonical"
+          cp --parents -- crates/engine/tests/fixtures/integration_cards.json.gz \
+            "${snapshot_paths[@]}" "$GITHUB_WORKSPACE/stage1-outputs/canonical/"
+          echo 'PREPARATORY ONLY: canonical fixture and named IR snapshot pair must be committed before final verification.'
+      - name: Upload canonical generated fixture and named IR snapshot pair
+        if: always() && env.MODE == 'generate'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stage1-canonical-artifacts
+          path: stage1-outputs/canonical/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Run all committed Essence Burn runtime companions at the exact candidate
+        working-directory: stage1-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          cargo test -p phase-engine --features "$TEST_FEATURES" essence_burn:: -- --list 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/essence-module-test-list.log"
+          grep -E '^essence_burn::[^ ]+: test$' "$GITHUB_WORKSPACE/stage1-outputs/completion/essence-module-test-list.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" essence_burn:: -- --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/essence-module-tests.log"
+          grep -E 'test result: ok\. [1-9][0-9]* passed;' "$GITHUB_WORKSPACE/stage1-outputs/completion/essence-module-tests.log"
+      - name: Discover and run exact candidate reference controls
+        working-directory: stage1-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          while IFS= read -r REFERENCE_TEST; do
+            reference_log_name=${REFERENCE_TEST//:/_}
+            cargo test -p phase-engine --features "$TEST_FEATURES" "$REFERENCE_TEST" -- --exact --list 2>&1 \
+              | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/candidate-reference-list-$reference_log_name.log"
+            grep -Fx "$REFERENCE_TEST: test" "$GITHUB_WORKSPACE/stage1-outputs/completion/candidate-reference-list-$reference_log_name.log"
+            cargo test -p phase-engine --features "$TEST_FEATURES" "$REFERENCE_TEST" -- --exact --nocapture 2>&1 \
+              | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/candidate-reference-run-$reference_log_name.log"
+          done <<< "$REFERENCE_TESTS"
+      - name: Verify the exact committed named IR snapshot pair
+        if: env.MODE == 'final'
+        working-directory: stage1-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-completion-target
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          cargo test -p phase-engine --features "$TEST_FEATURES" "$SNAPSHOT_TEST" -- --exact --list 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/committed-snapshot-list.log"
+          test "$(grep -Fxc "$SNAPSHOT_TEST: test" "$GITHUB_WORKSPACE/stage1-outputs/completion/committed-snapshot-list.log")" -eq 1
+          cargo test -p phase-engine --features "$TEST_FEATURES" "$SNAPSHOT_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/committed-snapshot-run.log"
+          git diff --exit-code -- crates/engine/src/parser/oracle_ir/snapshots/
+      - name: U3 production-only red then exact restored green on the owning normal target
+        if: env.MODE == 'final'
+        working-directory: stage1-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-completion-target
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          ! grep -F 'REPLACE_' <<< "$U3_PRODUCTION_PATCH"
+          mapfile -t production_paths <<< "$U3_PRODUCTION_PATHS"
+          test "${#production_paths[@]}" -eq 4
+          printf '%s\n' "$U3_PRODUCTION_PATCH" > "$RUNNER_TEMP/u3-production.patch"
+          test "$BASE_SHA" = "$PHASE_BASE_SHA"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --list 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-exact-test-list.log"
+          test "$(grep -Fxc "$U3_RUNTIME_TEST: test" "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-exact-test-list.log")" -eq 1
+          git apply --reverse --check "$RUNNER_TEMP/u3-production.patch"
+          # Restore even if discovery or compilation fails after applying the intentional control.
+          trap 'git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"' EXIT
+          git apply --reverse "$RUNNER_TEMP/u3-production.patch"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --cached --quiet
+          while IFS= read -r -d '' path; do
+            grep -Fx -- "$path" <<< "$U3_PRODUCTION_PATHS" > /dev/null
+          done < <(git diff --name-only -z)
+          git diff --quiet HEAD -- crates/engine/tests/ crates/engine/src/parser/ \
+            crates/engine/src/game/game_object.rs crates/engine/src/game/turns.rs
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --list 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-red-test-list.log"
+          test "$(grep -Fxc "$U3_RUNTIME_TEST: test" "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-red-test-list.log")" -eq 1
+          set +e
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-production-red.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          git diff --exit-code "$CANDIDATE_SHA" -- crates/engine/tests/ crates/engine/src/parser/ "${production_paths[@]}"
+          trap - EXIT
+          test "${statuses[0]}" -ne 0
+          test "${statuses[1]}" -eq 0
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-production-red.log"
+          grep -E 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-production-red.log"
+          grep -Fx "test $U3_RUNTIME_TEST ... FAILED" "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-production-red.log"
+          grep -F "$U3_RED_ASSERTION_TEXT" "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-production-red.log"
+          # The exact custom assertion follows real Essence/Cyber/SBA reach guards in unchanged candidate test bytes.
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-restored-green.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-restored-green.log"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+      - name: Full Step 5 at the artifact-inclusive committed candidate
+        if: env.MODE == 'final'
+        working-directory: stage1-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-completion-target
+          MTGJSON_SKIP_REFRESH: '1'
+          PHASE_REFRESH_MTGJSON: '0'
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace --features "$TEST_FEATURES"
+          ./scripts/check-interaction-bindings.sh --check
+          ./scripts/check-parser-combinators.sh "$BASE_SHA"
+          ./scripts/check-prelowered-ratchet.sh
+          ./scripts/check-skill-doc.sh
+          ./scripts/check-engine-authorities.sh "$BASE_SHA"
+          # Tool generation/export/validation/coverage/semantic ran in the exact candidate projection.
+          # Its job and the independently built BASE comparator must both have succeeded.
+          test "${{ needs.stage1-candidate.result }}" = success
+          test "${{ needs.stage1-base.result }}" = success
+          ./scripts/coverage-regression-check.sh "$GITHUB_WORKSPACE/stage1-base-outputs/coverage-data.json" \
+            data/coverage-data.json --fail-on-engine | tee "$RUNNER_TEMP/completion-coverage-regression.log"
+          grep -F "REGRESSED (coverage honesty) — 0 cards" "$RUNNER_TEMP/completion-coverage-regression.log"
+          mkdir -p "$GITHUB_WORKSPACE/stage1-outputs/completion"
+          cp "$RUNNER_TEMP/completion-coverage-regression.log" "$GITHUB_WORKSPACE/stage1-outputs/completion/coverage-regression.log"
+          # Retain the actual BASE-built comparator output rather than build a second comparator here.
+          cp "$GITHUB_WORKSPACE/stage1-base-outputs/parse-diff.md" "$GITHUB_WORKSPACE/stage1-outputs/completion/parse-diff.md"
+          cp "$GITHUB_WORKSPACE/stage1-base-outputs/parse-diff.json" "$GITHUB_WORKSPACE/stage1-outputs/completion/parse-diff.json"
+          jq -n --slurpfile base "$GITHUB_WORKSPACE/stage1-base-outputs/semantic-audit.json" \
+            --slurpfile head data/semantic-audit.json '
+            def findings: [.flagged_cards[]? | .card_name as $name | .findings[]? | {card_name:$name,finding:.}];
+            ($base[0] | findings) as $b | ($head[0] | findings) - $b
+          ' > "$GITHUB_WORKSPACE/stage1-outputs/completion/new-semantic-findings.json"
+          jq -e 'length == 0' "$GITHUB_WORKSPACE/stage1-outputs/completion/new-semantic-findings.json"
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/stage1-outputs/completion/"
+          cp data/card-data.json client/public/card-data.json
+          python3 scripts/gen-test-fixture.py --check
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          echo "Full composite Step 5 passed on restored source $CANDIDATE_SHA; comparison BASE $BASE_SHA; complete pin $INPUT_RUN_ID (workflow SHA $GITHUB_SHA)."
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: stage1-completion-outputs
+          path: stage1-outputs/completion/
+          if-no-files-found: error
+          retention-days: 14
+
+  stage1-transport:
+    name: stage1-transport
+    needs: [stage1-candidate, stage1-base, stage1-runtime-red, stage1-completion]
+    if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
+    env:
+      RESULT_BRANCH: engine-proof/fra-stingerquill-9-results-stage1
+      ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage1-outputs.tar.gz
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          # Used only for the exact result-branch push to this fork.
+          persist-credentials: true
+      - name: Verify exact fork checkout and available current proof outputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          [[ "$RESULT_BRANCH" == engine-proof/* && "$RESULT_BRANCH" != "$GITHUB_REF_NAME" ]]
+          test "$RESULT_BRANCH" != "$FROZEN_BASE_BRANCH"
+          test "$RESULT_BRANCH" != "$MERGED_SOURCE_BRANCH"
+          test "$RESULT_BRANCH" != "$FINAL_HEAD_BRANCH"
+          git check-ref-format "refs/heads/$RESULT_BRANCH"
+          test "$ARCHIVE_PATH" = engine-proof-results/fra-stingerquill-stage1-outputs.tar.gz
+          test "$(gh api "repos/keloide/phase/actions/runs/$GITHUB_RUN_ID" --jq '.head_sha')" = "$GITHUB_SHA"
+          normal_artifacts=$(gh api --paginate "repos/keloide/phase/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired == false) | select(.name == "stage1-candidate-outputs" or .name == "stage1-base-outputs-and-parse-diff" or .name == "stage1-completion-outputs" or .name == "stage1-runtime-red-log" or .name == "stage1-canonical-artifacts") | .name')
+          if [ -z "$normal_artifacts" ]; then
+            echo 'Missing normal proof output artifacts; transport cannot return proof outputs.' >&2
+            exit 1
+          fi
+      - name: Download available normal current-run outputs including canonical when present
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          github-token: ${{ github.token }}
+          repository: keloide/phase
+          run-id: ${{ github.run_id }}
+          pattern: '{stage1-candidate-outputs,stage1-base-outputs-and-parse-diff,stage1-completion-outputs,stage1-runtime-red-log,stage1-canonical-artifacts}'
+          merge-multiple: false
+          path: ${{ runner.temp }}/fra-stingerquill-stage1-outputs
+      - name: Retain raw logs of completed prior proof jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fra-stingerquill-stage1-outputs/raw-job-logs"
+          # The dependency jobs have settled; exclude this job and skipped jobs.
+          gh api --paginate "repos/keloide/phase/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | select(.status == "completed" and .conclusion != "skipped") | select(.name == "stage1-candidate" or .name == "stage1-base" or .name == "stage1-runtime-red" or .name == "stage1-completion") | [.id, .name] | @tsv' \
+            | while IFS=$'\t' read -r job_id job_name; do
+                gh api --allow-escape-sequences "repos/keloide/phase/actions/jobs/$job_id/logs" \
+                  > "$RUNNER_TEMP/fra-stingerquill-stage1-outputs/raw-job-logs/$job_name-$job_id.log"
+                test -s "$RUNNER_TEMP/fra-stingerquill-stage1-outputs/raw-job-logs/$job_name-$job_id.log"
+              done
+          compgen -G "$RUNNER_TEMP/fra-stingerquill-stage1-outputs/raw-job-logs/*.log" > /dev/null
+      - name: Archive complete outputs and split unchanged archive into at most two parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e "$RUNNER_TEMP/fra-stingerquill-stage1-outputs/pinned-inputs"
+          # No individual artifact is required: failed product jobs may omit canonical files.
+          tar -czf "$RUNNER_TEMP/fra-stingerquill-stage1-outputs.tar.gz" \
+            -C "$RUNNER_TEMP/fra-stingerquill-stage1-outputs" .
+          split --bytes=90000000 --numeric-suffixes=0 --suffix-length=2 \
+            "$RUNNER_TEMP/fra-stingerquill-stage1-outputs.tar.gz" \
+            "$RUNNER_TEMP/fra-stingerquill-stage1-outputs.tar.gz.part-"
+          shopt -s nullglob
+          parts=("$RUNNER_TEMP"/fra-stingerquill-stage1-outputs.tar.gz.part-*)
+          test "${#parts[@]}" -ge 1
+          test "${#parts[@]}" -le 2
+          test "${parts[0]}" = "$RUNNER_TEMP/fra-stingerquill-stage1-outputs.tar.gz.part-00"
+          if [ "${#parts[@]}" -eq 2 ]; then
+            test "${parts[1]}" = "$RUNNER_TEMP/fra-stingerquill-stage1-outputs.tar.gz.part-01"
+          fi
+          for part in "${parts[@]}"; do
+            test -s "$part"
+            test "$(stat -c '%s' "$part")" -le 90000000
+            test "$(stat -c '%s' "$part")" -lt 100000000
+          done
+      - name: Publish only archive parts on the exact attached fork result branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          [[ "$RESULT_BRANCH" == engine-proof/* && "$RESULT_BRANCH" != "$GITHUB_REF_NAME" ]]
+          test "$RESULT_BRANCH" != "$FROZEN_BASE_BRANCH"
+          test "$RESULT_BRANCH" != "$MERGED_SOURCE_BRANCH"
+          test "$RESULT_BRANCH" != "$FINAL_HEAD_BRANCH"
+          test "$ARCHIVE_PATH" = engine-proof-results/fra-stingerquill-stage1-outputs.tar.gz
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          test -z "$(git ls-remote origin "refs/heads/$RESULT_BRANCH")"
+          git switch --create "$RESULT_BRANCH" "$GITHUB_SHA"
+          test "$(git symbolic-ref --short HEAD)" = "$RESULT_BRANCH"
+          mkdir -p engine-proof-results
+          part_paths=("$ARCHIVE_PATH.part-00")
+          if [ -f "$RUNNER_TEMP/fra-stingerquill-stage1-outputs.tar.gz.part-01" ]; then
+            part_paths+=("$ARCHIVE_PATH.part-01")
+          fi
+          for path in "${part_paths[@]}"; do
+            cp "$RUNNER_TEMP/${path##*/}" "$path"
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --cached --quiet
+          git add -- "${part_paths[@]}"
+          git commit --only -m 'Transport Essence Burn proof outputs and raw job logs' -- "${part_paths[@]}"
+          test "$(git diff --name-only "$GITHUB_SHA" HEAD)" = "$(printf '%s\n' "${part_paths[@]}")"
+          test "$(git symbolic-ref --short HEAD)" = "$RESULT_BRANCH"
+          git push origin "HEAD:refs/heads/$RESULT_BRANCH"
+  wait-merged:
+    name: wait-merged-publication-only
+    needs: [stage1-candidate, stage1-base, stage1-completion, stage1-transport]
+    if: always() && github.repository == 'keloide/phase' && github.event_name == 'push' && needs.stage1-candidate.result == 'success' && needs.stage1-base.result == 'success' && needs.stage1-completion.result == 'success' && needs.stage1-transport.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    outputs:
+      frozen_base_sha: ${{ steps.publication.outputs.frozen_base_sha }}
+      merged_source_sha: ${{ steps.publication.outputs.merged_source_sha }}
+      accepted_candidate_sha: ${{ needs.stage1-candidate.outputs.candidate_sha }}
+    steps:
+      - name: Wait once for the two fixed fork refs after genuine root acceptance
+        id: publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          test "$FROZEN_BASE_BRANCH" != "$MERGED_SOURCE_BRANCH"
+          [[ "$FROZEN_BASE_BRANCH" == engine-proof/* && "$MERGED_SOURCE_BRANCH" == engine-proof/* ]]
+          # No checkout, product build/test/generation, upstream poll, or command queue.
+          # Root must terminate all source workers/checks, accept, once-fetch and merge first.
+          deadline=$((SECONDS + 13800))
+          base_sha=''
+          merged_sha=''
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            for role in base merged; do
+              if [ "$role" = base ]; then ref=$FROZEN_BASE_BRANCH; observed=$base_sha; else ref=$MERGED_SOURCE_BRANCH; observed=$merged_sha; fi
+              if response=$(gh api "repos/keloide/phase/git/ref/heads/$ref" 2> "$RUNNER_TEMP/ref-error"); then
+                test "$(jq -r '.object.type' <<< "$response")" = commit
+                resolved=$(jq -r '.object.sha' <<< "$response")
+                [[ "$resolved" =~ ^[0-9a-f]{40}$ ]]
+                if [ -n "$observed" ]; then test "$resolved" = "$observed"; fi
+                # Once resolved, this SHA is never replaced by a moving ref.
+                if [ "$role" = base ]; then base_sha=$resolved; else
+                  test -n "$base_sha"
+                  merged_sha=$resolved
+                fi
+              else
+                grep -q 'HTTP 404' "$RUNNER_TEMP/ref-error"
+                test -z "$observed"
+              fi
+            done
+            if [ -n "$base_sha" ] && [ -n "$merged_sha" ]; then
+              test "$(gh api "repos/keloide/phase/git/commits/$base_sha" --jq '.sha')" = "$base_sha"
+              test "$(gh api "repos/keloide/phase/git/commits/$merged_sha" --jq '.sha')" = "$merged_sha"
+              test "$(gh api "repos/keloide/phase/git/ref/heads/$FROZEN_BASE_BRANCH" --jq '.object.sha')" = "$base_sha"
+              test "$(gh api "repos/keloide/phase/git/ref/heads/$MERGED_SOURCE_BRANCH" --jq '.object.sha')" = "$merged_sha"
+              echo "frozen_base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+              echo "merged_source_sha=$merged_sha" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo 'Fixed merged publication deadline expired; no retry.' >&2
+          exit 1
+
+  stage2-generation:
+    name: stage2-generation
+    needs: wait-merged
+    if: github.repository == 'keloide/phase' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      FROZEN_BASE_SHA: ${{ needs.wait-merged.outputs.frozen_base_sha }}
+      MERGED_SOURCE_SHA: ${{ needs.wait-merged.outputs.merged_source_sha }}
+      ACCEPTED_CANDIDATE_SHA: ${{ needs.wait-merged.outputs.accepted_candidate_sha }}
+      MTGJSON_SKIP_REFRESH: '1'
+      PHASE_REFRESH_MTGJSON: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ needs.wait-merged.outputs.merged_source_sha }}
+          path: stage2-generation
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate immutable merged source and frozen comparison base
+        working-directory: stage2-generation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/stage2-generation-target" >> "$GITHUB_ENV"
+          [[ "$FROZEN_BASE_SHA" =~ ^[0-9a-f]{40}$ && "$MERGED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$ACCEPTED_CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$INPUT_RUN_ID" = 37483983597
+          test "$GATED_SETS_AS_OF" = 2026-10-05
+          test "$(git rev-parse HEAD)" = "$MERGED_SOURCE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          test ! -e .env
+          git merge-base --is-ancestor "$ACCEPTED_CANDIDATE_SHA" "$MERGED_SOURCE_SHA"
+          git merge-base --is-ancestor "$FROZEN_BASE_SHA" "$MERGED_SOURCE_SHA"
+          while IFS= read -r -d '' path; do
+            grep -Fx -- "$path" <<< "$SCOPE_PATHS" > /dev/null
+          done < <(git diff --no-renames --name-only -z "$FROZEN_BASE_SHA" "$MERGED_SOURCE_SHA")
+          test "$(gh api "repos/keloide/phase/git/ref/heads/$FROZEN_BASE_BRANCH" --jq '.object.sha')" = "$FROZEN_BASE_SHA"
+          test "$(gh api "repos/keloide/phase/git/ref/heads/$MERGED_SOURCE_BRANCH" --jq '.object.sha')" = "$MERGED_SOURCE_SHA"
+          ./scripts/engine-source-hash.sh "$MERGED_SOURCE_SHA"
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pinned-inputs
+          path: restored-inputs
+          repository: keloide/phase
+          run-id: ${{ env.INPUT_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Generate full merged export and canonical fixture using supported commands
+        working-directory: stage2-generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MERGED_SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+          tar -xzf "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz"
+          test -s data/mtgjson/AtomicCards.json
+          test -s data/mtgjson/Meta.json
+          test -s data/mtgjson/CardTypes.json
+          test -s data/mtgjson/SetList.json
+          test -d data/mtgjson/sets
+          test -d data/mtgjson/decks
+          test ! -e .env
+          test -z "${PHASE_FORGE_PATH:-}"
+          test ! -e data/forge-cardsfolder
+          chmod -R a-w data/mtgjson
+          test -z "$(git status --porcelain --untracked-files=no)"
+          ./scripts/gen-card-data.sh
+          git restore --source="$MERGED_SOURCE_SHA" -- \
+            crates/engine/data/known-tokens.toml crates/engine/data/oracle-subtypes.json \
+            crates/engine/data/mtgjson-vintage
+          test -z "$(git status --porcelain --untracked-files=no)"
+          # Rebuild against restored exact parser inputs; no catalog side effect is canonical.
+          cargo build --profile tool --features cli --bin tokens-gen --bin oracle-gen \
+            --bin coverage-report --bin card-data-validate --bin coverage-parse-diff
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats --output data/card-data.json
+          "$CARGO_TARGET_DIR/tool/card-data-validate" data/card-data.json
+          "$CARGO_TARGET_DIR/tool/coverage-report" data/ --all --brief > data/coverage-data.json
+          "$CARGO_TARGET_DIR/tool/oracle-gen" semantic-audit data/
+          cp data/card-data.json client/public/card-data.json
+          test -z "$(git status --porcelain --untracked-files=no)"
+          python3 scripts/gen-test-fixture.py
+          python3 scripts/gen-test-fixture.py --check
+          mkdir -p "$GITHUB_WORKSPACE/stage2-outputs/generation" "$GITHUB_WORKSPACE/stage2-outputs/canonical"
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/stage2-outputs/generation/"
+          cp --parents -- crates/engine/tests/fixtures/integration_cards.json.gz "$GITHUB_WORKSPACE/stage2-outputs/canonical/"
+          git diff --name-only | while IFS= read -r path; do
+            test "$path" = crates/engine/tests/fixtures/integration_cards.json.gz
+          done
+          git diff --cached --quiet
+          echo 'PREPARATORY ONLY: merged full export and generated fixture are not final-head verification.'
+      - name: Generate exactly the standard Essence IR and lowered snapshot pair
+        working-directory: stage2-generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MERGED_SOURCE_SHA"
+          # The supported fixture generator changed only its canonical fixture.
+          { git diff --name-only; git ls-files --others --exclude-standard; } \
+            | while IFS= read -r path; do
+                test "$path" = crates/engine/tests/fixtures/integration_cards.json.gz
+              done
+          cargo test -p phase-engine "$SNAPSHOT_TEST" -- --exact --list \
+            | tee "$RUNNER_TEMP/snapshot-test-list.log" "$GITHUB_WORKSPACE/stage2-outputs/generation/snapshot-test-list.log"
+          grep -Fx "$SNAPSHOT_TEST: test" "$RUNNER_TEMP/snapshot-test-list.log"
+          INSTA_UPDATE=always cargo test -p phase-engine "$SNAPSHOT_TEST" -- --exact
+          mapfile -t snapshot_paths <<< "$SNAPSHOT_PATHS"
+          for path in "${snapshot_paths[@]}"; do test -s "$path"; done
+          # Reject every unrelated generated/updated snapshot or source edit.
+          { git diff --name-only; git ls-files --others --exclude-standard; } \
+            | while IFS= read -r path; do
+                [[ "$path" == crates/engine/tests/fixtures/integration_cards.json.gz || "$path" == "${snapshot_paths[0]}" || "$path" == "${snapshot_paths[1]}" ]]
+              done
+          git diff --cached --quiet
+          mkdir -p "$GITHUB_WORKSPACE/stage2-outputs/canonical"
+          cp --parents -- crates/engine/tests/fixtures/integration_cards.json.gz \
+            "${snapshot_paths[@]}" "$GITHUB_WORKSPACE/stage2-outputs/canonical/"
+          echo 'PREPARATORY ONLY: canonical fixture and named IR snapshot pair must be committed before final verification.'
+      - name: Retain complete merged generation normal outputs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stage2-generation-outputs
+          path: stage2-outputs/generation/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain only the supported generated canonical fixture and named snapshot pair
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stage2-canonical-artifacts
+          path: stage2-outputs/canonical/
+          if-no-files-found: error
+          retention-days: 14
+
+  stage2-transport:
+    name: stage2-transport
+    needs: [stage2-generation]
+    if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
+    env:
+      RESULT_BRANCH: engine-proof/fra-stingerquill-9-results-stage2
+      ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage2-outputs.tar.gz
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          # Used only for the exact result-branch push to this fork.
+          persist-credentials: true
+      - name: Verify exact fork checkout and available current proof outputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          [[ "$RESULT_BRANCH" == engine-proof/* && "$RESULT_BRANCH" != "$GITHUB_REF_NAME" ]]
+          test "$RESULT_BRANCH" != "$FROZEN_BASE_BRANCH"
+          test "$RESULT_BRANCH" != "$MERGED_SOURCE_BRANCH"
+          test "$RESULT_BRANCH" != "$FINAL_HEAD_BRANCH"
+          git check-ref-format "refs/heads/$RESULT_BRANCH"
+          test "$ARCHIVE_PATH" = engine-proof-results/fra-stingerquill-stage2-outputs.tar.gz
+          test "$(gh api "repos/keloide/phase/actions/runs/$GITHUB_RUN_ID" --jq '.head_sha')" = "$GITHUB_SHA"
+          normal_artifacts=$(gh api --paginate "repos/keloide/phase/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired == false) | select(.name == "stage2-generation-outputs" or .name == "stage2-canonical-artifacts") | .name')
+          if [ -z "$normal_artifacts" ]; then
+            echo 'Missing normal proof output artifacts; transport cannot return proof outputs.' >&2
+            exit 1
+          fi
+      - name: Download available normal current-run outputs including canonical when present
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          github-token: ${{ github.token }}
+          repository: keloide/phase
+          run-id: ${{ github.run_id }}
+          pattern: '{stage2-generation-outputs,stage2-canonical-artifacts}'
+          merge-multiple: false
+          path: ${{ runner.temp }}/fra-stingerquill-stage2-outputs
+      - name: Retain raw logs of completed prior proof jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fra-stingerquill-stage2-outputs/raw-job-logs"
+          # The dependency jobs have settled; exclude this job and skipped jobs.
+          gh api --paginate "repos/keloide/phase/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | select(.status == "completed" and .conclusion != "skipped") | select(.name == "stage2-generation") | [.id, .name] | @tsv' \
+            | while IFS=$'\t' read -r job_id job_name; do
+                gh api --allow-escape-sequences "repos/keloide/phase/actions/jobs/$job_id/logs" \
+                  > "$RUNNER_TEMP/fra-stingerquill-stage2-outputs/raw-job-logs/$job_name-$job_id.log"
+                test -s "$RUNNER_TEMP/fra-stingerquill-stage2-outputs/raw-job-logs/$job_name-$job_id.log"
+              done
+          compgen -G "$RUNNER_TEMP/fra-stingerquill-stage2-outputs/raw-job-logs/*.log" > /dev/null
+      - name: Archive complete outputs and split unchanged archive into at most two parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e "$RUNNER_TEMP/fra-stingerquill-stage2-outputs/pinned-inputs"
+          # No individual artifact is required: failed product jobs may omit canonical files.
+          tar -czf "$RUNNER_TEMP/fra-stingerquill-stage2-outputs.tar.gz" \
+            -C "$RUNNER_TEMP/fra-stingerquill-stage2-outputs" .
+          split --bytes=90000000 --numeric-suffixes=0 --suffix-length=2 \
+            "$RUNNER_TEMP/fra-stingerquill-stage2-outputs.tar.gz" \
+            "$RUNNER_TEMP/fra-stingerquill-stage2-outputs.tar.gz.part-"
+          shopt -s nullglob
+          parts=("$RUNNER_TEMP"/fra-stingerquill-stage2-outputs.tar.gz.part-*)
+          test "${#parts[@]}" -ge 1
+          test "${#parts[@]}" -le 2
+          test "${parts[0]}" = "$RUNNER_TEMP/fra-stingerquill-stage2-outputs.tar.gz.part-00"
+          if [ "${#parts[@]}" -eq 2 ]; then
+            test "${parts[1]}" = "$RUNNER_TEMP/fra-stingerquill-stage2-outputs.tar.gz.part-01"
+          fi
+          for part in "${parts[@]}"; do
+            test -s "$part"
+            test "$(stat -c '%s' "$part")" -le 90000000
+            test "$(stat -c '%s' "$part")" -lt 100000000
+          done
+      - name: Publish only archive parts on the exact attached fork result branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          [[ "$RESULT_BRANCH" == engine-proof/* && "$RESULT_BRANCH" != "$GITHUB_REF_NAME" ]]
+          test "$RESULT_BRANCH" != "$FROZEN_BASE_BRANCH"
+          test "$RESULT_BRANCH" != "$MERGED_SOURCE_BRANCH"
+          test "$RESULT_BRANCH" != "$FINAL_HEAD_BRANCH"
+          test "$ARCHIVE_PATH" = engine-proof-results/fra-stingerquill-stage2-outputs.tar.gz
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          test -z "$(git ls-remote origin "refs/heads/$RESULT_BRANCH")"
+          git switch --create "$RESULT_BRANCH" "$GITHUB_SHA"
+          test "$(git symbolic-ref --short HEAD)" = "$RESULT_BRANCH"
+          mkdir -p engine-proof-results
+          part_paths=("$ARCHIVE_PATH.part-00")
+          if [ -f "$RUNNER_TEMP/fra-stingerquill-stage2-outputs.tar.gz.part-01" ]; then
+            part_paths+=("$ARCHIVE_PATH.part-01")
+          fi
+          for path in "${part_paths[@]}"; do
+            cp "$RUNNER_TEMP/${path##*/}" "$path"
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --cached --quiet
+          git add -- "${part_paths[@]}"
+          git commit --only -m 'Transport Essence Burn proof outputs and raw job logs' -- "${part_paths[@]}"
+          test "$(git diff --name-only "$GITHUB_SHA" HEAD)" = "$(printf '%s\n' "${part_paths[@]}")"
+          test "$(git symbolic-ref --short HEAD)" = "$RESULT_BRANCH"
+          git push origin "HEAD:refs/heads/$RESULT_BRANCH"
+  wait-final:
+    name: wait-final-publication-only
+    needs: [wait-merged, stage2-generation, stage2-transport]
+    if: always() && github.repository == 'keloide/phase' && github.event_name == 'push' && needs.wait-merged.result == 'success' && needs.stage2-generation.result == 'success' && needs.stage2-transport.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    outputs:
+      frozen_base_sha: ${{ needs.wait-merged.outputs.frozen_base_sha }}
+      merged_source_sha: ${{ needs.wait-merged.outputs.merged_source_sha }}
+      accepted_candidate_sha: ${{ needs.wait-merged.outputs.accepted_candidate_sha }}
+      final_head_sha: ${{ steps.publication.outputs.final_head_sha }}
+    steps:
+      - name: Wait once for artifact-inclusive final fork HEAD after generators terminate
+        id: publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FROZEN_BASE_SHA: ${{ needs.wait-merged.outputs.frozen_base_sha }}
+          MERGED_SOURCE_SHA: ${{ needs.wait-merged.outputs.merged_source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          [[ "$FINAL_HEAD_BRANCH" == engine-proof/* ]]
+          test "$FINAL_HEAD_BRANCH" != "$FROZEN_BASE_BRANCH"
+          test "$FINAL_HEAD_BRANCH" != "$MERGED_SOURCE_BRANCH"
+          # No source checkout or product operation. Root copies only supported normal bytes
+          # and commits once after all generation/transport and source workers terminate.
+          deadline=$((SECONDS + 13800))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            test "$(gh api "repos/keloide/phase/git/ref/heads/$FROZEN_BASE_BRANCH" --jq '.object.sha')" = "$FROZEN_BASE_SHA"
+            test "$(gh api "repos/keloide/phase/git/ref/heads/$MERGED_SOURCE_BRANCH" --jq '.object.sha')" = "$MERGED_SOURCE_SHA"
+            if response=$(gh api "repos/keloide/phase/git/ref/heads/$FINAL_HEAD_BRANCH" 2> "$RUNNER_TEMP/ref-error"); then
+              test "$(jq -r '.object.type' <<< "$response")" = commit
+              final_sha=$(jq -r '.object.sha' <<< "$response")
+              [[ "$final_sha" =~ ^[0-9a-f]{40}$ ]]
+              test "$(gh api "repos/keloide/phase/git/commits/$final_sha" --jq '.sha')" = "$final_sha"
+              test "$(gh api "repos/keloide/phase/git/ref/heads/$FINAL_HEAD_BRANCH" --jq '.object.sha')" = "$final_sha"
+              echo "final_head_sha=$final_sha" >> "$GITHUB_OUTPUT"
+              exit 0
+            else
+              grep -q 'HTTP 404' "$RUNNER_TEMP/ref-error"
+            fi
+            sleep 30
+          done
+          echo 'Fixed final publication deadline expired; no retry.' >&2
+          exit 1
+
+  stage3-candidate:
+    name: stage3-candidate
+    needs: [wait-final]
+    if: github.repository == 'keloide/phase' && github.event_name == 'push'
+    env:
+      BASE_SHA: ${{ needs.wait-final.outputs.frozen_base_sha }}
+      CANDIDATE_SHA: ${{ needs.wait-final.outputs.final_head_sha }}
+      MERGED_SOURCE_SHA: ${{ needs.wait-final.outputs.merged_source_sha }}
+      ACCEPTED_CANDIDATE_SHA: ${{ needs.wait-final.outputs.accepted_candidate_sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      mode: ${{ steps.parameters.outputs.mode }}
+      candidate_sha: ${{ steps.parameters.outputs.candidate_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: stage3-candidate-projection
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable candidate and parameters
+        id: parameters
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: stage3-candidate-projection
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$MODE" == generate || "$MODE" == final ]]
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          test "$INPUT_RUN_ID" = 37483983597
+          test "$GATED_SETS_AS_OF" = 2026-10-05
+          test "$MODE" = final
+          echo "candidate_sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          mapfile -t snapshot_paths <<< "$SNAPSHOT_PATHS"
+          test "${#snapshot_paths[@]}" -eq 2
+          test "${snapshot_paths[0]}" = crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_ir.snap
+          test "${snapshot_paths[1]}" = crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_lowered.snap
+          for path in "${snapshot_paths[@]}"; do
+            [[ "$path" == crates/engine/src/parser/oracle_ir/snapshots/*.snap && "$path" != *..* ]]
+            if [ "$MODE" = final ]; then test -s "$path"; fi
+          done
+          test "$SNAPSHOT_TEST" = parser::oracle_ir::snapshot_tests::essence_burn_ir_and_lowered
+          test "$CANDIDATE_SHA" != "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          test ! -e .env
+          test -z "${PHASE_FORGE_PATH:-}"
+          python3 - <<'PYFEATURES'
+          from pathlib import Path
+          import re, tomllib
+          manifest = tomllib.loads(Path('crates/engine/Cargo.toml').read_text())
+          assert manifest['package']['name'] == 'phase-engine'
+          for name, expected in [('cli', ['tracing-subscriber']), ('proptest', ['dep:proptest']), ('test-support', [])]:
+              assert manifest['features'][name] == expected, (name, manifest['features'][name])
+          print('Actual required feature definitions:', {n: manifest['features'][n] for n in ['test-support', 'cli', 'proptest']})
+          hits = []
+          for path in sorted(Path('crates').rglob('*.rs')):
+              source = path.read_text()
+              # Match across Rust attribute line breaks; any extra CLI/proptest occurrence refuses a presumed additive run.
+              for match in re.finditer(r'feature\s*=\s*"(?:cli|proptest)"', source):
+                  before, after = source[:match.start()], source[match.end():]
+                  hits.append((str(path), before.count('\n') + 1, before[-50:] + match.group() + after[:50]))
+          assert len(hits) == 1, ('Unaudited feature/cfg drift; root must inspect actual source. Non-additivity requires eleven cold configurations and blocks this ten-configuration protocol', hits)
+          path, line, excerpt = hits[0]
+          assert path == 'crates/engine/tests/integration/main.rs'
+          source = Path(path).read_text()
+          assert re.search(r'#\s*\[\s*cfg\s*\(\s*feature\s*=\s*"proptest"\s*\)\s*\]\s*mod\s+engine_invariants\s*;', source)
+          assert re.search(r'cases\s*:\s*16\s*,', Path('crates/engine/tests/integration/engine_invariants.rs').read_text())
+          print('Actual source has only the positive proptest registration:', path, line, excerpt)
+          PYFEATURES
+          git cat-file -e "$BASE_SHA^{commit}"
+          git merge-base --is-ancestor "$BASE_SHA" "$CANDIDATE_SHA"
+          while IFS= read -r -d '' path; do
+            grep -Fx -- "$path" <<< "$SCOPE_PATHS" > /dev/null
+          done < <(git diff --no-renames --name-only -z "$BASE_SHA" "$CANDIDATE_SHA")
+          [[ "$MERGED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$ACCEPTED_CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$ACCEPTED_CANDIDATE_SHA" "$MERGED_SOURCE_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" "$MERGED_SOURCE_SHA"
+          git merge-base --is-ancestor "$MERGED_SOURCE_SHA" "$CANDIDATE_SHA"
+          if [ "$CANDIDATE_SHA" != "$MERGED_SOURCE_SHA" ]; then
+            test "$(git rev-list --count "$MERGED_SOURCE_SHA..$CANDIDATE_SHA")" -eq 1
+            test "$(git rev-list --parents -n 1 "$CANDIDATE_SHA")" = "$CANDIDATE_SHA $MERGED_SOURCE_SHA"
+          fi
+          while IFS= read -r -d '' path; do
+            grep -Fx -- "$path" <<< "$CANONICAL_PATHS" > /dev/null
+          done < <(git diff --no-renames --name-only -z "$MERGED_SOURCE_SHA" "$CANDIDATE_SHA")
+          # Recheck publication identities, but checkout/build only resolved immutable SHAs.
+          test "$(gh api "repos/keloide/phase/git/ref/heads/$FROZEN_BASE_BRANCH" --jq '.object.sha')" = "$BASE_SHA"
+          test "$(gh api "repos/keloide/phase/git/ref/heads/$MERGED_SOURCE_BRANCH" --jq '.object.sha')" = "$MERGED_SOURCE_SHA"
+          test "$(gh api "repos/keloide/phase/git/ref/heads/$FINAL_HEAD_BRANCH" --jq '.object.sha')" = "$CANDIDATE_SHA"
+          ./scripts/engine-source-hash.sh "$CANDIDATE_SHA"
+          printf '%s\n' "Candidate projection source: $CANDIDATE_SHA; base: $BASE_SHA; mode: $MODE"
+          while IFS= read -r path; do
+            [[ "$path" == crates/engine/tests/integration/*.rs && "$path" != *..* ]]
+            test -f "$path"
+          done <<< "$TEST_PATHS"
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - name: Restore pinned full inputs for subsequent run
+        if: env.INPUT_RUN_ID != '0'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pinned-inputs
+          path: restored-inputs
+          repository: keloide/phase
+          run-id: ${{ env.INPUT_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Download inputs with the supported pipeline, or unpack the original inputs
+        working-directory: stage3-candidate-projection
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-candidate-projection-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/stage3-outputs/candidate" "$GITHUB_WORKSPACE/stage3-outputs/inputs"
+          if [ "$INPUT_RUN_ID" = 0 ]; then
+            test "$MODE" = generate
+            ./scripts/gen-card-data.sh
+            # Capture the complete data root, including bracket/other tracked overrides,
+            # all MTGJSON sidecars, token sets + missing markers, and deck JSONs.
+            # Generated outputs are not inputs and must not seed the other projection.
+            tar --exclude='data/card-data.json' --exclude='data/coverage-data.json' \
+              --exclude='data/semantic-audit.*' -czf "$GITHUB_WORKSPACE/stage3-outputs/inputs/pinned-inputs.tar.gz" data
+            git restore --source="$CANDIDATE_SHA" -- \
+              crates/engine/data/known-tokens.toml crates/engine/data/oracle-subtypes.json \
+              crates/engine/data/mtgjson-vintage
+          else
+            tar -xzf "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz"
+            cp "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz" "$GITHUB_WORKSPACE/stage3-outputs/inputs/"
+          fi
+          test -s data/mtgjson/AtomicCards.json
+          test -s data/mtgjson/Meta.json
+          test -s data/mtgjson/CardTypes.json
+          test -s data/mtgjson/SetList.json
+          test -d data/mtgjson/sets
+          test -d data/mtgjson/decks
+          test ! -e .env
+          test -z "${PHASE_FORGE_PATH:-}"
+          test ! -e data/forge-cardsfolder
+          chmod -R a-w data/mtgjson
+          test -z "$(git status --porcelain --untracked-files=no)"
+      - name: Export exact committed source, coverage, semantic audit, and canonical fixture
+        working-directory: stage3-candidate-projection
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-candidate-projection-target
+          MTGJSON_SKIP_REFRESH: '1'
+          PHASE_REFRESH_MTGJSON: '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          test ! -e .env
+          test -z "${PHASE_FORGE_PATH:-}"
+          test ! -e data/forge-cardsfolder
+          ./scripts/gen-card-data.sh
+          git restore --source="$CANDIDATE_SHA" -- \
+            crates/engine/data/known-tokens.toml crates/engine/data/oracle-subtypes.json \
+            crates/engine/data/mtgjson-vintage
+          test -z "$(git status --porcelain --untracked-files=no)"
+          # Rebuild the same five bins on restored exact source; this is real warm work.
+          cargo build --profile tool --features cli --bin tokens-gen --bin oracle-gen \
+            --bin coverage-report --bin card-data-validate --bin coverage-parse-diff
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats --output data/card-data.json
+          "$CARGO_TARGET_DIR/tool/card-data-validate" data/card-data.json
+          "$CARGO_TARGET_DIR/tool/coverage-report" data/ --all --brief > data/coverage-data.json
+          "$CARGO_TARGET_DIR/tool/oracle-gen" semantic-audit data/
+          test "$(jq length data/card-data.json)" -eq 35880
+          cp data/card-data.json client/public/card-data.json
+          test -z "$(git status --porcelain --untracked-files=no)"
+          if [ "$MODE" = generate ]; then
+            python3 scripts/gen-test-fixture.py
+          else
+            python3 scripts/gen-test-fixture.py --check
+          fi
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/stage3-outputs/candidate/"
+          cp crates/engine/tests/fixtures/integration_cards.json.gz "$GITHUB_WORKSPACE/stage3-outputs/candidate/"
+          mapfile -t test_paths <<< "$TEST_PATHS"
+          tar -czf "$GITHUB_WORKSPACE/stage3-outputs/candidate/candidate-tests.tar.gz" "${test_paths[@]}"
+          # One repeat from the SAME built binary and complete pinned input root.
+          # All repeat outputs live outside data; the primary export/fixture stays intact.
+          chmod -R a-w data
+          mkdir -p "$GITHUB_WORKSPACE/stage3-outputs/candidate/repeat"
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats \
+            --output "$GITHUB_WORKSPACE/stage3-outputs/candidate/repeat/card-data.json" \
+            2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/candidate/repeat/oracle-gen.log"
+          "$CARGO_TARGET_DIR/tool/coverage-report" "$GITHUB_WORKSPACE/stage3-outputs/candidate/repeat/" \
+            --all --brief > "$GITHUB_WORKSPACE/stage3-outputs/candidate/repeat/coverage-data.json" \
+            2> "$GITHUB_WORKSPACE/stage3-outputs/candidate/repeat/coverage-report.log"
+          git diff --name-only | while IFS= read -r path; do
+            test "$path" = crates/engine/tests/fixtures/integration_cards.json.gz
+          done
+          test "$(jq length "$GITHUB_WORKSPACE/stage3-outputs/candidate/repeat/card-data.json")" -eq 35880
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          git diff --cached --quiet
+          git status --short
+          echo "Projection tool part of Step 5 passed on exact $CANDIDATE_SHA; BASE $BASE_SHA; pin $INPUT_RUN_ID."
+      - name: Upload candidate normal outputs and fixture
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stage3-candidate-outputs
+          path: stage3-outputs/candidate/
+          if-no-files-found: error
+          retention-days: 14
+
+  stage3-base:
+    name: stage3-base
+    needs: [stage3-candidate, wait-final]
+    if: github.repository == 'keloide/phase'
+    env:
+      BASE_SHA: ${{ needs.wait-final.outputs.frozen_base_sha }}
+      CANDIDATE_SHA: ${{ needs.wait-final.outputs.final_head_sha }}
+      MERGED_SOURCE_SHA: ${{ needs.wait-final.outputs.merged_source_sha }}
+      ACCEPTED_CANDIDATE_SHA: ${{ needs.wait-final.outputs.accepted_candidate_sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.BASE_SHA }}
+          path: stage3-base-projection
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pinned-inputs
+          path: restored-inputs
+          repository: keloide/phase
+          run-id: ${{ env.INPUT_RUN_ID }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage3-candidate-outputs
+          path: stage3-candidate-outputs
+      - name: Project clean BASE against the same full input root and compare
+        working-directory: stage3-base-projection
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-base-projection-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          tar -xzf "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz"
+          test ! -e .env
+          test -z "${PHASE_FORGE_PATH:-}"
+          test ! -e data/forge-cardsfolder
+          chmod -R a-w data/mtgjson
+          test -z "$(git status --porcelain --untracked-files=no)"
+          ./scripts/engine-source-hash.sh "$BASE_SHA"
+          cargo build --profile tool --features cli --bin tokens-gen --bin oracle-gen \
+            --bin coverage-report --bin card-data-validate --bin coverage-parse-diff
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats --output data/card-data.json
+          test "$(jq length data/card-data.json)" -eq 35880
+          "$CARGO_TARGET_DIR/tool/coverage-report" data/ --all --brief > data/coverage-data.json
+          "$CARGO_TARGET_DIR/tool/oracle-gen" semantic-audit data/
+          test -z "$(git status --porcelain --untracked-files=no)"
+          mkdir -p "$GITHUB_WORKSPACE/stage3-outputs/base"
+          # Retain primary raw exports even if a later product gate fails.
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/stage3-outputs/base/"
+          # One repeat from the SAME BASE binary and complete pinned input root.
+          chmod -R a-w data
+          mkdir -p "$GITHUB_WORKSPACE/stage3-outputs/base/repeat"
+          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats \
+            --output "$GITHUB_WORKSPACE/stage3-outputs/base/repeat/card-data.json" \
+            2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/base/repeat/oracle-gen.log"
+          "$CARGO_TARGET_DIR/tool/coverage-report" "$GITHUB_WORKSPACE/stage3-outputs/base/repeat/" \
+            --all --brief > "$GITHUB_WORKSPACE/stage3-outputs/base/repeat/coverage-data.json" \
+            2> "$GITHUB_WORKSPACE/stage3-outputs/base/repeat/coverage-report.log"
+          test "$(jq length "$GITHUB_WORKSPACE/stage3-outputs/base/repeat/card-data.json")" -eq 35880
+          test -z "$(git status --porcelain --untracked-files=no)"
+          # All comparisons use the existing BASE-built comparator. Self comparisons
+          # carry identical source SHAs and retain any noise without imposing a zero gate.
+          "$CARGO_TARGET_DIR/tool/coverage-parse-diff" data/coverage-data.json \
+            "$GITHUB_WORKSPACE/stage3-outputs/base/repeat/coverage-data.json" \
+            --base-sha "$BASE_SHA" --head-sha "$BASE_SHA" \
+            --markdown "$GITHUB_WORKSPACE/stage3-outputs/base/base-repeat-diff.md" \
+            --json "$GITHUB_WORKSPACE/stage3-outputs/base/base-repeat-diff.json"
+          "$CARGO_TARGET_DIR/tool/coverage-parse-diff" "$GITHUB_WORKSPACE/stage3-candidate-outputs/coverage-data.json" \
+            "$GITHUB_WORKSPACE/stage3-candidate-outputs/repeat/coverage-data.json" \
+            --base-sha "$CANDIDATE_SHA" --head-sha "$CANDIDATE_SHA" \
+            --markdown "$GITHUB_WORKSPACE/stage3-outputs/base/candidate-repeat-diff.md" \
+            --json "$GITHUB_WORKSPACE/stage3-outputs/base/candidate-repeat-diff.json"
+          "$CARGO_TARGET_DIR/tool/coverage-parse-diff" "$GITHUB_WORKSPACE/stage3-outputs/base/repeat/coverage-data.json" \
+            "$GITHUB_WORKSPACE/stage3-candidate-outputs/repeat/coverage-data.json" \
+            --base-sha "$BASE_SHA" --head-sha "$CANDIDATE_SHA" \
+            --markdown "$GITHUB_WORKSPACE/stage3-outputs/base/repeat-parse-diff.md" \
+            --json "$GITHUB_WORKSPACE/stage3-outputs/base/repeat-parse-diff.json"
+          "$CARGO_TARGET_DIR/tool/coverage-parse-diff" data/coverage-data.json \
+            "$GITHUB_WORKSPACE/stage3-candidate-outputs/coverage-data.json" \
+            --base-sha "$BASE_SHA" --head-sha "$CANDIDATE_SHA" \
+            --markdown "$GITHUB_WORKSPACE/stage3-outputs/base/parse-diff.md" \
+            --json "$GITHUB_WORKSPACE/stage3-outputs/base/parse-diff.json"
+          ./scripts/coverage-regression-check.sh data/coverage-data.json \
+            "$GITHUB_WORKSPACE/stage3-candidate-outputs/coverage-data.json" --fail-on-engine \
+            | tee "$GITHUB_WORKSPACE/stage3-outputs/base/coverage-regression.log"
+          grep -F "REGRESSED (coverage honesty) — 0 cards" "$GITHUB_WORKSPACE/stage3-outputs/base/coverage-regression.log"
+          # Retain complete comparator signatures/card lists and audits for review.
+          cat "$GITHUB_WORKSPACE/stage3-outputs/base/parse-diff.md"
+          jq '.clusters[] | {category,label,kind,key,before,after,cards}' \
+            "$GITHUB_WORKSPACE/stage3-outputs/base/parse-diff.json"
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/stage3-outputs/base/"
+          # A new finding is a (card_name, structured finding) pair absent at BASE.
+          jq -n --slurpfile base data/semantic-audit.json \
+            --slurpfile head "$GITHUB_WORKSPACE/stage3-candidate-outputs/semantic-audit.json" '
+            def findings: [.flagged_cards[]? | .card_name as $name | .findings[]? | {card_name:$name,finding:.}];
+            ($base[0] | findings) as $b | ($head[0] | findings) - $b
+          ' > "$GITHUB_WORKSPACE/stage3-outputs/base/new-semantic-findings.json"
+          jq -e 'length == 0' "$GITHUB_WORKSPACE/stage3-outputs/base/new-semantic-findings.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: stage3-base-outputs-and-parse-diff
+          path: stage3-outputs/base/
+          if-no-files-found: error
+          retention-days: 14
+
+  stage3-runtime-red:
+    name: stage3-runtime-red
+    needs: [stage3-candidate, stage3-base, wait-final]
+    if: github.repository == 'keloide/phase' && needs.stage3-candidate.outputs.mode == 'generate'
+    env:
+      BASE_SHA: ${{ needs.wait-final.outputs.frozen_base_sha }}
+      CANDIDATE_SHA: ${{ needs.wait-final.outputs.final_head_sha }}
+      MERGED_SOURCE_SHA: ${{ needs.wait-final.outputs.merged_source_sha }}
+      ACCEPTED_CANDIDATE_SHA: ${{ needs.wait-final.outputs.accepted_candidate_sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.BASE_SHA }}
+          path: stage3-base-negative
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage3-candidate-outputs
+          path: stage3-candidate-outputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage3-base-outputs-and-parse-diff
+          path: stage3-base-outputs
+      - name: Run new production-path test on clean BASE with tests only overlaid
+        working-directory: stage3-base-negative
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-base-negative-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          tar -xzf "$GITHUB_WORKSPACE/stage3-candidate-outputs/candidate-tests.tar.gz"
+          mkdir -p client/public
+          cp "$GITHUB_WORKSPACE/stage3-base-outputs/card-data.json" client/public/card-data.json
+          # BASE export is essential: a candidate parsed fixture would mask a parser regression.
+          python3 scripts/gen-test-fixture.py
+          cargo test -p phase-engine "$RUNTIME_TEST" -- --exact --list | tee "$RUNNER_TEMP/red-test-list.log"
+          grep -Fx "$RUNTIME_TEST: test" "$RUNNER_TEMP/red-test-list.log"
+          set +e
+          cargo test -p phase-engine "$RUNTIME_TEST" -- --exact --nocapture 2>&1 | tee "$RUNNER_TEMP/runtime-red.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -E 'test result: FAILED\..*1 failed' "$RUNNER_TEMP/runtime-red.log"
+          grep -F "$RED_ASSERTION_TEXT" "$RUNNER_TEMP/runtime-red.log"
+          cargo test -p phase-engine "$U1_RUNTIME_TEST" -- --exact --list 2>&1 \
+            | tee "$RUNNER_TEMP/u1-red-test-list.log"
+          grep -Fx "$U1_RUNTIME_TEST: test" "$RUNNER_TEMP/u1-red-test-list.log"
+          set +e
+          cargo test -p phase-engine "$U1_RUNTIME_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/runtime-u1-red.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -E 'test result: FAILED\..*1 failed' "$RUNNER_TEMP/runtime-u1-red.log"
+          grep -F "$U1_RED_ASSERTION_TEXT" "$RUNNER_TEMP/runtime-u1-red.log"
+      - name: Discover and run exact BASE reference controls with tests only overlaid
+        working-directory: stage3-base-negative
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-base-negative-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          while IFS= read -r REFERENCE_TEST; do
+            reference_log_name=${REFERENCE_TEST//:/_}
+            cargo test -p phase-engine "$REFERENCE_TEST" -- --exact --list 2>&1 \
+              | tee "$RUNNER_TEMP/base-reference-list-$reference_log_name.log"
+            grep -Fx "$REFERENCE_TEST: test" "$RUNNER_TEMP/base-reference-list-$reference_log_name.log"
+            cargo test -p phase-engine "$REFERENCE_TEST" -- --exact --nocapture 2>&1 \
+              | tee "$RUNNER_TEMP/base-reference-run-$reference_log_name.log"
+          done <<< "$REFERENCE_TESTS"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: stage3-runtime-red-log
+          path: |
+            ${{ runner.temp }}/runtime-red.log
+            ${{ runner.temp }}/red-test-list.log
+            ${{ runner.temp }}/runtime-u1-red.log
+            ${{ runner.temp }}/u1-red-test-list.log
+            ${{ runner.temp }}/base-reference-*.log
+          if-no-files-found: error
+          retention-days: 14
+
+  stage3-completion:
+    name: stage3-completion
+    needs: [stage3-candidate, stage3-base, wait-final]
+    if: github.repository == 'keloide/phase'
+    env:
+      BASE_SHA: ${{ needs.wait-final.outputs.frozen_base_sha }}
+      CANDIDATE_SHA: ${{ needs.wait-final.outputs.final_head_sha }}
+      MERGED_SOURCE_SHA: ${{ needs.wait-final.outputs.merged_source_sha }}
+      ACCEPTED_CANDIDATE_SHA: ${{ needs.wait-final.outputs.accepted_candidate_sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: stage3-completion
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          target: wasm32-unknown-unknown
+          cache: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20, existing CURRENT CI action pin
+        with:
+          tool: cargo-nextest
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pinned-inputs
+          path: restored-inputs
+          repository: keloide/phase
+          run-id: ${{ env.INPUT_RUN_ID }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage3-candidate-outputs
+          path: stage3-candidate-outputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: env.MODE == 'final'
+        with:
+          name: stage3-base-outputs-and-parse-diff
+          path: stage3-base-outputs
+      - name: Immutable candidate runtime discriminator (generation run is preparatory)
+        working-directory: stage3-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          ! git symbolic-ref -q HEAD
+          test -z "$(git status --porcelain)"
+          tar -xzf "$GITHUB_WORKSPACE/restored-inputs/pinned-inputs.tar.gz"
+          test ! -e .env
+          test -z "${PHASE_FORGE_PATH:-}"
+          test ! -e data/forge-cardsfolder
+          chmod -R a-w data/mtgjson
+          cp "$GITHUB_WORKSPACE/stage3-candidate-outputs/card-data.json" client/public/card-data.json
+          cp "$GITHUB_WORKSPACE/stage3-candidate-outputs/"{card-data.json,coverage-data.json,semantic-audit.json,semantic-audit.md} data/
+          if [ "$MODE" = generate ]; then
+            cp "$GITHUB_WORKSPACE/stage3-candidate-outputs/integration_cards.json.gz" crates/engine/tests/fixtures/
+            echo 'PREPARATORY ONLY: generated fixture is not yet committed at this candidate SHA.'
+          else
+            test -z "$(git status --porcelain --untracked-files=no)"
+            python3 scripts/gen-test-fixture.py --check
+          fi
+          mkdir -p "$GITHUB_WORKSPACE/stage3-outputs/completion"
+          test "$TEST_FEATURES" = phase-engine/test-support,phase-engine/cli,phase-engine/proptest
+          python3 - <<'PYFEATURES'
+          from pathlib import Path
+          import re, tomllib
+          manifest = tomllib.loads(Path('crates/engine/Cargo.toml').read_text())
+          assert manifest['package']['name'] == 'phase-engine'
+          for name, expected in [('cli', ['tracing-subscriber']), ('proptest', ['dep:proptest']), ('test-support', [])]:
+              assert manifest['features'][name] == expected, (name, manifest['features'][name])
+          print('Actual required feature definitions:', {n: manifest['features'][n] for n in ['test-support', 'cli', 'proptest']})
+          hits = []
+          for path in sorted(Path('crates').rglob('*.rs')):
+              source = path.read_text()
+              # Match across Rust attribute line breaks; any extra CLI/proptest occurrence refuses a presumed additive run.
+              for match in re.finditer(r'feature\s*=\s*"(?:cli|proptest)"', source):
+                  before, after = source[:match.start()], source[match.end():]
+                  hits.append((str(path), before.count('\n') + 1, before[-50:] + match.group() + after[:50]))
+          assert len(hits) == 1, ('Unaudited feature/cfg drift; root must inspect actual source. Non-additivity requires eleven cold configurations and blocks this ten-configuration protocol', hits)
+          path, line, excerpt = hits[0]
+          assert path == 'crates/engine/tests/integration/main.rs'
+          source = Path(path).read_text()
+          assert re.search(r'#\s*\[\s*cfg\s*\(\s*feature\s*=\s*"proptest"\s*\)\s*\]\s*mod\s+engine_invariants\s*;', source)
+          assert re.search(r'cases\s*:\s*16\s*,', Path('crates/engine/tests/integration/engine_invariants.rs').read_text())
+          print('Actual source has only the positive proptest registration:', path, line, excerpt)
+          PYFEATURES
+          cargo nextest list -p phase-engine -p phase-ai -p probe-pin \
+            --features "$TEST_FEATURES" -E "$FOCUSED_FILTER" --message-format json \
+            > "$GITHUB_WORKSPACE/stage3-outputs/completion/focused-nextest-list.json" \
+            2> "$GITHUB_WORKSPACE/stage3-outputs/completion/focused-nextest-list.stderr.log"
+          python3 - "$GITHUB_WORKSPACE/stage3-outputs/completion/focused-nextest-list.json" <<'PYLIST'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          selected = []
+          for suite in data['rust-suites'].values():
+              for name, case in suite['test-cases'].items():
+                  if case['filter-match']['status'] == 'matches':
+                      selected.append((suite['package-name'], suite['binary-name'], name))
+          assert selected, 'No focused tests selected'
+          for package in ['phase-engine', 'phase-ai', 'probe-pin']:
+              count = sum(p == package for p, b, n in selected)
+              assert count > 0, package
+              print('Collected selected tests:', package, count)
+          for owner in ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::']:
+              count = sum(p == 'phase-engine' and n.startswith(owner) for p, b, n in selected)
+              assert count > 0, owner
+              print('Collected owner:', owner, count)
+          for binary in ['resolution-face-census', 'oracle-gen']:
+              assert any(p == 'phase-engine' and b == binary for p, b, n in selected), binary
+          required = [
+              ('phase-engine', 'integration', 'essence_burn::essence_burn_face_down_keeps_die_exile'),
+              ('phase-engine', 'integration', 'engine_invariants::legal_action_driven_sequences_preserve_engine_invariants'),
+              ('phase-engine', 'integration', 'engine_invariants::generated_priority_actions_remain_reducer_legal_in_default_opening_state'),
+              ('phase-ai', 'gate_cli', 'every_binary_an_integration_test_spawns_is_shipped_to_the_test_shards'),
+              ('phase-ai', 'gate_cli', 'every_workflow_gate_invocation_spells_the_baseline_workload'),
+              ('probe-pin', 'pure_logic', 'every_write_of_the_pinned_file_routes_through_splice'),
+          ]
+          for item in required:
+              assert selected.count(item) == 1, item
+              print('Required selected test:', *item)
+          assert any(p == 'phase-ai' and n.startswith('policies::x_reference::') for p, b, n in selected)
+          assert any(p == 'phase-engine' and 'census' in n for p, b, n in selected)
+          print('Total focused selected test count:', len(selected))
+          PYLIST
+          cargo nextest run -p phase-engine -p phase-ai -p probe-pin \
+            --features "$TEST_FEATURES" -E "$FOCUSED_FILTER" 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/focused-nextest-run.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" "$RUNTIME_TEST" -- --exact --list \
+            | tee "$RUNNER_TEMP/green-test-list.log" "$GITHUB_WORKSPACE/stage3-outputs/completion/green-test-list.log"
+          grep -Fx "$RUNTIME_TEST: test" "$RUNNER_TEMP/green-test-list.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" "$RUNTIME_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/runtime-green.log"
+      - name: Generate only the named IR snapshot pair with the standard test runner
+        if: env.MODE == 'generate'
+        working-directory: stage3-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          # The runtime step overlaid only the required generated fixture.
+          { git diff --name-only; git ls-files --others --exclude-standard; } \
+            | while IFS= read -r path; do
+                test "$path" = crates/engine/tests/fixtures/integration_cards.json.gz
+              done
+          cargo test -p phase-engine --features "$TEST_FEATURES" "$SNAPSHOT_TEST" -- --exact --list \
+            | tee "$RUNNER_TEMP/snapshot-test-list.log" "$GITHUB_WORKSPACE/stage3-outputs/completion/snapshot-test-list.log"
+          grep -Fx "$SNAPSHOT_TEST: test" "$RUNNER_TEMP/snapshot-test-list.log"
+          INSTA_UPDATE=always cargo test -p phase-engine --features "$TEST_FEATURES" "$SNAPSHOT_TEST" -- --exact
+          mapfile -t snapshot_paths <<< "$SNAPSHOT_PATHS"
+          for path in "${snapshot_paths[@]}"; do test -s "$path"; done
+          # Reject every unrelated generated/updated snapshot or source edit.
+          { git diff --name-only; git ls-files --others --exclude-standard; } \
+            | while IFS= read -r path; do
+                [[ "$path" == crates/engine/tests/fixtures/integration_cards.json.gz || "$path" == "${snapshot_paths[0]}" || "$path" == "${snapshot_paths[1]}" ]]
+              done
+          git diff --cached --quiet
+          mkdir -p "$GITHUB_WORKSPACE/stage3-outputs/canonical"
+          cp --parents -- crates/engine/tests/fixtures/integration_cards.json.gz \
+            "${snapshot_paths[@]}" "$GITHUB_WORKSPACE/stage3-outputs/canonical/"
+          echo 'PREPARATORY ONLY: canonical fixture and named IR snapshot pair must be committed before final verification.'
+      - name: Upload canonical generated fixture and named IR snapshot pair
+        if: always() && env.MODE == 'generate'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stage3-canonical-artifacts
+          path: stage3-outputs/canonical/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Run all committed Essence Burn runtime companions at the exact candidate
+        working-directory: stage3-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          cargo test -p phase-engine --features "$TEST_FEATURES" essence_burn:: -- --list 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/essence-module-test-list.log"
+          grep -E '^essence_burn::[^ ]+: test$' "$GITHUB_WORKSPACE/stage3-outputs/completion/essence-module-test-list.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" essence_burn:: -- --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/essence-module-tests.log"
+          grep -E 'test result: ok\. [1-9][0-9]* passed;' "$GITHUB_WORKSPACE/stage3-outputs/completion/essence-module-tests.log"
+      - name: Discover and run exact candidate reference controls
+        working-directory: stage3-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-completion-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          while IFS= read -r REFERENCE_TEST; do
+            reference_log_name=${REFERENCE_TEST//:/_}
+            cargo test -p phase-engine --features "$TEST_FEATURES" "$REFERENCE_TEST" -- --exact --list 2>&1 \
+              | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/candidate-reference-list-$reference_log_name.log"
+            grep -Fx "$REFERENCE_TEST: test" "$GITHUB_WORKSPACE/stage3-outputs/completion/candidate-reference-list-$reference_log_name.log"
+            cargo test -p phase-engine --features "$TEST_FEATURES" "$REFERENCE_TEST" -- --exact --nocapture 2>&1 \
+              | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/candidate-reference-run-$reference_log_name.log"
+          done <<< "$REFERENCE_TESTS"
+      - name: Verify the exact committed named IR snapshot pair
+        if: env.MODE == 'final'
+        working-directory: stage3-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-completion-target
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          cargo test -p phase-engine --features "$TEST_FEATURES" "$SNAPSHOT_TEST" -- --exact --list 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/committed-snapshot-list.log"
+          test "$(grep -Fxc "$SNAPSHOT_TEST: test" "$GITHUB_WORKSPACE/stage3-outputs/completion/committed-snapshot-list.log")" -eq 1
+          cargo test -p phase-engine --features "$TEST_FEATURES" "$SNAPSHOT_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/committed-snapshot-run.log"
+          git diff --exit-code -- crates/engine/src/parser/oracle_ir/snapshots/
+      - name: U3 production-only red then exact restored green on the owning normal target
+        if: env.MODE == 'final'
+        working-directory: stage3-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-completion-target
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          ! grep -F 'REPLACE_' <<< "$U3_PRODUCTION_PATCH"
+          mapfile -t production_paths <<< "$U3_PRODUCTION_PATHS"
+          test "${#production_paths[@]}" -eq 4
+          printf '%s\n' "$U3_PRODUCTION_PATCH" > "$RUNNER_TEMP/u3-production.patch"
+          # Root must audit after the once-sync and before publishing HEAD that P is
+          # precisely the PR U3 production delta. Context offsets may change benignly.
+          # Check P against frozen BASE using an isolated index; do not alter the real index/worktree.
+          baseline_index="$RUNNER_TEMP/u3-frozen-base.index"
+          test ! -e "$baseline_index"
+          GIT_INDEX_FILE="$baseline_index" git read-tree "$BASE_SHA"
+          GIT_INDEX_FILE="$baseline_index" git apply --cached --check "$RUNNER_TEMP/u3-production.patch"
+          rm "$baseline_index"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --list 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-exact-test-list.log"
+          test "$(grep -Fxc "$U3_RUNTIME_TEST: test" "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-exact-test-list.log")" -eq 1
+          git apply --reverse --check "$RUNNER_TEMP/u3-production.patch"
+          # Restore even if discovery or compilation fails after applying the intentional control.
+          trap 'git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"' EXIT
+          git apply --reverse "$RUNNER_TEMP/u3-production.patch"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --cached --quiet
+          while IFS= read -r -d '' path; do
+            grep -Fx -- "$path" <<< "$U3_PRODUCTION_PATHS" > /dev/null
+          done < <(git diff --name-only -z)
+          git diff --quiet HEAD -- crates/engine/tests/ crates/engine/src/parser/ \
+            crates/engine/src/game/game_object.rs crates/engine/src/game/turns.rs
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --list 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-red-test-list.log"
+          test "$(grep -Fxc "$U3_RUNTIME_TEST: test" "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-red-test-list.log")" -eq 1
+          set +e
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-production-red.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          git diff --exit-code "$CANDIDATE_SHA" -- crates/engine/tests/ crates/engine/src/parser/ "${production_paths[@]}"
+          trap - EXIT
+          test "${statuses[0]}" -ne 0
+          test "${statuses[1]}" -eq 0
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-production-red.log"
+          grep -E 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-production-red.log"
+          grep -Fx "test $U3_RUNTIME_TEST ... FAILED" "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-production-red.log"
+          grep -F "$U3_RED_ASSERTION_TEXT" "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-production-red.log"
+          # The exact custom assertion follows real Essence/Cyber/SBA reach guards in unchanged candidate test bytes.
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 \
+            | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-restored-green.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-restored-green.log"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+      - name: Full Step 5 at the artifact-inclusive committed candidate
+        if: env.MODE == 'final'
+        working-directory: stage3-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-completion-target
+          MTGJSON_SKIP_REFRESH: '1'
+          PHASE_REFRESH_MTGJSON: '0'
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace --features "$TEST_FEATURES"
+          ./scripts/check-interaction-bindings.sh --check
+          ./scripts/check-parser-combinators.sh "$BASE_SHA"
+          ./scripts/check-prelowered-ratchet.sh
+          ./scripts/check-skill-doc.sh
+          ./scripts/check-engine-authorities.sh "$BASE_SHA"
+          # Tool generation/export/validation/coverage/semantic ran in the exact candidate projection.
+          # Its job and the independently built BASE comparator must both have succeeded.
+          test "${{ needs.stage3-candidate.result }}" = success
+          test "${{ needs.stage3-base.result }}" = success
+          ./scripts/coverage-regression-check.sh "$GITHUB_WORKSPACE/stage3-base-outputs/coverage-data.json" \
+            data/coverage-data.json --fail-on-engine | tee "$RUNNER_TEMP/completion-coverage-regression.log"
+          grep -F "REGRESSED (coverage honesty) — 0 cards" "$RUNNER_TEMP/completion-coverage-regression.log"
+          mkdir -p "$GITHUB_WORKSPACE/stage3-outputs/completion"
+          cp "$RUNNER_TEMP/completion-coverage-regression.log" "$GITHUB_WORKSPACE/stage3-outputs/completion/coverage-regression.log"
+          # Retain the actual BASE-built comparator output rather than build a second comparator here.
+          cp "$GITHUB_WORKSPACE/stage3-base-outputs/parse-diff.md" "$GITHUB_WORKSPACE/stage3-outputs/completion/parse-diff.md"
+          cp "$GITHUB_WORKSPACE/stage3-base-outputs/parse-diff.json" "$GITHUB_WORKSPACE/stage3-outputs/completion/parse-diff.json"
+          jq -n --slurpfile base "$GITHUB_WORKSPACE/stage3-base-outputs/semantic-audit.json" \
+            --slurpfile head data/semantic-audit.json '
+            def findings: [.flagged_cards[]? | .card_name as $name | .findings[]? | {card_name:$name,finding:.}];
+            ($base[0] | findings) as $b | ($head[0] | findings) - $b
+          ' > "$GITHUB_WORKSPACE/stage3-outputs/completion/new-semantic-findings.json"
+          jq -e 'length == 0' "$GITHUB_WORKSPACE/stage3-outputs/completion/new-semantic-findings.json"
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
+            data/semantic-audit.md "$GITHUB_WORKSPACE/stage3-outputs/completion/"
+          cp data/card-data.json client/public/card-data.json
+          python3 scripts/gen-test-fixture.py --check
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          echo "Full composite Step 5 passed on restored source $CANDIDATE_SHA; comparison BASE $BASE_SHA; complete pin $INPUT_RUN_ID (workflow SHA $GITHUB_SHA)."
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: stage3-completion-outputs
+          path: stage3-outputs/completion/
+          if-no-files-found: error
+          retention-days: 14
+
+  stage3-transport:
+    name: stage3-transport
+    needs: [stage3-candidate, stage3-base, stage3-runtime-red, stage3-completion]
+    if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
+    env:
+      RESULT_BRANCH: engine-proof/fra-stingerquill-9-results-stage3
+      ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage3-outputs.tar.gz
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: keloide/phase
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          # Used only for the exact result-branch push to this fork.
+          persist-credentials: true
+      - name: Verify exact fork checkout and available current proof outputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          [[ "$RESULT_BRANCH" == engine-proof/* && "$RESULT_BRANCH" != "$GITHUB_REF_NAME" ]]
+          test "$RESULT_BRANCH" != "$FROZEN_BASE_BRANCH"
+          test "$RESULT_BRANCH" != "$MERGED_SOURCE_BRANCH"
+          test "$RESULT_BRANCH" != "$FINAL_HEAD_BRANCH"
+          git check-ref-format "refs/heads/$RESULT_BRANCH"
+          test "$ARCHIVE_PATH" = engine-proof-results/fra-stingerquill-stage3-outputs.tar.gz
+          test "$(gh api "repos/keloide/phase/actions/runs/$GITHUB_RUN_ID" --jq '.head_sha')" = "$GITHUB_SHA"
+          normal_artifacts=$(gh api --paginate "repos/keloide/phase/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired == false) | select(.name == "stage3-candidate-outputs" or .name == "stage3-base-outputs-and-parse-diff" or .name == "stage3-completion-outputs" or .name == "stage3-runtime-red-log" or .name == "stage3-canonical-artifacts") | .name')
+          if [ -z "$normal_artifacts" ]; then
+            echo 'Missing normal proof output artifacts; transport cannot return proof outputs.' >&2
+            exit 1
+          fi
+      - name: Download available normal current-run outputs including canonical when present
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          github-token: ${{ github.token }}
+          repository: keloide/phase
+          run-id: ${{ github.run_id }}
+          pattern: '{stage3-candidate-outputs,stage3-base-outputs-and-parse-diff,stage3-completion-outputs,stage3-runtime-red-log,stage3-canonical-artifacts}'
+          merge-multiple: false
+          path: ${{ runner.temp }}/fra-stingerquill-stage3-outputs
+      - name: Retain raw logs of completed prior proof jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fra-stingerquill-stage3-outputs/raw-job-logs"
+          # The dependency jobs have settled; exclude this job and skipped jobs.
+          gh api --paginate "repos/keloide/phase/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | select(.status == "completed" and .conclusion != "skipped") | select(.name == "stage3-candidate" or .name == "stage3-base" or .name == "stage3-runtime-red" or .name == "stage3-completion") | [.id, .name] | @tsv' \
+            | while IFS=$'\t' read -r job_id job_name; do
+                gh api --allow-escape-sequences "repos/keloide/phase/actions/jobs/$job_id/logs" \
+                  > "$RUNNER_TEMP/fra-stingerquill-stage3-outputs/raw-job-logs/$job_name-$job_id.log"
+                test -s "$RUNNER_TEMP/fra-stingerquill-stage3-outputs/raw-job-logs/$job_name-$job_id.log"
+              done
+          compgen -G "$RUNNER_TEMP/fra-stingerquill-stage3-outputs/raw-job-logs/*.log" > /dev/null
+      - name: Archive complete outputs and split unchanged archive into at most two parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e "$RUNNER_TEMP/fra-stingerquill-stage3-outputs/pinned-inputs"
+          # No individual artifact is required: failed product jobs may omit canonical files.
+          tar -czf "$RUNNER_TEMP/fra-stingerquill-stage3-outputs.tar.gz" \
+            -C "$RUNNER_TEMP/fra-stingerquill-stage3-outputs" .
+          split --bytes=90000000 --numeric-suffixes=0 --suffix-length=2 \
+            "$RUNNER_TEMP/fra-stingerquill-stage3-outputs.tar.gz" \
+            "$RUNNER_TEMP/fra-stingerquill-stage3-outputs.tar.gz.part-"
+          shopt -s nullglob
+          parts=("$RUNNER_TEMP"/fra-stingerquill-stage3-outputs.tar.gz.part-*)
+          test "${#parts[@]}" -ge 1
+          test "${#parts[@]}" -le 2
+          test "${parts[0]}" = "$RUNNER_TEMP/fra-stingerquill-stage3-outputs.tar.gz.part-00"
+          if [ "${#parts[@]}" -eq 2 ]; then
+            test "${parts[1]}" = "$RUNNER_TEMP/fra-stingerquill-stage3-outputs.tar.gz.part-01"
+          fi
+          for part in "${parts[@]}"; do
+            test -s "$part"
+            test "$(stat -c '%s' "$part")" -le 90000000
+            test "$(stat -c '%s' "$part")" -lt 100000000
+          done
+      - name: Publish only archive parts on the exact attached fork result branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = keloide/phase
+          [[ "$RESULT_BRANCH" == engine-proof/* && "$RESULT_BRANCH" != "$GITHUB_REF_NAME" ]]
+          test "$RESULT_BRANCH" != "$FROZEN_BASE_BRANCH"
+          test "$RESULT_BRANCH" != "$MERGED_SOURCE_BRANCH"
+          test "$RESULT_BRANCH" != "$FINAL_HEAD_BRANCH"
+          test "$ARCHIVE_PATH" = engine-proof-results/fra-stingerquill-stage3-outputs.tar.gz
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          test -z "$(git ls-remote origin "refs/heads/$RESULT_BRANCH")"
+          git switch --create "$RESULT_BRANCH" "$GITHUB_SHA"
+          test "$(git symbolic-ref --short HEAD)" = "$RESULT_BRANCH"
+          mkdir -p engine-proof-results
+          part_paths=("$ARCHIVE_PATH.part-00")
+          if [ -f "$RUNNER_TEMP/fra-stingerquill-stage3-outputs.tar.gz.part-01" ]; then
+            part_paths+=("$ARCHIVE_PATH.part-01")
+          fi
+          for path in "${part_paths[@]}"; do
+            cp "$RUNNER_TEMP/${path##*/}" "$path"
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --cached --quiet
+          git add -- "${part_paths[@]}"
+          git commit --only -m 'Transport Essence Burn proof outputs and raw job logs' -- "${part_paths[@]}"
+          test "$(git diff --name-only "$GITHUB_SHA" HEAD)" = "$(printf '%s\n' "${part_paths[@]}")"
+          test "$(git symbolic-ref --short HEAD)" = "$RESULT_BRANCH"
+          git push origin "HEAD:refs/heads/$RESULT_BRANCH"
