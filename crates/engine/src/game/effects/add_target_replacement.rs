@@ -577,20 +577,21 @@ pub fn resolve(
                     // precedent, and this is the only additive-runtime base push in
                     // the tree, so the exception is documented here.
                     //
-                    // Everything that is NOT one of these three classes now goes
+                    // Everything outside these two legacy classes goes
                     // through `GameObject::install_resolution_replacement` instead
                     // (CR 611.2a) — the typed-provenance authority that survives the
                     // CR 613.1 reset via the carried set rather than via a base copy.
-                    // The trio deliberately stays OUTSIDE it: a def that is both
+                    // The legacy pair stays OUTSIDE it: a def that is both
                     // base-resident and `Resolution`-stamped would be reseeded from
                     // base AND carried from live, i.e. applied twice.
-                    // A turn-bound die-exile rider must also survive a layer
-                    // reset: a damaged creature can gain/lose characteristics
-                    // or enter combat before it dies. Cleanup prunes this
-                    // narrowly scoped base copy at end of turn.
+                    // CR 614.1a + CR 611.2a: a bounded death-exile rider is an
+                    // external resolution effect. It survives same-object
+                    // characteristic changes through the live carry authority,
+                    // until its stated expiry or a zone change ends it.
                     // A host-lifetime rider (CR 702.84a "if it would leave the
                     // battlefield, exile it instead", stamped
-                    // `UntilHostLeavesPlay`) is the same class: it must survive
+                    // `UntilHostLeavesPlay`) is a legacy base-installed class:
+                    // it must survive
                     // every CR 613.1 reseed so the redirect still fires after the
                     // returned permanent gains/loses characteristics, and its
                     // base+live copies are pruned together the instant the host
@@ -602,26 +603,21 @@ pub fn resolve(
                     // and structurally cannot hit a battlefield host — non-issue.
                     // (2) Turning the LOCKED HOST face-down
                     // (morph.rs apply_face_down_creature_characteristics clears
-                    // base+live replacement defs, CR 708.2a) would end the lock
+                    // intrinsic/base replacement defs, CR 708.2a) ends the lock
                     // early — an under-prune, strictly safer than a revival; rare
                     // corner, out of scope.
-                    let durable_die_exile =
-                        crate::game::printed_cards::is_runtime_target_die_exile_replacement(
-                            &replacement,
-                        );
                     let host_lifetime =
                         crate::game::printed_cards::is_runtime_host_lifetime_replacement(
                             &replacement,
                         );
-                    let install_to_base = durable_die_exile
-                        || host_lifetime
+                    let install_to_base = host_lifetime
                         || matches!(
                             replacement.condition,
                             Some(ReplacementCondition::ControllerControlsSource { .. })
                         );
                     if let Some(obj) = state.objects.get_mut(&obj_id) {
                         if install_to_base {
-                            // CR 611.2b / CR 702.84a: the three hand-audited durable
+                            // CR 611.2b / CR 702.84a: the two legacy durable
                             // classes stay BASE-resident and are reseeded into live
                             // by every CR 613.1 pass. They must NOT be stamped
                             // `Resolution`: that would place them in base AND in the
@@ -1084,6 +1080,12 @@ mod tests {
         let mut events = Vec::new();
         resolve(&mut state, &ability, &mut events).unwrap();
 
+        let obj = &state.objects[&target];
+        assert_eq!(obj.replacement_definitions.len(), 1);
+        assert!(obj.replacement_definitions[0].is_resolution_installed());
+        assert!(!obj.replacement_definitions[0].is_consumed);
+        assert!(obj.base_replacement_definitions.is_empty());
+
         let proposed = crate::types::proposed_event::ProposedEvent::zone_change(
             target,
             Zone::Battlefield,
@@ -1104,7 +1106,7 @@ mod tests {
     }
 
     /// CR 611.2b + CR 611.2a + CR 613.1 (issue #8485, matrix row 21): the C4
-    /// restructure — the three hand-audited DURABLE classes keep the base push and
+    /// restructure — the two legacy DURABLE classes keep the base push and
     /// must NOT be stamped `Resolution` (that would put them in base AND in the
     /// carried set, applying them twice); everything else goes through
     /// `GameObject::install_resolution_replacement` instead.
@@ -1255,6 +1257,7 @@ mod tests {
             obj.replacement_definitions[0].expiry,
             Some(RestrictionExpiry::EndOfTurn)
         );
+        assert!(obj.replacement_definitions[0].is_resolution_installed());
         // CR 611.2b gate-scoping: a transient (end-of-turn) rider WITHOUT a
         // `ControllerControlsSource` condition must stay live-only — it must NOT
         // be mirrored into the printed-baseline base store (CR 613.1). Only the

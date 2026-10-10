@@ -2772,10 +2772,10 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
     for obj in state.objects.iter_mut().map(|(_, v)| v) {
         obj.replacement_definitions.retain(|r| !expires_at_eot(r));
         // CR 514.2: Clean up turn-bound replacement definitions from the base
-        // definitions during the cleanup step so they do not persist. Turn-bound
-        // riders (the die-exile rider) are base-installed by
-        // `effects/add_target_replacement.rs`, so the base surface needs the same
-        // `expiry`-keyed prune; printed statics carry `expiry: None` and survive.
+        // definitions during cleanup so legacy base-installed effects do not
+        // persist. Bounded resolution effects (including death-exile riders) live
+        // only in the live store, pruned above. The base surface retains the same
+        // expiry-keyed prune; printed statics carry `expiry: None` and survive.
         std::sync::Arc::make_mut(&mut obj.base_replacement_definitions)
             .retain(|r| !expires_at_eot(r));
     }

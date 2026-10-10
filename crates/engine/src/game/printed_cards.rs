@@ -159,7 +159,14 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
         replacement.fix_legacy_parse_time_consumed_flag();
     }
     obj.abilities = Arc::new(abilities.clone());
-    obj.replacement_definitions = replacements.clone().into();
+    // CR 611.2a/c + CR 613.1: install intrinsic face text without ending
+    // resolution-created effects on this same object.
+    let replacements = Arc::new(replacements);
+    obj.replacement_definitions =
+        super::game_object::reseed_replacements_carrying_resolution_effects(
+            &obj.replacement_definitions,
+            &replacements,
+        );
     obj.static_definitions = card_face.static_abilities.clone().into();
     // CR 702.148a-b: Carry the cleave-cost ability set onto the object so the
     // casting flow can swap it in when the spell is cast for its cleave cost.
@@ -190,7 +197,7 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
         obj.install_trigger_base_definitions(trigger_definitions)
             .expect("trigger base-set generation must not overflow");
     }
-    obj.base_replacement_definitions = Arc::new(replacements);
+    obj.base_replacement_definitions = replacements;
     obj.base_static_definitions = Arc::new(card_face.static_abilities.clone());
     obj.base_color = color;
     obj.base_characteristics_initialized = true;
@@ -331,7 +338,20 @@ pub fn apply_back_face_to_object(obj: &mut GameObject, back_face: BackFaceData) 
     obj.mana_cost = back_face.mana_cost.clone();
     obj.keywords = back_face.keywords.clone();
     obj.abilities = Arc::new(back_face.abilities.clone());
-    obj.replacement_definitions = back_face.replacement_definitions.clone();
+    // CR 708.8 + CR 611.2a/c: the restored intrinsic face and current live
+    // resolution effects have separate lifetimes; only intrinsic text enters base.
+    let replacements = Arc::new(
+        back_face
+            .replacement_definitions
+            .iter_all()
+            .cloned()
+            .collect(),
+    );
+    obj.replacement_definitions =
+        super::game_object::reseed_replacements_carrying_resolution_effects(
+            &obj.replacement_definitions,
+            &replacements,
+        );
     obj.static_definitions = back_face.static_definitions.clone();
     obj.color = back_face.color.clone();
     obj.base_power = back_face.power;
@@ -357,13 +377,7 @@ pub fn apply_back_face_to_object(obj: &mut GameObject, back_face: BackFaceData) 
         )
         .expect("trigger base-set generation must not overflow");
     }
-    obj.base_replacement_definitions = Arc::new(
-        back_face
-            .replacement_definitions
-            .iter_all()
-            .cloned()
-            .collect(),
-    );
+    obj.base_replacement_definitions = replacements;
     obj.base_static_definitions =
         Arc::new(back_face.static_definitions.iter_all().cloned().collect());
     obj.base_color = back_face.color;
@@ -632,13 +646,11 @@ pub fn intrinsic_copiable_values(obj: &GameObject) -> CopiableValues {
 
 /// CR 707.2 / CR 707.2b: copiable values are the object's printed/defining
 /// characteristics, NOT resolved continuous effects installed by other
-/// permanents (CR 611.2b "for as long as you control ~" locks). A
-/// `ControllerControlsSource`-gated replacement and a turn-bound, target-bound
-/// die-exile rider are runtime effects durably stored in
-/// `base_replacement_definitions` purely so they survive a layer reset
-/// (evaluate_layers rebuilds live defs from base — layers.rs); neither is a
-/// printed characteristic. Exclude them from copiable values so that a copy of
-/// the affected host does not inherit the lock or die-exile rider.
+/// permanents (CR 611.2b "for as long as you control ~" locks). Legacy
+/// controller-gated and host-lifetime effects remain base-resident for layer
+/// survival and are excluded below. Bounded target death-exile effects are now
+/// live Resolution entries, absent from base by invariant; the structural
+/// filter also excludes legacy serialized base entries of that class.
 ///
 /// Zero-alloc fast path: every printed card has no gated def, so the common case
 /// keeps sharing the source `Arc<Vec<_>>`. A filtered allocation is paid only
@@ -674,8 +686,9 @@ pub(crate) fn is_runtime_control_gated_replacement(def: &ReplacementDefinition) 
 
 /// CR 614.1a + CR 514.2: True for a runtime replacement attached to a damaged
 /// target by an effect such as Torch the Tower or Obliterating Bolt. It is
-/// persisted in base only to survive layer resets; it is not a copiable value
-/// and must lapse when that object leaves the battlefield (CR 400.7).
+/// normally installed live with Resolution provenance. The predicate also
+/// identifies legacy base entries for non-copiable filtering. It must lapse
+/// when that object leaves the battlefield (CR 400.7).
 pub(crate) fn is_runtime_target_die_exile_replacement(def: &ReplacementDefinition) -> bool {
     def.event == ReplacementEvent::Moved
         && matches!(def.valid_card, Some(TargetFilter::SelfRef))
@@ -696,8 +709,8 @@ pub(crate) fn is_runtime_target_die_exile_replacement(def: &ReplacementDefinitio
 /// lifetime of the OBJECT hosting it — the "if it would leave the battlefield,
 /// exile it instead" rider installed by Unearth (CR 702.84a) and the
 /// parser-driven reanimation cards (Gruesome Encore, Whip of Erebos, …). It is
-/// stamped `RestrictionExpiry::UntilHostLeavesPlay`. Like the die-exile rider it
-/// is persisted in base only to survive CR 613.1 layer reseeds; it is NOT a
+/// stamped `RestrictionExpiry::UntilHostLeavesPlay`. This legacy class remains
+/// persisted in base to survive CR 613.1 layer reseeds; it is NOT a
 /// copiable value (a copy of the host must not inherit the exile redirect,
 /// CR 707.2) and must lapse when the host leaves the battlefield (CR 400.7).
 pub(crate) fn is_runtime_host_lifetime_replacement(def: &ReplacementDefinition) -> bool {
@@ -1003,9 +1016,9 @@ pub fn snapshot_object_face(obj: &GameObject) -> BackFaceData {
         // apply. Filtering HERE rather than at the base write also stops the live
         // write from restoring a stale, possibly already-consumed shield.
         //
-        // Consequence, deliberate and documented: a transform DROPS a carried
-        // resolution shield rather than duplicating it. See the removal-paths note
-        // on `reseed_replacements_carrying_resolution_effects`.
+        // The recipient applicator carries its current live Resolution entries
+        // separately, preserving their mutable state instead of restoring them
+        // from this snapshot.
         replacement_definitions: obj
             .replacement_definitions
             .iter_all()
@@ -2006,72 +2019,188 @@ mod tests {
                 .count()
         }
 
-        let mut state = GameState::new_two_player(42);
-        let id = create_object(
-            &mut state,
-            CardId(1),
-            PlayerId(0),
-            "Front Face".to_string(),
-            Zone::Battlefield,
-        );
-        {
-            let obj = state.objects.get_mut(&id).unwrap();
-            obj.card_types.core_types.push(CoreType::Creature);
-            obj.base_card_types = obj.card_types.clone();
-            obj.power = Some(2);
-            obj.toughness = Some(2);
-            obj.base_power = Some(2);
-            obj.base_toughness = Some(2);
-            obj.base_characteristics_initialized = true;
-            obj.base_replacement_definitions = Arc::new(vec![printed_def()]);
-            obj.replacement_definitions = vec![printed_def()].into();
-            obj.install_resolution_replacement(resolution_shield());
-            let mut back = snapshot_object_face(obj);
-            back.name = "Back Face".to_string();
-            obj.back_face = Some(back);
-        }
-        // Positive reach-guard: the shield really is live before the transform, so
-        // the post-transform assertions are not vacuously satisfied by there being
-        // nothing to duplicate.
-        assert_eq!(resolution_count(&state, id), 1);
+        let mut depleted = resolution_shield();
+        depleted.is_consumed = true;
+        depleted.shield_kind = crate::types::ability::ShieldKind::Prevention {
+            amount: crate::types::ability::PreventionAmount::Next(0),
+        };
+        // Retain the original active-All witness and also exercise spent state.
+        for shield in [resolution_shield(), depleted] {
+            let mut state = GameState::new_two_player(42);
+            let id = create_object(
+                &mut state,
+                CardId(1),
+                PlayerId(0),
+                "Front Face".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = state.objects.get_mut(&id).unwrap();
+                obj.card_types.core_types.push(CoreType::Creature);
+                obj.base_card_types = obj.card_types.clone();
+                obj.power = Some(2);
+                obj.toughness = Some(2);
+                obj.base_power = Some(2);
+                obj.base_toughness = Some(2);
+                obj.base_characteristics_initialized = true;
+                obj.base_replacement_definitions = Arc::new(vec![printed_def()]);
+                obj.replacement_definitions = vec![printed_def()].into();
+                obj.install_resolution_replacement(shield);
+                let mut back = snapshot_object_face(obj);
+                back.name = "Back Face".to_string();
+                obj.back_face = Some(back);
+            }
+            // Positive reach-guard: the shield really is live before the transform, so
+            // the post-transform assertions are not vacuously satisfied by there being
+            // nothing to duplicate.
+            assert_eq!(resolution_count(&state, id), 1);
 
-        swap_object_faces(state.objects.get_mut(&id).unwrap());
-        assert_eq!(
-            state.objects[&id].name, "Back Face",
-            "reach-guard: the transform must actually have happened"
-        );
-        swap_object_faces(state.objects.get_mut(&id).unwrap());
-        assert_eq!(
-            state.objects[&id].name, "Front Face",
-            "reach-guard: the return transform must actually have happened"
-        );
+            let expected = state.objects[&id]
+                .replacement_definitions
+                .as_slice()
+                .to_vec();
+            swap_object_faces(state.objects.get_mut(&id).unwrap());
+            assert_eq!(
+                state.objects[&id].replacement_definitions.as_slice(),
+                expected.as_slice()
+            );
+            assert_eq!(
+                state.objects[&id].name, "Back Face",
+                "reach-guard: the transform must actually have happened"
+            );
+            swap_object_faces(state.objects.get_mut(&id).unwrap());
+            assert_eq!(
+                state.objects[&id].replacement_definitions.as_slice(),
+                expected.as_slice()
+            );
+            assert_eq!(
+                state.objects[&id].name, "Front Face",
+                "reach-guard: the return transform must actually have happened"
+            );
 
-        // The invariant the whole carry-over rests on.
-        assert!(
-            !state.objects[&id]
-                .base_replacement_definitions
-                .iter()
-                .any(|d| d.is_resolution_installed()),
-            "a transform round-trip must not seed base with a `Resolution` def: \
+            // The invariant the whole carry-over rests on.
+            assert!(
+                !state.objects[&id]
+                    .base_replacement_definitions
+                    .iter()
+                    .any(|d| d.is_resolution_installed()),
+                "a transform round-trip must not seed base with a `Resolution` def: \
              base = {:?}",
-            state.objects[&id].base_replacement_definitions
-        );
+                state.objects[&id].base_replacement_definitions
+            );
 
-        state.layers_dirty.mark_full();
-        crate::game::layers::evaluate_layers(&mut state);
-        let after_first = resolution_count(&state, id);
-        state.layers_dirty.mark_full();
-        crate::game::layers::evaluate_layers(&mut state);
-        let after_second = resolution_count(&state, id);
-        assert_eq!(
-            after_first, after_second,
-            "the resolution-shield count must not grow per layer pass \
+            state.layers_dirty.mark_full();
+            crate::game::layers::evaluate_layers(&mut state);
+            let after_first = resolution_count(&state, id);
+            assert_eq!(
+                state.objects[&id].replacement_definitions.as_slice(),
+                expected.as_slice()
+            );
+            state.layers_dirty.mark_full();
+            crate::game::layers::evaluate_layers(&mut state);
+            let after_second = resolution_count(&state, id);
+            assert_eq!(
+                state.objects[&id].replacement_definitions.as_slice(),
+                expected.as_slice()
+            );
+            assert_eq!(
+                after_first, after_second,
+                "the resolution-shield count must not grow per layer pass \
              (pass 1: {after_first}, pass 2: {after_second})"
-        );
-        assert!(
-            after_second <= 1,
-            "at most one copy of the shield may survive, got {after_second}"
-        );
+            );
+            assert_eq!(
+                after_second, 1,
+                "the original live shield must survive exactly once"
+            );
+        }
+    }
+
+    /// CR 611.2a/c + CR 613.1: both intrinsic face writers preserve only
+    /// the recipient's live external state, and keep snapshots/copies intrinsic.
+    #[test]
+    fn face_applicators_preserve_zero_one_multiple_resolution_entries() {
+        use crate::types::ability::{PreventionAmount, RestrictionExpiry, ShieldKind};
+        let db = crate::test_support::shared_card_db();
+        let front = db
+            .get_face_by_name("Darksteel Colossus")
+            .expect("real intrinsic face");
+        let other = db
+            .get_face_by_name("Catacomb Slug")
+            .expect("real replacement-free face");
+        assert!(!front.replacements.is_empty());
+        for count in 0..=2 {
+            let mut obj = GameObject::new(
+                ObjectId(1),
+                CardId(1),
+                PlayerId(0),
+                "Host".into(),
+                Zone::Battlefield,
+            );
+            apply_card_face_to_object(&mut obj, front);
+            for index in 0..count {
+                let mut def = ReplacementDefinition::new(ReplacementEvent::DamageDone)
+                    .prevention_shield(PreventionAmount::Next(if index == 0 { 0 } else { 2 }))
+                    .expiry(RestrictionExpiry::EndOfTurn);
+                def.is_consumed = index == 0;
+                obj.install_resolution_replacement(def);
+            }
+            let external: Vec<_> = obj
+                .replacement_definitions
+                .iter_all()
+                .filter(|def| def.is_resolution_installed())
+                .cloned()
+                .collect();
+            for _ in 0..2 {
+                apply_card_face_to_object(&mut obj, other);
+                assert_eq!(obj.replacement_definitions.as_slice(), external.as_slice());
+                assert!(obj.base_replacement_definitions.is_empty());
+                apply_card_face_to_object(&mut obj, front);
+                assert_eq!(
+                    obj.base_replacement_definitions.as_slice(),
+                    front.replacements.as_slice()
+                );
+                let mut expected_front = front.replacements.clone();
+                expected_front.extend(external.clone());
+                assert_eq!(
+                    obj.replacement_definitions.as_slice(),
+                    expected_front.as_slice()
+                );
+                apply_card_face_to_object(&mut obj, other);
+                let mut back = snapshot_object_face(&obj);
+                apply_card_face_to_back_face(&mut back, front);
+                apply_back_face_to_object(&mut obj, back);
+                assert_eq!(
+                    obj.base_replacement_definitions.as_slice(),
+                    front.replacements.as_slice()
+                );
+                let mut expected = obj.base_replacement_definitions.as_ref().clone();
+                expected.extend(external.clone());
+                assert_eq!(obj.replacement_definitions.as_slice(), expected.as_slice());
+                assert!(!obj
+                    .base_replacement_definitions
+                    .iter()
+                    .any(|def| def.is_resolution_installed()));
+                for face in [snapshot_object_face(&obj), snapshot_object_base_face(&obj)] {
+                    assert!(!face
+                        .replacement_definitions
+                        .iter_all()
+                        .any(|def| def.is_resolution_installed()));
+                }
+                assert!(!intrinsic_copiable_values(&obj)
+                    .replacement_definitions
+                    .iter()
+                    .any(|def| def.is_resolution_installed()));
+                if count != 0 {
+                    assert!(matches!(
+                        external[0].shield_kind,
+                        ShieldKind::Prevention {
+                            amount: PreventionAmount::Next(0)
+                        }
+                    ));
+                    assert!(external[0].is_consumed);
+                }
+            }
+        }
     }
 
     use crate::database::CardDatabase;

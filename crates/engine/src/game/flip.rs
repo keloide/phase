@@ -370,9 +370,15 @@ pub(crate) fn apply_flipped_face_to_object(obj: &mut GameObject, face: BackFaceD
     obj.base_keywords = face.keywords;
     obj.abilities = Arc::new(face.abilities.clone());
     obj.base_abilities = Arc::new(face.abilities);
-    obj.replacement_definitions = face.replacement_definitions.clone();
-    obj.base_replacement_definitions =
-        Arc::new(face.replacement_definitions.iter_all().cloned().collect());
+    // CR 710.1b/c + CR 611.2a: alternate intrinsic text replaces the normal
+    // text, while external resolution effects still apply to the same host.
+    let replacements = Arc::new(face.replacement_definitions.iter_all().cloned().collect());
+    obj.replacement_definitions =
+        super::game_object::reseed_replacements_carrying_resolution_effects(
+            &obj.replacement_definitions,
+            &replacements,
+        );
+    obj.base_replacement_definitions = replacements;
     obj.static_definitions = face.static_definitions.clone();
     obj.base_static_definitions = Arc::new(face.static_definitions.iter_all().cloned().collect());
     obj.install_trigger_base_definitions(Arc::new(
@@ -413,6 +419,77 @@ mod tests {
     use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
     use crate::types::player::PlayerId;
     use crate::types::triggers::TriggerMode;
+
+    /// CR 710.1b/c + CR 611.2a: use the real supported flip faces, retaining
+    /// exact external state and all normal-face casting characteristics.
+    #[test]
+    fn flip_reseed_preserves_resolution_state_and_normal_casting_characteristics() {
+        use crate::types::ability::{PreventionAmount, ReplacementDefinition, RestrictionExpiry};
+        use crate::types::replacements::ReplacementEvent;
+        let db = crate::test_support::shared_card_db();
+        let front = db
+            .get_face_by_name("Orochi Eggwatcher")
+            .expect("supported real flip card");
+        let alternative = crate::game::printed_cards::back_face_for_card_face(db, front)
+            .expect("Shidako alternative");
+        assert_eq!(alternative.name, "Shidako, Broodmistress");
+        for count in 0..=2 {
+            let mut obj = GameObject::new(
+                ObjectId(1),
+                CardId(1),
+                PlayerId(0),
+                "Host".into(),
+                Zone::Battlefield,
+            );
+            crate::game::printed_cards::apply_card_face_to_object(&mut obj, front);
+            let casting = (
+                obj.mana_cost.clone(),
+                obj.base_mana_cost.clone(),
+                obj.color.clone(),
+                obj.base_color.clone(),
+                obj.casting_options.clone(),
+            );
+            for index in 0..count {
+                let mut def = ReplacementDefinition::new(ReplacementEvent::DamageDone)
+                    .prevention_shield(PreventionAmount::Next(if index == 0 { 0 } else { 2 }))
+                    .expiry(RestrictionExpiry::EndOfTurn);
+                def.is_consumed = index == 0;
+                obj.install_resolution_replacement(def);
+            }
+            let external: Vec<_> = obj
+                .replacement_definitions
+                .iter_all()
+                .filter(|def| def.is_resolution_installed())
+                .cloned()
+                .collect();
+            for _ in 0..2 {
+                apply_flipped_face_to_object(&mut obj, alternative.clone());
+                assert_eq!(obj.name, "Shidako, Broodmistress");
+                assert_eq!((obj.power, obj.toughness), (Some(3), Some(3)));
+                assert_eq!(
+                    (
+                        obj.mana_cost.clone(),
+                        obj.base_mana_cost.clone(),
+                        obj.color.clone(),
+                        obj.base_color.clone(),
+                        obj.casting_options.clone()
+                    ),
+                    casting
+                );
+                let mut expected = obj.base_replacement_definitions.as_ref().clone();
+                expected.extend(external.clone());
+                assert_eq!(obj.replacement_definitions.as_slice(), expected.as_slice());
+                assert!(!obj
+                    .base_replacement_definitions
+                    .iter()
+                    .any(|def| def.is_resolution_installed()));
+                assert!(!crate::game::printed_cards::snapshot_object_face(&obj)
+                    .replacement_definitions
+                    .iter_all()
+                    .any(|def| def.is_resolution_installed()));
+            }
+        }
+    }
 
     /// `{W}` — Bushi Tenderfoot's printed mana cost (CR 202.1).
     fn white_mana_cost() -> ManaCost {

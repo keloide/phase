@@ -255,8 +255,15 @@ pub fn apply_face_down_creature_characteristics(
     obj.base_abilities = Arc::new(Vec::new());
     obj.trigger_definitions = crate::types::definitions::Definitions::default();
     obj.base_trigger_definitions = Arc::new(Vec::new());
-    obj.replacement_definitions = crate::types::definitions::Definitions::default();
-    obj.base_replacement_definitions = Arc::new(Vec::new());
+    // CR 708.2 + CR 611.2a/c: face-down characteristics remove intrinsic text,
+    // while independently bounded resolution effects remain on the same host.
+    let replacements = Arc::new(Vec::new());
+    obj.replacement_definitions =
+        super::game_object::reseed_replacements_carrying_resolution_effects(
+            &obj.replacement_definitions,
+            &replacements,
+        );
+    obj.base_replacement_definitions = replacements;
     obj.static_definitions = crate::types::definitions::Definitions::default();
     obj.base_static_definitions = Arc::new(Vec::new());
     obj.color = Vec::new();
@@ -948,6 +955,45 @@ mod tests {
     use crate::types::ability::QuantityExpr;
     use crate::types::identifiers::CardId;
     use crate::types::mana::ManaColor;
+
+    /// CR 708.2/708.8 + CR 611.2a: face-down text is empty while external
+    /// bounded state retains exact order, consumed flags and remaining capacity.
+    #[test]
+    fn face_down_reseed_preserves_resolution_and_removes_intrinsic_replacements() {
+        use crate::types::ability::{
+            FaceDownProfile, PreventionAmount, ReplacementDefinition, RestrictionExpiry,
+        };
+        use crate::types::replacements::ReplacementEvent;
+        for count in 0..=2 {
+            let mut state = GameState::new_two_player(42);
+            let id = setup_morph_creature(&mut state, PlayerId(0));
+            let obj = state.objects.get_mut(&id).unwrap();
+            let intrinsic = ReplacementDefinition::new(ReplacementEvent::GainLife);
+            obj.base_replacement_definitions = Arc::new(vec![intrinsic.clone()]);
+            obj.replacement_definitions = vec![intrinsic].into();
+            for index in 0..count {
+                let mut def = ReplacementDefinition::new(ReplacementEvent::DamageDone)
+                    .prevention_shield(PreventionAmount::Next(if index == 0 { 0 } else { 2 }))
+                    .expiry(RestrictionExpiry::EndOfTurn);
+                def.is_consumed = index == 0;
+                obj.install_resolution_replacement(def);
+            }
+            let expected: Vec<_> = obj
+                .replacement_definitions
+                .iter_all()
+                .filter(|def| def.is_resolution_installed())
+                .cloned()
+                .collect();
+            for _ in 0..2 {
+                apply_face_down_creature_characteristics(obj, &FaceDownProfile::vanilla_2_2());
+                assert!(obj.face_down);
+                assert_eq!((obj.power, obj.toughness), (Some(2), Some(2)));
+                assert_eq!(obj.replacement_definitions.as_slice(), expected.as_slice());
+                assert!(obj.base_replacement_definitions.is_empty());
+                assert!(snapshot_object_face(obj).replacement_definitions.is_empty());
+            }
+        }
+    }
 
     fn setup_morph_creature(state: &mut GameState, player: PlayerId) -> ObjectId {
         let id = create_object(

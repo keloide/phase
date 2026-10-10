@@ -2019,10 +2019,9 @@ impl GameObject {
     pub(crate) fn install_resolution_replacement(&mut self, mut def: ReplacementDefinition) {
         // CR 611.2a: a `Resolution`-origin def is carried across every CR 613.1
         // reset, so its SCHEDULED removal paths are an expiry prune (`turns.rs`, all
-        // three of which key on `expiry` alone) and a zone change. (Three face
-        // rewrites — transform/specialize, flip, morph — also drop it in place; see
-        // `reseed_replacements_carrying_resolution_effects`. Those are unscheduled
-        // shield-loss and cannot be relied on to end anything.) A def with no expiry
+        // three of which key on `expiry` alone) and a zone change. Same-object
+        // face rewrites carry the existing live state through
+        // `reseed_replacements_carrying_resolution_effects`. A def with no expiry
         // has no scheduled end at all — carrying it would make it immortal. Fail
         // CLOSED:
         // install it live-only, exactly as this call site behaved before the
@@ -2046,7 +2045,7 @@ impl GameObject {
         // stamp is applied below — against base by full structural equality, so it
         // fired on a legitimate shape: a turn-bound rider installed through this arm
         // onto an object that already carries a structurally identical rider written
-        // to base by `add_target_replacement`'s `install_to_base` trio (two Auras or
+        // to base by `add_target_replacement`'s legacy base exception (two Auras or
         // two triggers granting the same rider). That is legal and harmless, and it
         // would have aborted debug and test builds.
         //
@@ -4100,7 +4099,7 @@ pub(crate) fn source_chosen_player(state: &GameState, source_id: ObjectId) -> Op
 /// IDEMPOTENT under that re-entry: `reseed(reseed(live, X), Y) == reseed(live, Y)`
 /// for any baselines X, Y, because the carried set is exactly the
 /// `Resolution`-origin members of `live` in order, and NO baseline ever contains
-/// a `Resolution`-origin member. THREE legs make that unconditional:
+/// a `Resolution`-origin member. Four preconditions make that unconditional:
 ///   1. `GameObject::install_resolution_replacement`'s `debug_assert!` pins that a
 ///      `Resolution` def is never also in `base_replacement_definitions` at
 ///      install time.
@@ -4130,17 +4129,13 @@ pub(crate) fn source_chosen_player(state: &GameState, source_id: ObjectId) -> Op
 /// REMOVAL PATHS, stated accurately. The expiry prunes (`turns.rs`: cleanup,
 /// end-of-combat teardown, untap step) and a zone change
 /// (`revert_layered_characteristics_to_base`, CR 400.7) are the SCHEDULED ends. They
-/// are not the only ones: three in-place face rewrites also drop a carried shield,
-/// because each wholesale-assigns the live store from a face snapshot —
-/// `printed_cards::apply_back_face_to_object` (transform / specialize),
-/// `flip.rs` (CR 710.1b), and `morph.rs` (turn face down, CR 708.2a). Those three
-/// are shield-LOSS, not duplication, and are a known limitation rather than a
-/// correctness hazard; CR 611.2a argues the shield should survive them, and this
-/// comment is that limitation's only record. Do not restate the old "removed ONLY
-/// by an expiry prune or a zone change" claim — it is false.
+/// also govern resolution effects carried by same-object face rewrites:
+/// printed-face/back-face application, flip (CR 710.1c), and face-down application
+/// (CR 708.2/708.8) use this helper with their incoming intrinsic baseline.
+/// CR 611.2a: those rewrites do not end an external effect's stated duration.
 ///
 /// The carried set is therefore invariant across all three IN-PASS rewrites, for
-/// every baseline the two callers can supply. That is why this function takes the
+/// every intrinsic baseline the layer and face writers supply. That is why this function takes the
 /// baseline as a PARAMETER rather than reading `obj.base_replacement_definitions`
 /// itself.
 ///
@@ -5343,6 +5338,46 @@ mod tests {
         assert!(obj2.replacement_definitions[0].is_resolution_installed());
     }
 
+    /// CR 611.2a/c + CR 614.5: carry the exact ordered mutable live state,
+    /// including spent prevention capacity and consumed entries, without dedup.
+    #[test]
+    fn reseed_carrying_resolution_effects_preserves_zero_one_multiple_mutable_entries() {
+        use crate::types::ability::{PreventionAmount, ReplacementOrigin, ShieldKind};
+        let intrinsic =
+            ReplacementDefinition::new(crate::types::replacements::ReplacementEvent::GainLife);
+        let baseline = Arc::new(vec![intrinsic.clone()]);
+        let empty = Arc::new(Vec::new());
+        for count in 0..=2 {
+            let mut external = Vec::new();
+            for index in 0..count {
+                let mut def = eot_shield();
+                def.origin = ReplacementOrigin::Resolution;
+                def.shield_kind = ShieldKind::Prevention {
+                    amount: PreventionAmount::Next(if index == 0 { 0 } else { 2 }),
+                };
+                def.is_consumed = index == 0;
+                external.push(def);
+            }
+            let mut entries = vec![intrinsic.clone()];
+            entries.extend(external.clone());
+            let live: Definitions<ReplacementDefinition> = entries.into();
+            let once = reseed_replacements_carrying_resolution_effects(&live, &baseline);
+            let mut expected = vec![intrinsic.clone()];
+            expected.extend(external.clone());
+            assert_eq!(once.as_slice(), expected.as_slice());
+            let without_intrinsic = reseed_replacements_carrying_resolution_effects(&once, &empty);
+            assert_eq!(without_intrinsic.as_slice(), external.as_slice());
+            let repeated =
+                reseed_replacements_carrying_resolution_effects(&without_intrinsic, &baseline);
+            assert_eq!(repeated.as_slice(), expected.as_slice());
+            if count == 0 {
+                assert!(Arc::ptr_eq(&once.0, &baseline));
+                assert!(Arc::ptr_eq(&without_intrinsic.0, &empty));
+            }
+            assert!(baseline.iter().all(|def| !def.is_resolution_installed()));
+        }
+    }
+
     /// The MG2 idempotence contract as an executable assertion, not prose:
     /// `reseed(reseed(live, X), Y) == reseed(live, Y)` for any baselines X, Y.
     /// This is what makes the carry-over safe under the up-to-three wholesale live
@@ -5389,6 +5424,7 @@ mod tests {
         .into();
         let reseeded = reseed_replacements_carrying_resolution_effects(&plain, &base_y);
         assert_eq!(reseeded.as_slice(), base_y.as_slice());
+        assert!(Arc::ptr_eq(&reseeded.0, &base_y));
     }
 
     /// CR 611.2c: the base back-fill on an uninitialized fixture must never capture
