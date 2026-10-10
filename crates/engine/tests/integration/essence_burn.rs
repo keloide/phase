@@ -637,13 +637,25 @@ fn essence_burn_face_down_keeps_die_exile() {
         ),
         (Some(2), Some(6))
     );
-    burn_surviving_host(&mut r, essence, host);
+    priority_for(&mut r, P0);
+    let out = r.cast(essence).target_object(host).resolve();
+    out.assert_zone(&[host], Zone::Battlefield);
+    out.assert_zone(&[essence], Zone::Graveyard);
+    assert_eq!(out.damage_marked(host), 5);
+    out.assert_stack_size(0);
+    let pre_cyber_resolution_count = live_resolution_count(&r, host);
+    let pre_cyber_base_is_intrinsic = r.state().objects[&host]
+        .base_replacement_definitions
+        .iter()
+        .all(|def| !def.is_resolution_installed());
     let out = r.cast(cyber).target_object(host).resolve();
     assert_eq!(
         out.zone_of(host),
         Zone::Exile,
         "Essence Burn's this-turn replacement must exile the same host after Cyber Conversion"
     );
+    assert_eq!(pre_cyber_resolution_count, 1);
+    assert!(pre_cyber_base_is_intrinsic);
     out.assert_zone(&[cyber], Zone::Graveyard);
     out.assert_stack_size(0);
     assert!(out.events().iter().any(
