@@ -1350,7 +1350,7 @@ fn parse_cards_put_into_graveyard_from_zones_quantity(
     Ok((rest, expr))
 }
 
-/// CR 107.3c + CR 701.17a (mill = library to graveyard) + CR 400.7 + CR 109.5
+/// CR 107.3c + CR 701.17a (mill = library to graveyard) + CR 400.7
 /// + CR 404.1 + CR 111.7: "the number of [type] cards [that were] put into
 /// target player's graveyard from their hand or library this turn" (Cruel
 /// Calculations). Sole owner of the target-player zone-list forms (1..n origin
@@ -9202,7 +9202,7 @@ mod tests {
         }
     }
     // -----------------------------------------------------------------------
-    // CR 107.3c + CR 701.17a + CR 400.7 + CR 109.5 + CR 404.1 + CR 115.1a:
+    // CR 107.3c + CR 701.17a + CR 400.7 + CR 404.1 + CR 115.1a:
     // "the number of cards [that were] put into target player's graveyard from
     // their hand or library this turn" (Cruel Calculations).
     // -----------------------------------------------------------------------

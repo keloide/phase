@@ -6495,7 +6495,7 @@ pub(crate) fn parse_cards_put_into_your_graveyard_from_zones(
 
 /// CR 107.3c (X defined by the spell's text is evaluated at resolution) +
 /// CR 701.17a (mill = library to graveyard) + CR 400.7 (per-turn zone-change
-/// records) + CR 109.5 + CR 404.1 (the "their" possessive names the announced
+/// records) + CR 404.1 (the "their" possessive is anaphoric to the announced
 /// target player's cards; a player's graveyard holds their cards) +
 /// CR 115.1a ("target player's" announces the spell's target): "[type] cards
 /// [that were] put into target player's graveyard from their <zone>[ or
