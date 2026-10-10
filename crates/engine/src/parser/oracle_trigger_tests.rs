@@ -14489,6 +14489,98 @@ fn bubbling_muck_delayed_trigger_taps_for_mana_class_general() {
 }
 
 #[test]
+fn molten_tide_delayed_trigger_you_tap_mountain_for_mana() {
+    // CR 603.7b + CR 106.12a: Molten Tide's real Oracle text is an instant
+    // that creates an until-end-of-turn delayed trigger. The inner condition
+    // is keyword-stripped by `try_parse_whenever_this_turn` before
+    // `parse_trigger_condition` runs, so the "you tap " actor arm of
+    // `parse_taps_for_mana_actor_line` must accept the missing "whenever "
+    // keyword. Reverting that arm reproduces `TriggerMode::Unknown`, which
+    // has no matcher and never fires.
+    let parsed = parse_oracle_text(
+        "Until end of turn, whenever you tap a Mountain for mana, add an additional {R}.",
+        "Molten Tide",
+        &[],
+        &["Instant".to_string()],
+        &[],
+    );
+    for ability in &parsed.abilities {
+        assert_no_unimplemented(ability);
+    }
+    let ability = parsed
+        .abilities
+        .iter()
+        .find(|a| matches!(*a.effect, Effect::CreateDelayedTrigger { .. }))
+        .expect("Molten Tide must parse a CreateDelayedTrigger");
+
+    // Outer window is the until-end-of-turn cleanup purge (CR 603.7b).
+    assert_eq!(ability.duration, Some(Duration::UntilEndOfTurn));
+
+    let Effect::CreateDelayedTrigger {
+        condition: DelayedTriggerCondition::WheneverEvent { trigger, .. },
+        effect,
+        ..
+    } = &*ability.effect
+    else {
+        panic!(
+            "expected WheneverEvent delayed trigger, got {:?}",
+            ability.effect
+        );
+    };
+
+    // Inner trigger must be a real TapsForMana matcher, NOT the Unknown fallback.
+    assert_eq!(trigger.mode, TriggerMode::TapsForMana);
+    assert!(
+        !matches!(trigger.mode, TriggerMode::Unknown(_)),
+        "inner trigger must not be Unknown (Unknown has no matcher and never fires)"
+    );
+
+    // valid_card is the Mountain subtype filter scoped to lands the trigger
+    // source's controller tapped ("you tap" = ControllerRef::You).
+    match &trigger.valid_card {
+        Some(TargetFilter::Typed(tf)) => {
+            assert!(
+                tf.type_filters
+                    .contains(&TypeFilter::Subtype("Mountain".to_string())),
+                "valid_card must filter on Subtype(Mountain), got {:?}",
+                tf.type_filters
+            );
+            assert_eq!(
+                tf.controller,
+                Some(ControllerRef::You),
+                "\"you tap\" imposes a You controller constraint on the tapped land"
+            );
+        }
+        other => panic!("expected Typed Mountain filter, got {other:?}"),
+    }
+    assert_eq!(
+        trigger.valid_target,
+        Some(TargetFilter::Controller),
+        "\"you tap\" binds the tapper to the trigger source's controller"
+    );
+    assert_eq!(
+        trigger.taps_for_mana_produced, None,
+        "\"for mana\" with no color constraint imposes no produced-mana filter"
+    );
+
+    // CR 106.4 + CR 603.7d: subjectless body — implicit controller deposit;
+    // tapper == controller on every firing, unlike High Tide's subject-led
+    // Recipient{TriggeringPlayer}.
+    assert!(
+        matches!(
+            &*effect.effect,
+            Effect::Mana {
+                produced: ManaProduction::Fixed { colors, contribution: ManaContribution::Additional },
+                target: None,
+                ..
+            } if colors == &vec![ManaColor::Red]
+        ),
+        "inner effect must be subjectless additional red mana, got {:?}",
+        effect.effect
+    );
+}
+
+#[test]
 fn trigger_you_tap_land_for_mana_vorinclex_first_half() {
     // CR 603.2 + CR 106.12a: "you tap a land" arm scopes the source filter to
     // ControllerRef::You — the trigger fires only on lands the controller taps.

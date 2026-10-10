@@ -1708,6 +1708,7 @@ mod modal_mode_labels;
 mod modal_saga_chapter_runtime;
 mod molten_core_maestro_2384;
 mod molten_psyche;
+mod molten_tide_mountain_bonus;
 mod momir_basic_emblem;
 mod momir_pool_excludes_transform_back_faces;
 mod momir_token_firebreathing_duration;
