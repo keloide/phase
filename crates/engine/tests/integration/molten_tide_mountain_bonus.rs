@@ -8,7 +8,7 @@
 
 use engine::game::mana_abilities::activate_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
-use engine::game::triggers::check_delayed_triggers;
+use engine::game::triggers::process_triggers;
 use engine::game::turns::execute_cleanup;
 use engine::types::events::{GameEvent, ManaTapState};
 use engine::types::game_state::ManaAbilityResume;
@@ -61,9 +61,13 @@ fn molten_tide_bonus_only_for_controller_taps_own_mountain_then_expires() {
     );
     clear_pools(&mut runner);
 
-    // (1) P0 taps its own Mountain for mana. The land's base {R} plus the
-    // trigger's additional {R} land in P0's pool (CR 106.4: the subjectless
-    // body deposits into the controller's pool; CR 106.12a: the tap event).
+    // (1) P0 taps its own Mountain for mana. The activation resolves the
+    // TapsForMana bonus inline (tap_state FromTapTriggersResolved), so the
+    // land's base {R} plus the trigger's additional {R} land in P0's pool
+    // (CR 106.4: the subjectless body deposits into the controller's pool;
+    // CR 106.12a: the tap event). `process_triggers` over the same batch is
+    // a no-op second pass (resolved marker), mirroring the
+    // issue_6979_land_mana_amplification driving — it must NOT add again.
     let ability = runner.state().objects[&mtn0].abilities[0].clone();
     let mut events = Vec::new();
     activate_mana_ability(
@@ -77,7 +81,7 @@ fn molten_tide_bonus_only_for_controller_taps_own_mountain_then_expires() {
         None,
     )
     .expect("P0 taps its own Mountain for mana");
-    check_delayed_triggers(runner.state_mut(), &events);
+    process_triggers(runner.state_mut(), &events);
     assert_eq!(
         red(&runner, P0),
         2,
@@ -99,7 +103,7 @@ fn molten_tide_bonus_only_for_controller_taps_own_mountain_then_expires() {
         None,
     )
     .expect("P0 taps a second Mountain for mana");
-    check_delayed_triggers(runner.state_mut(), &events);
+    process_triggers(runner.state_mut(), &events);
     assert_eq!(
         red(&runner, P0),
         4,
@@ -110,7 +114,7 @@ fn molten_tide_bonus_only_for_controller_taps_own_mountain_then_expires() {
     // the trigger source's controller (valid_target = Controller), so no
     // trigger fires and NEITHER pool gains.
     clear_pools(&mut runner);
-    check_delayed_triggers(
+    process_triggers(
         runner.state_mut(),
         &[GameEvent::TappedForMana {
             player_id: P1,
@@ -124,7 +128,7 @@ fn molten_tide_bonus_only_for_controller_taps_own_mountain_then_expires() {
 
     // (4) HOSTILE F2: P0 taps an OPPONENT-controlled Mountain. The source is
     // not You-controlled (valid_card controller gate), so no bonus.
-    check_delayed_triggers(
+    process_triggers(
         runner.state_mut(),
         &[GameEvent::TappedForMana {
             player_id: P0,
@@ -163,7 +167,7 @@ fn molten_tide_bonus_only_for_controller_taps_own_mountain_then_expires() {
         None,
     )
     .expect("P0 taps a Mountain after cleanup");
-    check_delayed_triggers(runner.state_mut(), &events);
+    process_triggers(runner.state_mut(), &events);
     assert_eq!(
         red(&runner, P0),
         1,
