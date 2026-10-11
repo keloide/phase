@@ -178,14 +178,14 @@ fn torch_the_tower_replacement_expires_from_the_layer_baseline_at_cleanup() {
     let object = &runner.state().objects[&target];
     assert_eq!(object.damage_marked, 2);
     assert!(object.base_replacement_definitions.is_empty());
-    assert_eq!(object.replacement_definitions.iter_all().count(), 1);
+    assert_eq!(object.replacement_definitions.len(), 1);
     let installed = object.replacement_definitions[0].clone();
     assert_eq!(installed.origin, ReplacementOrigin::Resolution);
     assert_eq!(installed.expiry, Some(RestrictionExpiry::EndOfTurn));
     for _ in 0..2 {
         engine::game::layers::evaluate_layers(runner.state_mut());
         let object = &runner.state().objects[&target];
-        assert_eq!(object.replacement_definitions.iter_all().count(), 1);
+        assert_eq!(object.replacement_definitions.len(), 1);
         assert_eq!(object.replacement_definitions[0], installed);
         assert!(object.base_replacement_definitions.is_empty());
         assert_eq!(object.damage_marked, 2);
@@ -210,13 +210,10 @@ fn torch_the_tower_replacement_expires_from_the_layer_baseline_at_cleanup() {
         .unwrap()
         .hand
         .len();
-    active
-        .cast(rites)
-        .sacrifice_with(&[target])
-        .resolve()
-        .assert_zone(&[target], Zone::Exile)
-        .assert_zone(&[rites], Zone::Graveyard)
-        .assert_stack_size(0);
+    let active_outcome = active.cast(rites).sacrifice_with(&[target]).resolve();
+    active_outcome.assert_zone(&[target], Zone::Exile);
+    active_outcome.assert_zone(&[rites], Zone::Graveyard);
+    active_outcome.assert_stack_size(0);
     assert_eq!(
         active
             .state()
@@ -261,13 +258,10 @@ fn torch_the_tower_replacement_expires_from_the_layer_baseline_at_cleanup() {
         .unwrap()
         .hand
         .len();
-    runner
-        .cast(rites)
-        .sacrifice_with(&[target])
-        .resolve()
-        .assert_zone(&[target], Zone::Graveyard)
-        .assert_zone(&[rites], Zone::Graveyard)
-        .assert_stack_size(0);
+    let expired_outcome = runner.cast(rites).sacrifice_with(&[target]).resolve();
+    expired_outcome.assert_zone(&[target], Zone::Graveyard);
+    expired_outcome.assert_zone(&[rites], Zone::Graveyard);
+    expired_outcome.assert_stack_size(0);
     assert_eq!(
         runner
             .state()

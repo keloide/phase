@@ -1407,25 +1407,19 @@ fn essence_burn_rewrite_bounce_reentry_drops_old_grant() {
     let mut normal = ordinary.build();
     let normal_card = normal.state().objects[&ordinary_host].card_id;
     let normal_incarnation = normal.state().objects[&ordinary_host].incarnation;
-    normal
-        .cast(shock)
-        .target_object(ordinary_host)
-        .resolve()
-        .assert_zone(&[ordinary_host], Zone::Battlefield)
-        .assert_zone(&[shock], Zone::Graveyard)
-        .assert_stack_size(0);
+    let shock_outcome = normal.cast(shock).target_object(ordinary_host).resolve();
+    shock_outcome.assert_zone(&[ordinary_host], Zone::Battlefield);
+    shock_outcome.assert_zone(&[shock], Zone::Graveyard);
+    shock_outcome.assert_stack_size(0);
     assert_eq!(normal.state().objects[&ordinary_host].damage_marked, 2);
     assert_eq!(live_resolution_count(&normal, ordinary_host), 0);
     assert!(normal.state().objects[&ordinary_host]
         .replacement_definitions
         .is_empty());
-    normal
-        .cast(unsummon)
-        .target_object(ordinary_host)
-        .resolve()
-        .assert_zone(&[ordinary_host], Zone::Hand)
-        .assert_zone(&[unsummon], Zone::Graveyard)
-        .assert_stack_size(0);
+    let unsummon_outcome = normal.cast(unsummon).target_object(ordinary_host).resolve();
+    unsummon_outcome.assert_zone(&[ordinary_host], Zone::Hand);
+    unsummon_outcome.assert_zone(&[unsummon], Zone::Graveyard);
+    unsummon_outcome.assert_stack_size(0);
     let bounced = &normal.state().objects[&ordinary_host];
     assert_eq!(bounced.card_id, normal_card);
     assert!(bounced.incarnation > normal_incarnation);
