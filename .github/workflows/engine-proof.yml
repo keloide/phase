@@ -1,4 +1,4 @@
-# TEMPORARY FORK-ONLY V13 MACHINERY; C11-BOUND, STATIC ONLY; ALL NATIVE CHECKS UNPROBED. Never include this YAML in product history/PR.
+# TEMPORARY FORK-ONLY V14 MACHINERY; C12-BOUND, STATIC ONLY; ALL NATIVE CHECKS UNPROBED. Never include this YAML in product history/PR.
 # Exactly three fixed stages and two one-shot API-only waits; no retry or self-dispatch.
 # Root fills the initial SHA pair, exact proof branch, three publication and three result refs.
 # The original pinned inputs are restored from run 37483983597; only exact C8 BASE outputs are licensed for reuse.
@@ -6,8 +6,8 @@
 # Only root may accept stage 1, once-fetch/merge, copy/commit stage-2 canonical bytes,
 # and publish final HEAD. Wait jobs are not candidate verification or acceptance.
 # Root adjudicated source-idle interpretation: phase-fit 109; temporary workflow SHA differs.
-name: Temporary finite immutable engine proof 13
-run-name: Engine proof 13 ${{ github.ref_name }}
+name: Temporary finite immutable engine proof 14
+run-name: Engine proof 14 ${{ github.ref_name }}
 
 on:
   push:
@@ -21,7 +21,7 @@ env:
   RTK_DISABLED: '1'
   CARGO_INCREMENTAL: '0'
   BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
-  CANDIDATE_SHA: 33325ad6b05aee0d0346bccc4d209020ba2af71e
+  CANDIDATE_SHA: 63982a3c250cf7f4e2b184d99b95be977986fb0a
   MODE: final
   PHASE_BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
   TEST_FEATURES: phase-engine/test-support,phase-engine/cli,phase-engine/proptest
@@ -145,7 +145,7 @@ env:
     crates/engine/src/game/morph.rs
     crates/engine/src/game/printed_cards.rs
     crates/engine/src/game/flip.rs
-  # Complete C8-to-C11 production hunks and comments; no test/parser/fixture hunks.
+  # Complete C8-to-C12 production hunks and comments; no test/parser/fixture hunks.
   REVISED_PRODUCTION_PATCH: |-
     diff --git a/crates/engine/src/game/effects/add_target_replacement.rs b/crates/engine/src/game/effects/add_target_replacement.rs
     index 5888173e0b..abf6b64c9c 100644
@@ -837,7 +837,7 @@ jobs:
           set -euo pipefail
           test "$BASE_SHA" = ab1363d1f30141c118db0c83de0da617e0c07c65
           test "$PHASE_BASE_SHA" = "$BASE_SHA"
-          test "$CANDIDATE_SHA" = 33325ad6b05aee0d0346bccc4d209020ba2af71e
+          test "$CANDIDATE_SHA" = 63982a3c250cf7f4e2b184d99b95be977986fb0a
           test "$INPUT_RUN_ID" = 37483983597
           test "$GATED_SETS_AS_OF" = 2026-10-05
           test "$MODE" = final
@@ -857,7 +857,7 @@ jobs:
           gh api repos/keloide/phase/actions/artifacts/11671484818 > "$RUNNER_TEMP/v11-base-artifact.json"
           jq -e '.id == 11671484818 and .name == "stage1-base-outputs-and-parse-diff" and .size_in_bytes == 44689035 and .expired == false and .digest == "sha256:ea0eb2f034fa1e81090b36f2a0f62fa5394c66803c3e1bb857a9506e38d512a8" and .workflow_run.id == 38056134872 and .workflow_run.head_sha == "42408f453d37fd5ce5e647f0ea86a01a63a82675"' "$RUNNER_TEMP/v11-base-artifact.json"
           # No old candidate or old C8/C10 comparison is licensed as new-head evidence.
-          echo 'Licensed retained C8 generation/audits/repeats only; fresh C11 outputs and current comparisons remain required.'
+          echo 'Licensed retained C8 generation/audits/repeats only; fresh C12 outputs and current comparisons remain required.'
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: nightly-2026-04-19
@@ -884,7 +884,7 @@ jobs:
         with:
           name: stage1-candidate-outputs
           path: stage1-candidate-outputs
-      - name: Reuse licensed C8 exports and run fresh C8-built comparisons with C11
+      - name: Reuse licensed C8 exports and run fresh C8-built comparisons with C12
         working-directory: stage1-base-projection
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-base-projection-target
@@ -1717,7 +1717,7 @@ jobs:
     needs: [stage1-candidate, stage1-base, stage1-runtime-red, stage1-completion]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-13-results-stage1
+      RESULT_BRANCH: engine-proof/fra-stingerquill-14-results-stage1
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage1-outputs.tar.gz
     permissions:
       contents: write
@@ -2041,7 +2041,7 @@ jobs:
     needs: [stage2-generation]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-13-results-stage2
+      RESULT_BRANCH: engine-proof/fra-stingerquill-14-results-stage2
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage2-outputs.tar.gz
     permissions:
       contents: write
@@ -3306,7 +3306,7 @@ jobs:
     needs: [stage3-candidate, stage3-base, stage3-runtime-red, stage3-completion]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-13-results-stage3
+      RESULT_BRANCH: engine-proof/fra-stingerquill-14-results-stage3
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage3-outputs.tar.gz
     permissions:
       contents: write
