@@ -1,4 +1,4 @@
-# TEMPORARY FORK-ONLY V14 MACHINERY; C12-BOUND, STATIC ONLY; ALL NATIVE CHECKS UNPROBED. Never include this YAML in product history/PR.
+# TEMPORARY FORK-ONLY V15 MACHINERY; C13-BOUND, STATIC ONLY; ALL NATIVE CHECKS UNPROBED. Never include this YAML in product history/PR.
 # Exactly three fixed stages and two one-shot API-only waits; no retry or self-dispatch.
 # Root fills the initial SHA pair, exact proof branch, three publication and three result refs.
 # The original pinned inputs are restored from run 37483983597; only exact C8 BASE outputs are licensed for reuse.
@@ -6,8 +6,8 @@
 # Only root may accept stage 1, once-fetch/merge, copy/commit stage-2 canonical bytes,
 # and publish final HEAD. Wait jobs are not candidate verification or acceptance.
 # Root adjudicated source-idle interpretation: phase-fit 109; temporary workflow SHA differs.
-name: Temporary finite immutable engine proof 14
-run-name: Engine proof 14 ${{ github.ref_name }}
+name: Temporary finite immutable engine proof 15
+run-name: Engine proof 15 ${{ github.ref_name }}
 
 on:
   push:
@@ -21,13 +21,13 @@ env:
   RTK_DISABLED: '1'
   CARGO_INCREMENTAL: '0'
   BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
-  CANDIDATE_SHA: 63982a3c250cf7f4e2b184d99b95be977986fb0a
+  CANDIDATE_SHA: 2eabf316aa7216f8e85f6c97db8087e8db433d2f
   MODE: final
   PHASE_BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
   TEST_FEATURES: phase-engine/test-support,phase-engine/cli,phase-engine/proptest
   # Discover broad required suites/features; execute changed runtime owners and source censuses before the once-required full workspace suite.
   DISCOVERY_FILTER: 'package(phase-engine) | (package(phase-ai) & (binary(gate_cli) | test(/policies::x_reference::/))) | (package(probe-pin) & binary(pure_logic))'
-  FOCUSED_FILTER: 'package(phase-engine) & (test(/^game::effects::add_target_replacement::/) | test(/^game::morph::/) | test(/^game::printed_cards::/) | test(/^game::flip::/) | test(/^game::game_object::/) | test(/^game::turns::/) | test(/^game::zones::/) | test(/^essence_burn::/) | test(/^torch_the_tower_die_exile::/) | test(/census/) | binary(/census/))'
+  FOCUSED_FILTER: 'package(phase-engine) & (test(/^game::combat_damage::/) | test(/^game::effects::deal_damage::/) | test(/^game::effects::tests::/) | test(/^game::effects::reflexive_occurrence_verdict_tests::/) | test(/^game::effects::add_target_replacement::/) | test(/^game::morph::/) | test(/^game::printed_cards::/) | test(/^game::flip::/) | test(/^game::game_object::/) | test(/^game::turns::/) | test(/^game::zones::/) | test(/^essence_burn::/) | test(/^torch_the_tower_die_exile::/) | test(/census/) | binary(/census/))'
   U3_RUNTIME_TEST: essence_burn::essence_burn_face_down_keeps_die_exile
   U3_RED_ASSERTION_TEXT: "Essence Burn's this-turn replacement must exile the same host after Cyber Conversion"
   # Retained ORIGINAL U3 production-only control; complete revised P is separate below.
@@ -520,7 +520,10 @@ env:
   NORMAL_EXIT_RED_ASSERTION_TEXT: normal Shock then Unsummon must clear marked damage immediately in its owner's hand
   TORCH_CLEANUP_TEST: torch_the_tower_die_exile::torch_the_tower_replacement_expires_from_the_layer_baseline_at_cleanup
   PHASE_SCOPE_PATHS: |-
+    crates/engine/src/game/combat_damage.rs
     crates/engine/src/game/effects/add_target_replacement.rs
+    crates/engine/src/game/effects/deal_damage.rs
+    crates/engine/src/game/effects/mod.rs
     crates/engine/src/game/flip.rs
     crates/engine/src/game/game_object.rs
     crates/engine/src/game/morph.rs
@@ -573,7 +576,10 @@ env:
     crates/engine/tests/integration/essence_burn.rs
     crates/engine/tests/integration/main.rs
   SCOPE_PATHS: |-
+    crates/engine/src/game/combat_damage.rs
     crates/engine/src/game/effects/add_target_replacement.rs
+    crates/engine/src/game/effects/deal_damage.rs
+    crates/engine/src/game/effects/mod.rs
     crates/engine/src/game/flip.rs
     crates/engine/src/game/game_object.rs
     crates/engine/src/game/morph.rs
@@ -837,7 +843,7 @@ jobs:
           set -euo pipefail
           test "$BASE_SHA" = ab1363d1f30141c118db0c83de0da617e0c07c65
           test "$PHASE_BASE_SHA" = "$BASE_SHA"
-          test "$CANDIDATE_SHA" = 63982a3c250cf7f4e2b184d99b95be977986fb0a
+          test "$CANDIDATE_SHA" = 2eabf316aa7216f8e85f6c97db8087e8db433d2f
           test "$INPUT_RUN_ID" = 37483983597
           test "$GATED_SETS_AS_OF" = 2026-10-05
           test "$MODE" = final
@@ -1168,13 +1174,19 @@ jobs:
               count = sum(p == package for p, b, n in selected)
               assert count > 0, package
               print('Collected broad native-discovery tests:', package, count)
-          for owner in ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'torch_the_tower_die_exile::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::']:
+          for owner in ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'torch_the_tower_die_exile::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::']:
               count = sum(p == 'phase-engine' and n.startswith(owner) for p, b, n in selected)
               assert count > 0, owner
               print('Collected owner:', owner, count)
           for binary in ['resolution-face-census', 'oracle-gen']:
               assert any(p == 'phase-engine' and b == binary for p, b, n in selected), binary
           required = [
+              ('phase-engine', 'engine', 'game::combat_damage::tests::multiple_blockers_returns_waiting_for_assignment'),
+              ('phase-engine', 'engine', 'game::combat_damage::tests::mutual_combat_damage'),
+              ('phase-engine', 'engine', 'game::combat_damage::tests::trample_deathtouch_assigns_one_to_each_blocker'),
+              ('phase-engine', 'engine', 'game::effects::deal_damage::tests::iron_fist_granted_ability_deals_damage_equal_to_power'),
+              ('phase-engine', 'engine', 'game::effects::deal_damage::tests::red_hulk_reflex_deals_damage_equal_to_counter_count'),
+              ('phase-engine', 'engine', 'game::effects::tests::volcanic_vision_deals_returned_cards_mana_value_after_return_to_hand'),
               ('phase-engine', 'engine', 'game::game_object::tests::reset_for_battlefield_exit_clears_marked_damage'),
               ('phase-engine', 'engine', 'game::zones::tests::battlefield_exit_marked_damage_is_reproduced_by_resolved_command_replay'),
               ('phase-engine', 'integration', 'essence_burn::essence_burn_rewrite_bounce_reentry_drops_old_grant'),
@@ -1193,7 +1205,7 @@ jobs:
           assert any(p == 'phase-engine' and 'census' in n for p, b, n in selected)
           print('Total broad native-discovery test count:', len(selected))
           # The narrow runtime filter contains every changed owner and every named/binary source census.
-          runtime_prefixes = ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'essence_burn::', 'torch_the_tower_die_exile::']
+          runtime_prefixes = ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'essence_burn::', 'torch_the_tower_die_exile::']
           runtime_selected = [(p, b, n) for p, b, n in selected if p == 'phase-engine' and
                               (any(n.startswith(prefix) for prefix in runtime_prefixes) or 'census' in n or 'census' in b)]
           for owner in runtime_prefixes:
@@ -1202,7 +1214,7 @@ jobs:
               print('Focused runtime owner:', owner, count)
           assert sum(n.startswith('essence_burn::') for p, b, n in runtime_selected) == 27
           assert sum(n.startswith('torch_the_tower_die_exile::') for p, b, n in runtime_selected) == 7
-          for item in required[:4]:
+          for item in required[:10]:
               assert runtime_selected.count(item) == 1, item
           print('Expected focused runtime selection from this current native discovery:', len(runtime_selected))
           # Broad parser/AI/probe/feature-positive suites remain compiled/discovered here and execute in full Step 5.
@@ -1717,7 +1729,7 @@ jobs:
     needs: [stage1-candidate, stage1-base, stage1-runtime-red, stage1-completion]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-14-results-stage1
+      RESULT_BRANCH: engine-proof/fra-stingerquill-15-results-stage1
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage1-outputs.tar.gz
     permissions:
       contents: write
@@ -2041,7 +2053,7 @@ jobs:
     needs: [stage2-generation]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-14-results-stage2
+      RESULT_BRANCH: engine-proof/fra-stingerquill-15-results-stage2
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage2-outputs.tar.gz
     permissions:
       contents: write
@@ -2750,13 +2762,19 @@ jobs:
               count = sum(p == package for p, b, n in selected)
               assert count > 0, package
               print('Collected broad native-discovery tests:', package, count)
-          for owner in ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'torch_the_tower_die_exile::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::']:
+          for owner in ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'torch_the_tower_die_exile::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::']:
               count = sum(p == 'phase-engine' and n.startswith(owner) for p, b, n in selected)
               assert count > 0, owner
               print('Collected owner:', owner, count)
           for binary in ['resolution-face-census', 'oracle-gen']:
               assert any(p == 'phase-engine' and b == binary for p, b, n in selected), binary
           required = [
+              ('phase-engine', 'engine', 'game::combat_damage::tests::multiple_blockers_returns_waiting_for_assignment'),
+              ('phase-engine', 'engine', 'game::combat_damage::tests::mutual_combat_damage'),
+              ('phase-engine', 'engine', 'game::combat_damage::tests::trample_deathtouch_assigns_one_to_each_blocker'),
+              ('phase-engine', 'engine', 'game::effects::deal_damage::tests::iron_fist_granted_ability_deals_damage_equal_to_power'),
+              ('phase-engine', 'engine', 'game::effects::deal_damage::tests::red_hulk_reflex_deals_damage_equal_to_counter_count'),
+              ('phase-engine', 'engine', 'game::effects::tests::volcanic_vision_deals_returned_cards_mana_value_after_return_to_hand'),
               ('phase-engine', 'engine', 'game::game_object::tests::reset_for_battlefield_exit_clears_marked_damage'),
               ('phase-engine', 'engine', 'game::zones::tests::battlefield_exit_marked_damage_is_reproduced_by_resolved_command_replay'),
               ('phase-engine', 'integration', 'essence_burn::essence_burn_rewrite_bounce_reentry_drops_old_grant'),
@@ -2775,7 +2793,7 @@ jobs:
           assert any(p == 'phase-engine' and 'census' in n for p, b, n in selected)
           print('Total broad native-discovery test count:', len(selected))
           # The narrow runtime filter contains every changed owner and every named/binary source census.
-          runtime_prefixes = ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'essence_burn::', 'torch_the_tower_die_exile::']
+          runtime_prefixes = ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'essence_burn::', 'torch_the_tower_die_exile::']
           runtime_selected = [(p, b, n) for p, b, n in selected if p == 'phase-engine' and
                               (any(n.startswith(prefix) for prefix in runtime_prefixes) or 'census' in n or 'census' in b)]
           for owner in runtime_prefixes:
@@ -2784,7 +2802,7 @@ jobs:
               print('Focused runtime owner:', owner, count)
           assert sum(n.startswith('essence_burn::') for p, b, n in runtime_selected) == 27
           assert sum(n.startswith('torch_the_tower_die_exile::') for p, b, n in runtime_selected) == 7
-          for item in required[:4]:
+          for item in required[:10]:
               assert runtime_selected.count(item) == 1, item
           print('Expected focused runtime selection from this current native discovery:', len(runtime_selected))
           # Broad parser/AI/probe/feature-positive suites remain compiled/discovered here and execute in full Step 5.
@@ -3306,7 +3324,7 @@ jobs:
     needs: [stage3-candidate, stage3-base, stage3-runtime-red, stage3-completion]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-14-results-stage3
+      RESULT_BRANCH: engine-proof/fra-stingerquill-15-results-stage3
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage3-outputs.tar.gz
     permissions:
       contents: write
