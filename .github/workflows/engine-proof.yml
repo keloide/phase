@@ -1,13 +1,13 @@
-# TEMPORARY FORK-ONLY V9 MACHINERY; C10-FILLED, STATIC TRIGGER-READY; RUNTIME UNPROBED. Never include this YAML in product history/PR.
+# TEMPORARY FORK-ONLY V13 MACHINERY; C11-BOUND, STATIC ONLY; ALL NATIVE CHECKS UNPROBED. Never include this YAML in product history/PR.
 # Exactly three fixed stages and two one-shot API-only waits; no retry or self-dispatch.
 # Root fills the initial SHA pair, exact proof branch, three publication and three result refs.
-# The original pinned inputs are always restored from run 37483983597.
+# The original pinned inputs are restored from run 37483983597; only exact C8 BASE outputs are licensed for reuse.
 # Initial/final MODE=final requires committed canonical bytes before each full proof.
 # Only root may accept stage 1, once-fetch/merge, copy/commit stage-2 canonical bytes,
 # and publish final HEAD. Wait jobs are not candidate verification or acceptance.
 # Root adjudicated source-idle interpretation: phase-fit 109; temporary workflow SHA differs.
-name: Temporary finite immutable engine proof 9
-run-name: Engine proof 9 ${{ github.ref_name }}
+name: Temporary finite immutable engine proof 13
+run-name: Engine proof 13 ${{ github.ref_name }}
 
 on:
   push:
@@ -21,14 +21,16 @@ env:
   RTK_DISABLED: '1'
   CARGO_INCREMENTAL: '0'
   BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
-  CANDIDATE_SHA: e8aa66ec424c93bc06520b581cc142683504f18d
+  CANDIDATE_SHA: 33325ad6b05aee0d0346bccc4d209020ba2af71e
   MODE: final
   PHASE_BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
   TEST_FEATURES: phase-engine/test-support,phase-engine/cli,phase-engine/proptest
-  FOCUSED_FILTER: 'package(phase-engine) | (package(phase-ai) & (binary(gate_cli) | test(/policies::x_reference::/))) | (package(probe-pin) & binary(pure_logic))'
+  # Discover broad required suites/features; execute changed runtime owners and source censuses before the once-required full workspace suite.
+  DISCOVERY_FILTER: 'package(phase-engine) | (package(phase-ai) & (binary(gate_cli) | test(/policies::x_reference::/))) | (package(probe-pin) & binary(pure_logic))'
+  FOCUSED_FILTER: 'package(phase-engine) & (test(/^game::effects::add_target_replacement::/) | test(/^game::morph::/) | test(/^game::printed_cards::/) | test(/^game::flip::/) | test(/^game::game_object::/) | test(/^game::turns::/) | test(/^game::zones::/) | test(/^essence_burn::/) | test(/^torch_the_tower_die_exile::/) | test(/census/) | binary(/census/))'
   U3_RUNTIME_TEST: essence_burn::essence_burn_face_down_keeps_die_exile
   U3_RED_ASSERTION_TEXT: "Essence Burn's this-turn replacement must exile the same host after Cyber Conversion"
-  # Actual immutable C10 production-only patch audited against C8; final post-sync audit remains root-owned.
+  # Retained ORIGINAL U3 production-only control; complete revised P is separate below.
   U3_PRODUCTION_PATCH: |-
     diff --git a/crates/engine/src/game/effects/add_target_replacement.rs b/crates/engine/src/game/effects/add_target_replacement.rs
     --- a/crates/engine/src/game/effects/add_target_replacement.rs
@@ -143,6 +145,380 @@ env:
     crates/engine/src/game/morph.rs
     crates/engine/src/game/printed_cards.rs
     crates/engine/src/game/flip.rs
+  # Complete C8-to-C11 production hunks and comments; no test/parser/fixture hunks.
+  REVISED_PRODUCTION_PATCH: |-
+    diff --git a/crates/engine/src/game/effects/add_target_replacement.rs b/crates/engine/src/game/effects/add_target_replacement.rs
+    index 5888173e0b..abf6b64c9c 100644
+    --- a/crates/engine/src/game/effects/add_target_replacement.rs
+    +++ b/crates/engine/src/game/effects/add_target_replacement.rs
+    @@ -577,20 +577,21 @@ pub fn resolve(
+                         // precedent, and this is the only additive-runtime base push in
+                         // the tree, so the exception is documented here.
+                         //
+    -                    // Everything that is NOT one of these three classes now goes
+    +                    // Everything outside these two legacy classes goes
+                         // through `GameObject::install_resolution_replacement` instead
+                         // (CR 611.2a) — the typed-provenance authority that survives the
+                         // CR 613.1 reset via the carried set rather than via a base copy.
+    -                    // The trio deliberately stays OUTSIDE it: a def that is both
+    +                    // The legacy pair stays OUTSIDE it: a def that is both
+                         // base-resident and `Resolution`-stamped would be reseeded from
+                         // base AND carried from live, i.e. applied twice.
+    -                    // A turn-bound die-exile rider must also survive a layer
+    -                    // reset: a damaged creature can gain/lose characteristics
+    -                    // or enter combat before it dies. Cleanup prunes this
+    -                    // narrowly scoped base copy at end of turn.
+    +                    // CR 614.1a + CR 611.2a: a bounded death-exile rider is an
+    +                    // external resolution effect. It survives same-object
+    +                    // characteristic changes through the live carry authority,
+    +                    // until its stated expiry or a zone change ends it.
+                         // A host-lifetime rider (CR 702.84a "if it would leave the
+                         // battlefield, exile it instead", stamped
+    -                    // `UntilHostLeavesPlay`) is the same class: it must survive
+    +                    // `UntilHostLeavesPlay`) is a legacy base-installed class:
+    +                    // it must survive
+                         // every CR 613.1 reseed so the redirect still fires after the
+                         // returned permanent gains/loses characteristics, and its
+                         // base+live copies are pruned together the instant the host
+    @@ -602,26 +603,21 @@ pub fn resolve(
+                         // and structurally cannot hit a battlefield host — non-issue.
+                         // (2) Turning the LOCKED HOST face-down
+                         // (morph.rs apply_face_down_creature_characteristics clears
+    -                    // base+live replacement defs, CR 708.2a) would end the lock
+    +                    // intrinsic/base replacement defs, CR 708.2a) ends the lock
+                         // early — an under-prune, strictly safer than a revival; rare
+                         // corner, out of scope.
+    -                    let durable_die_exile =
+    -                        crate::game::printed_cards::is_runtime_target_die_exile_replacement(
+    -                            &replacement,
+    -                        );
+                         let host_lifetime =
+                             crate::game::printed_cards::is_runtime_host_lifetime_replacement(
+                                 &replacement,
+                             );
+    -                    let install_to_base = durable_die_exile
+    -                        || host_lifetime
+    +                    let install_to_base = host_lifetime
+                             || matches!(
+                                 replacement.condition,
+                                 Some(ReplacementCondition::ControllerControlsSource { .. })
+                             );
+                         if let Some(obj) = state.objects.get_mut(&obj_id) {
+                             if install_to_base {
+    -                            // CR 611.2b / CR 702.84a: the three hand-audited durable
+    +                            // CR 611.2b / CR 702.84a: the two legacy durable
+                                 // classes stay BASE-resident and are reseeded into live
+                                 // by every CR 613.1 pass. They must NOT be stamped
+                                 // `Resolution`: that would place them in base AND in the
+    diff --git a/crates/engine/src/game/flip.rs b/crates/engine/src/game/flip.rs
+    index 0b5b0017ac..b7fe1aa261 100644
+    --- a/crates/engine/src/game/flip.rs
+    +++ b/crates/engine/src/game/flip.rs
+    @@ -370,9 +370,15 @@ pub(crate) fn apply_flipped_face_to_object(obj: &mut GameObject, face: BackFaceD
+         obj.base_keywords = face.keywords;
+         obj.abilities = Arc::new(face.abilities.clone());
+         obj.base_abilities = Arc::new(face.abilities);
+    -    obj.replacement_definitions = face.replacement_definitions.clone();
+    -    obj.base_replacement_definitions =
+    -        Arc::new(face.replacement_definitions.iter_all().cloned().collect());
+    +    // CR 710.1b/c + CR 611.2a: alternate intrinsic text replaces the normal
+    +    // text, while external resolution effects still apply to the same host.
+    +    let replacements = Arc::new(face.replacement_definitions.iter_all().cloned().collect());
+    +    obj.replacement_definitions =
+    +        super::game_object::reseed_replacements_carrying_resolution_effects(
+    +            &obj.replacement_definitions,
+    +            &replacements,
+    +        );
+    +    obj.base_replacement_definitions = replacements;
+         obj.static_definitions = face.static_definitions.clone();
+         obj.base_static_definitions = Arc::new(face.static_definitions.iter_all().cloned().collect());
+         obj.install_trigger_base_definitions(Arc::new(
+    diff --git a/crates/engine/src/game/game_object.rs b/crates/engine/src/game/game_object.rs
+    index 0362de0881..28db367481 100644
+    --- a/crates/engine/src/game/game_object.rs
+    +++ b/crates/engine/src/game/game_object.rs
+    @@ -2019,10 +2019,9 @@ impl GameObject {
+         pub(crate) fn install_resolution_replacement(&mut self, mut def: ReplacementDefinition) {
+             // CR 611.2a: a `Resolution`-origin def is carried across every CR 613.1
+             // reset, so its SCHEDULED removal paths are an expiry prune (`turns.rs`, all
+    -        // three of which key on `expiry` alone) and a zone change. (Three face
+    -        // rewrites — transform/specialize, flip, morph — also drop it in place; see
+    -        // `reseed_replacements_carrying_resolution_effects`. Those are unscheduled
+    -        // shield-loss and cannot be relied on to end anything.) A def with no expiry
+    +        // three of which key on `expiry` alone) and a zone change. Same-object
+    +        // face rewrites carry the existing live state through
+    +        // `reseed_replacements_carrying_resolution_effects`. A def with no expiry
+             // has no scheduled end at all — carrying it would make it immortal. Fail
+             // CLOSED:
+             // install it live-only, exactly as this call site behaved before the
+    @@ -2046,7 +2045,7 @@ impl GameObject {
+             // stamp is applied below — against base by full structural equality, so it
+             // fired on a legitimate shape: a turn-bound rider installed through this arm
+             // onto an object that already carries a structurally identical rider written
+    -        // to base by `add_target_replacement`'s `install_to_base` trio (two Auras or
+    +        // to base by `add_target_replacement`'s legacy base exception (two Auras or
+             // two triggers granting the same rider). That is legal and harmless, and it
+             // would have aborted debug and test builds.
+             //
+    @@ -3459,6 +3458,9 @@ impl GameObject {
+         /// Separate from entry reset because some state (counters, transform) is already handled
+         /// by `apply_zone_exit_cleanup` in zones.rs.
+         pub fn reset_for_battlefield_exit(&mut self) {
+    +        // CR 400.7 + CR 120.6: the new off-battlefield object does not retain
+    +        // the departing permanent's marked damage; exit snapshots precede this reset.
+    +        self.damage_marked = 0;
+             self.base_controller = Some(self.owner);
+             // CR 701.37b: Monstrous designation clears when a permanent leaves the battlefield.
+             self.monstrous = false;
+    @@ -4100,7 +4102,7 @@ pub(crate) fn source_chosen_player(state: &GameState, source_id: ObjectId) -> Op
+     /// IDEMPOTENT under that re-entry: `reseed(reseed(live, X), Y) == reseed(live, Y)`
+     /// for any baselines X, Y, because the carried set is exactly the
+     /// `Resolution`-origin members of `live` in order, and NO baseline ever contains
+    -/// a `Resolution`-origin member. THREE legs make that unconditional:
+    +/// a `Resolution`-origin member. Four preconditions make that unconditional:
+     ///   1. `GameObject::install_resolution_replacement`'s `debug_assert!` pins that a
+     ///      `Resolution` def is never also in `base_replacement_definitions` at
+     ///      install time.
+    @@ -4130,17 +4132,13 @@ pub(crate) fn source_chosen_player(state: &GameState, source_id: ObjectId) -> Op
+     /// REMOVAL PATHS, stated accurately. The expiry prunes (`turns.rs`: cleanup,
+     /// end-of-combat teardown, untap step) and a zone change
+     /// (`revert_layered_characteristics_to_base`, CR 400.7) are the SCHEDULED ends. They
+    -/// are not the only ones: three in-place face rewrites also drop a carried shield,
+    -/// because each wholesale-assigns the live store from a face snapshot —
+    -/// `printed_cards::apply_back_face_to_object` (transform / specialize),
+    -/// `flip.rs` (CR 710.1b), and `morph.rs` (turn face down, CR 708.2a). Those three
+    -/// are shield-LOSS, not duplication, and are a known limitation rather than a
+    -/// correctness hazard; CR 611.2a argues the shield should survive them, and this
+    -/// comment is that limitation's only record. Do not restate the old "removed ONLY
+    -/// by an expiry prune or a zone change" claim — it is false.
+    +/// also govern resolution effects carried by same-object face rewrites:
+    +/// printed-face/back-face application, flip (CR 710.1c), and face-down application
+    +/// (CR 708.2/708.8) use this helper with their incoming intrinsic baseline.
+    +/// CR 611.2a: those rewrites do not end an external effect's stated duration.
+     ///
+     /// The carried set is therefore invariant across all three IN-PASS rewrites, for
+    -/// every baseline the two callers can supply. That is why this function takes the
+    +/// every intrinsic baseline the layer and face writers supply. That is why this function takes the
+     /// baseline as a PARAMETER rather than reading `obj.base_replacement_definitions`
+     /// itself.
+     ///
+    diff --git a/crates/engine/src/game/morph.rs b/crates/engine/src/game/morph.rs
+    index 0ead115a85..8fa74338e1 100644
+    --- a/crates/engine/src/game/morph.rs
+    +++ b/crates/engine/src/game/morph.rs
+    @@ -255,8 +255,15 @@ pub fn apply_face_down_creature_characteristics(
+         obj.base_abilities = Arc::new(Vec::new());
+         obj.trigger_definitions = crate::types::definitions::Definitions::default();
+         obj.base_trigger_definitions = Arc::new(Vec::new());
+    -    obj.replacement_definitions = crate::types::definitions::Definitions::default();
+    -    obj.base_replacement_definitions = Arc::new(Vec::new());
+    +    // CR 708.2 + CR 611.2a/c: face-down characteristics remove intrinsic text,
+    +    // while independently bounded resolution effects remain on the same host.
+    +    let replacements = Arc::new(Vec::new());
+    +    obj.replacement_definitions =
+    +        super::game_object::reseed_replacements_carrying_resolution_effects(
+    +            &obj.replacement_definitions,
+    +            &replacements,
+    +        );
+    +    obj.base_replacement_definitions = replacements;
+         obj.static_definitions = crate::types::definitions::Definitions::default();
+         obj.base_static_definitions = Arc::new(Vec::new());
+         obj.color = Vec::new();
+    diff --git a/crates/engine/src/game/printed_cards.rs b/crates/engine/src/game/printed_cards.rs
+    index 47b4009792..29d0be8651 100644
+    --- a/crates/engine/src/game/printed_cards.rs
+    +++ b/crates/engine/src/game/printed_cards.rs
+    @@ -159,7 +159,14 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
+             replacement.fix_legacy_parse_time_consumed_flag();
+         }
+         obj.abilities = Arc::new(abilities.clone());
+    -    obj.replacement_definitions = replacements.clone().into();
+    +    // CR 611.2a/c + CR 613.1: install intrinsic face text without ending
+    +    // resolution-created effects on this same object.
+    +    let replacements = Arc::new(replacements);
+    +    obj.replacement_definitions =
+    +        super::game_object::reseed_replacements_carrying_resolution_effects(
+    +            &obj.replacement_definitions,
+    +            &replacements,
+    +        );
+         obj.static_definitions = card_face.static_abilities.clone().into();
+         // CR 702.148a-b: Carry the cleave-cost ability set onto the object so the
+         // casting flow can swap it in when the spell is cast for its cleave cost.
+    @@ -190,7 +197,7 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
+             obj.install_trigger_base_definitions(trigger_definitions)
+                 .expect("trigger base-set generation must not overflow");
+         }
+    -    obj.base_replacement_definitions = Arc::new(replacements);
+    +    obj.base_replacement_definitions = replacements;
+         obj.base_static_definitions = Arc::new(card_face.static_abilities.clone());
+         obj.base_color = color;
+         obj.base_characteristics_initialized = true;
+    @@ -331,7 +338,20 @@ pub fn apply_back_face_to_object(obj: &mut GameObject, back_face: BackFaceData)
+         obj.mana_cost = back_face.mana_cost.clone();
+         obj.keywords = back_face.keywords.clone();
+         obj.abilities = Arc::new(back_face.abilities.clone());
+    -    obj.replacement_definitions = back_face.replacement_definitions.clone();
+    +    // CR 708.8 + CR 611.2a/c: the restored intrinsic face and current live
+    +    // resolution effects have separate lifetimes; only intrinsic text enters base.
+    +    let replacements = Arc::new(
+    +        back_face
+    +            .replacement_definitions
+    +            .iter_all()
+    +            .cloned()
+    +            .collect(),
+    +    );
+    +    obj.replacement_definitions =
+    +        super::game_object::reseed_replacements_carrying_resolution_effects(
+    +            &obj.replacement_definitions,
+    +            &replacements,
+    +        );
+         obj.static_definitions = back_face.static_definitions.clone();
+         obj.color = back_face.color.clone();
+         obj.base_power = back_face.power;
+    @@ -357,13 +377,7 @@ pub fn apply_back_face_to_object(obj: &mut GameObject, back_face: BackFaceData)
+             )
+             .expect("trigger base-set generation must not overflow");
+         }
+    -    obj.base_replacement_definitions = Arc::new(
+    -        back_face
+    -            .replacement_definitions
+    -            .iter_all()
+    -            .cloned()
+    -            .collect(),
+    -    );
+    +    obj.base_replacement_definitions = replacements;
+         obj.base_static_definitions =
+             Arc::new(back_face.static_definitions.iter_all().cloned().collect());
+         obj.base_color = back_face.color;
+    @@ -632,13 +646,11 @@ pub fn intrinsic_copiable_values(obj: &GameObject) -> CopiableValues {
+     
+     /// CR 707.2 / CR 707.2b: copiable values are the object's printed/defining
+     /// characteristics, NOT resolved continuous effects installed by other
+    -/// permanents (CR 611.2b "for as long as you control ~" locks). A
+    -/// `ControllerControlsSource`-gated replacement and a turn-bound, target-bound
+    -/// die-exile rider are runtime effects durably stored in
+    -/// `base_replacement_definitions` purely so they survive a layer reset
+    -/// (evaluate_layers rebuilds live defs from base — layers.rs); neither is a
+    -/// printed characteristic. Exclude them from copiable values so that a copy of
+    -/// the affected host does not inherit the lock or die-exile rider.
+    +/// permanents (CR 611.2b "for as long as you control ~" locks). Legacy
+    +/// controller-gated and host-lifetime effects remain base-resident for layer
+    +/// survival and are excluded below. Bounded target death-exile effects are now
+    +/// live Resolution entries, absent from base by invariant; the structural
+    +/// filter also excludes legacy serialized base entries of that class.
+     ///
+     /// Zero-alloc fast path: every printed card has no gated def, so the common case
+     /// keeps sharing the source `Arc<Vec<_>>`. A filtered allocation is paid only
+    @@ -674,8 +686,9 @@ pub(crate) fn is_runtime_control_gated_replacement(def: &ReplacementDefinition)
+     
+     /// CR 614.1a + CR 514.2: True for a runtime replacement attached to a damaged
+     /// target by an effect such as Torch the Tower or Obliterating Bolt. It is
+    -/// persisted in base only to survive layer resets; it is not a copiable value
+    -/// and must lapse when that object leaves the battlefield (CR 400.7).
+    +/// normally installed live with Resolution provenance. The predicate also
+    +/// identifies legacy base entries for non-copiable filtering. It must lapse
+    +/// when that object leaves the battlefield (CR 400.7).
+     pub(crate) fn is_runtime_target_die_exile_replacement(def: &ReplacementDefinition) -> bool {
+         def.event == ReplacementEvent::Moved
+             && matches!(def.valid_card, Some(TargetFilter::SelfRef))
+    @@ -696,8 +709,8 @@ pub(crate) fn is_runtime_target_die_exile_replacement(def: &ReplacementDefinitio
+     /// lifetime of the OBJECT hosting it — the "if it would leave the battlefield,
+     /// exile it instead" rider installed by Unearth (CR 702.84a) and the
+     /// parser-driven reanimation cards (Gruesome Encore, Whip of Erebos, …). It is
+    -/// stamped `RestrictionExpiry::UntilHostLeavesPlay`. Like the die-exile rider it
+    -/// is persisted in base only to survive CR 613.1 layer reseeds; it is NOT a
+    +/// stamped `RestrictionExpiry::UntilHostLeavesPlay`. This legacy class remains
+    +/// persisted in base to survive CR 613.1 layer reseeds; it is NOT a
+     /// copiable value (a copy of the host must not inherit the exile redirect,
+     /// CR 707.2) and must lapse when the host leaves the battlefield (CR 400.7).
+     pub(crate) fn is_runtime_host_lifetime_replacement(def: &ReplacementDefinition) -> bool {
+    @@ -1003,9 +1016,9 @@ pub fn snapshot_object_face(obj: &GameObject) -> BackFaceData {
+             // apply. Filtering HERE rather than at the base write also stops the live
+             // write from restoring a stale, possibly already-consumed shield.
+             //
+    -        // Consequence, deliberate and documented: a transform DROPS a carried
+    -        // resolution shield rather than duplicating it. See the removal-paths note
+    -        // on `reseed_replacements_carrying_resolution_effects`.
+    +        // The recipient applicator carries its current live Resolution entries
+    +        // separately, preserving their mutable state instead of restoring them
+    +        // from this snapshot.
+             replacement_definitions: obj
+                 .replacement_definitions
+                 .iter_all()
+    diff --git a/crates/engine/src/game/turns.rs b/crates/engine/src/game/turns.rs
+    index 53d3b14021..0130a6b76f 100644
+    --- a/crates/engine/src/game/turns.rs
+    +++ b/crates/engine/src/game/turns.rs
+    @@ -2772,10 +2772,10 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
+         for obj in state.objects.iter_mut().map(|(_, v)| v) {
+             obj.replacement_definitions.retain(|r| !expires_at_eot(r));
+             // CR 514.2: Clean up turn-bound replacement definitions from the base
+    -        // definitions during the cleanup step so they do not persist. Turn-bound
+    -        // riders (the die-exile rider) are base-installed by
+    -        // `effects/add_target_replacement.rs`, so the base surface needs the same
+    -        // `expiry`-keyed prune; printed statics carry `expiry: None` and survive.
+    +        // definitions during cleanup so legacy base-installed effects do not
+    +        // persist. Bounded resolution effects (including death-exile riders) live
+    +        // only in the live store, pruned above. The base surface retains the same
+    +        // expiry-keyed prune; printed statics carry `expiry: None` and survive.
+             std::sync::Arc::make_mut(&mut obj.base_replacement_definitions)
+                 .retain(|r| !expires_at_eot(r));
+         }
+    diff --git a/crates/engine/src/game/zones.rs b/crates/engine/src/game/zones.rs
+    index e60b1ca2ae..6759d3de4a 100644
+    --- a/crates/engine/src/game/zones.rs
+    +++ b/crates/engine/src/game/zones.rs
+    @@ -1166,6 +1166,11 @@ pub fn apply_resolved_zone_change(
+             .get_mut(&command.object.object_id)
+             .expect("validated zone command object remains live");
+         object.zone = command.to;
+    +    // CR 400.7 + CR 120.6: recorded replay bypasses the live exit reset,
+    +    // so reproduce only its marked-damage clear on a real battlefield exit.
+    +    if command.from == Zone::Battlefield && command.to != Zone::Battlefield {
+    +        object.damage_marked = 0;
+    +    }
+         clear_hand_or_graveyard_casting_permissions_on_exit(object, command.from, command.to);
+         // CR 400.7 + CR 601.2i: replay bypasses `apply_zone_exit_cleanup`, so it
+         // must reproduce the live Stack-exit carrier clear from the recorded move.
+  REVISED_PRODUCTION_PATHS: |-
+    crates/engine/src/game/effects/add_target_replacement.rs
+    crates/engine/src/game/flip.rs
+    crates/engine/src/game/game_object.rs
+    crates/engine/src/game/morph.rs
+    crates/engine/src/game/printed_cards.rs
+    crates/engine/src/game/turns.rs
+    crates/engine/src/game/zones.rs
+  LIVE_EXIT_SCALAR_PATCH: |-
+    diff --git a/crates/engine/src/game/game_object.rs b/crates/engine/src/game/game_object.rs
+    --- a/crates/engine/src/game/game_object.rs
+    +++ b/crates/engine/src/game/game_object.rs
+    @@ -3460,6 +3460,7 @@
+         pub fn reset_for_battlefield_exit(&mut self) {
+             // CR 400.7 + CR 120.6: the new off-battlefield object does not retain
+             // the departing permanent's marked damage; exit snapshots precede this reset.
+    +        self.damage_marked = 0;
+             self.base_controller = Some(self.owner);
+             // CR 701.37b: Monstrous designation clears when a permanent leaves the battlefield.
+             self.monstrous = false;
+  RECORDED_EXIT_SCALAR_PATCH: |-
+    diff --git a/crates/engine/src/game/zones.rs b/crates/engine/src/game/zones.rs
+    --- a/crates/engine/src/game/zones.rs
+    +++ b/crates/engine/src/game/zones.rs
+    @@ -1169,6 +1169,7 @@
+         // CR 400.7 + CR 120.6: recorded replay bypasses the live exit reset,
+         // so reproduce only its marked-damage clear on a real battlefield exit.
+         if command.from == Zone::Battlefield && command.to != Zone::Battlefield {
+    +        object.damage_marked = 0;
+         }
+         clear_hand_or_graveyard_casting_permissions_on_exit(object, command.from, command.to);
+         // CR 400.7 + CR 601.2i: replay bypasses `apply_zone_exit_cleanup`, so it
+  LIVE_EXIT_TEST: game::game_object::tests::reset_for_battlefield_exit_clears_marked_damage
+  LIVE_EXIT_RED_ASSERTION_TEXT: battlefield-exit owner must clear five marked damage
+  RECORDED_EXIT_TEST: game::zones::tests::battlefield_exit_marked_damage_is_reproduced_by_resolved_command_replay
+  RECORDED_EXIT_RED_ASSERTION_TEXT: recorded battlefield exit must clear five marked damage from damaged prestate
+  NORMAL_EXIT_TEST: essence_burn::essence_burn_rewrite_bounce_reentry_drops_old_grant
+  NORMAL_EXIT_RED_ASSERTION_TEXT: normal Shock then Unsummon must clear marked damage immediately in its owner's hand
+  TORCH_CLEANUP_TEST: torch_the_tower_die_exile::torch_the_tower_replacement_expires_from_the_layer_baseline_at_cleanup
   PHASE_SCOPE_PATHS: |-
     crates/engine/src/game/effects/add_target_replacement.rs
     crates/engine/src/game/flip.rs
@@ -150,8 +526,10 @@ env:
     crates/engine/src/game/morph.rs
     crates/engine/src/game/printed_cards.rs
     crates/engine/src/game/turns.rs
+    crates/engine/src/game/zones.rs
     crates/engine/tests/fixtures/integration_cards.json.gz
     crates/engine/tests/integration/essence_burn.rs
+    crates/engine/tests/integration/torch_the_tower_die_exile.rs
   INPUT_RUN_ID: '37483983597'
   FROZEN_BASE_BRANCH: engine-proof/fra-stingerquill-9-frozen-base
   MERGED_SOURCE_BRANCH: engine-proof/fra-stingerquill-9-merged-source
@@ -201,6 +579,7 @@ env:
     crates/engine/src/game/morph.rs
     crates/engine/src/game/printed_cards.rs
     crates/engine/src/game/turns.rs
+    crates/engine/src/game/zones.rs
     crates/engine/src/parser/oracle_effect/mod.rs
     crates/engine/src/parser/oracle_effect/tests.rs
     crates/engine/src/parser/oracle_ir/snapshot_tests.rs
@@ -210,6 +589,7 @@ env:
     crates/engine/tests/fixtures/integration_cards.json.gz
     crates/engine/tests/integration/essence_burn.rs
     crates/engine/tests/integration/main.rs
+    crates/engine/tests/integration/torch_the_tower_die_exile.rs
     docs/parser-misparse-backlog.md
   CANONICAL_PATHS: |-
     crates/engine/src/parser/oracle_ir/snapshots/engine__parser__oracle_ir__snapshot_tests__essence_burn_ir.snap
@@ -318,49 +698,14 @@ jobs:
             [[ "$path" == crates/engine/tests/integration/*.rs && "$path" != *..* ]]
             test -f "$path"
           done <<< "$TEST_PATHS"
-      - name: Verify fixed V11 stage1-candidate native evidence for artifact reuse
-        env:
-          GH_TOKEN: ${{ github.token }}
-        working-directory: stage1-candidate-projection
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$BASE_SHA" = ab1363d1f30141c118db0c83de0da617e0c07c65
-          test "$CANDIDATE_SHA" = e8aa66ec424c93bc06520b581cc142683504f18d
-          test "$PHASE_BASE_SHA" = "$BASE_SHA"
-          test "$INPUT_RUN_ID" = 37483983597
-          test "$MODE" = final
-          test "$TEST_FEATURES" = phase-engine/test-support,phase-engine/cli,phase-engine/proptest
-          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          ! git symbolic-ref -q HEAD
-          test -z "$(git status --porcelain)"
-          test "$(git diff --no-renames --name-only "$CANDIDATE_SHA" 42408f453d37fd5ce5e647f0ea86a01a63a82675)" = .github/workflows/engine-proof.yml
-          git show 42408f453d37fd5ce5e647f0ea86a01a63a82675:.github/workflows/engine-proof.yml > "$RUNNER_TEMP/v11-workflow.yml"
-          grep -Fx '  BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65' "$RUNNER_TEMP/v11-workflow.yml"
-          grep -Fx '  CANDIDATE_SHA: e8aa66ec424c93bc06520b581cc142683504f18d' "$RUNNER_TEMP/v11-workflow.yml"
-          grep -Fx "  INPUT_RUN_ID: '37483983597'" "$RUNNER_TEMP/v11-workflow.yml"
-          gh api repos/keloide/phase/actions/runs/38056134872 > "$RUNNER_TEMP/v11-run.json"
-          jq -e '.id == 38056134872 and .run_attempt == 1 and .head_sha == "42408f453d37fd5ce5e647f0ea86a01a63a82675" and .head_branch == "engine-proof/fra-stingerquill-9" and .event == "push" and .status == "completed" and .conclusion == "failure"' "$RUNNER_TEMP/v11-run.json"
-          gh api repos/keloide/phase/actions/jobs/114224943644 > "$RUNNER_TEMP/v11-job.json"
-          jq -e '.id == 114224943644 and .run_id == 38056134872 and .run_attempt == 1 and .head_sha == "42408f453d37fd5ce5e647f0ea86a01a63a82675" and .name == "stage1-candidate" and .status == "completed" and .conclusion == "success"' "$RUNNER_TEMP/v11-job.json"
-          echo 'Reusing exact V11 stage1-candidate normal artifacts; this job performs no native Tool build or new measurement.'
-      - name: Restore fixed V11 stage1-candidate normal artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: stage1-candidate-outputs
-          path: stage1-outputs/candidate
-          repository: keloide/phase
-          run-id: '38056134872'
-          github-token: ${{ github.token }}
-      - if: ${{ false }} # Fixed V11 reuse; original native step preserved below.
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: nightly-2026-04-19
           components: rustfmt, clippy, rustc-codegen-cranelift-preview
           target: wasm32-unknown-unknown
           cache: false
       - name: Restore pinned full inputs for subsequent run
-        if: ${{ false }} # Fixed V11 reuse; original pinned-input restore preserved.
+        if: env.INPUT_RUN_ID != '0'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: pinned-inputs
@@ -369,7 +714,6 @@ jobs:
           run-id: ${{ env.INPUT_RUN_ID }}
           github-token: ${{ github.token }}
       - name: Download inputs with the supported pipeline, or unpack the original inputs
-        if: ${{ false }} # Fixed V11 reuse; original native script preserved.
         working-directory: stage1-candidate-projection
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-candidate-projection-target
@@ -404,7 +748,6 @@ jobs:
           chmod -R a-w data/mtgjson
           test -z "$(git status --porcelain --untracked-files=no)"
       - name: Export exact committed source, coverage, semantic audit, and canonical fixture
-        if: ${{ false }} # Fixed V11 reuse; original native script preserved.
         working-directory: stage1-candidate-projection
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-candidate-projection-target
@@ -485,65 +828,67 @@ jobs:
           path: stage1-base-projection
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify fixed V11 stage1-base native evidence for artifact reuse
+      - name: License exact immutable V11 C8 BASE native outputs only
+        working-directory: stage1-base-projection
         env:
           GH_TOKEN: ${{ github.token }}
-        working-directory: stage1-base-projection
         shell: bash
         run: |
           set -euo pipefail
           test "$BASE_SHA" = ab1363d1f30141c118db0c83de0da617e0c07c65
-          test "$CANDIDATE_SHA" = e8aa66ec424c93bc06520b581cc142683504f18d
           test "$PHASE_BASE_SHA" = "$BASE_SHA"
+          test "$CANDIDATE_SHA" = 33325ad6b05aee0d0346bccc4d209020ba2af71e
           test "$INPUT_RUN_ID" = 37483983597
+          test "$GATED_SETS_AS_OF" = 2026-10-05
           test "$MODE" = final
           test "$TEST_FEATURES" = phase-engine/test-support,phase-engine/cli,phase-engine/proptest
+          test "$CARGO_INCREMENTAL" = 0
           test "$(git rev-parse HEAD)" = "$BASE_SHA"
           ! git symbolic-ref -q HEAD
           test -z "$(git status --porcelain)"
-          test "$(git diff --no-renames --name-only "$CANDIDATE_SHA" 42408f453d37fd5ce5e647f0ea86a01a63a82675)" = .github/workflows/engine-proof.yml
+          git diff --cached --quiet
+          # Exact retained V11 definition binds the successful C8 native job to the original complete pin/config.
           git show 42408f453d37fd5ce5e647f0ea86a01a63a82675:.github/workflows/engine-proof.yml > "$RUNNER_TEMP/v11-workflow.yml"
-          grep -Fx '  BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65' "$RUNNER_TEMP/v11-workflow.yml"
-          grep -Fx '  CANDIDATE_SHA: e8aa66ec424c93bc06520b581cc142683504f18d' "$RUNNER_TEMP/v11-workflow.yml"
-          grep -Fx "  INPUT_RUN_ID: '37483983597'" "$RUNNER_TEMP/v11-workflow.yml"
+          echo 'b9ae0523b35e1a7045d866f158007243ae2ac18d0515d6cebee1dad4459cf688  '"$RUNNER_TEMP/v11-workflow.yml" | sha256sum --check
           gh api repos/keloide/phase/actions/runs/38056134872 > "$RUNNER_TEMP/v11-run.json"
           jq -e '.id == 38056134872 and .run_attempt == 1 and .head_sha == "42408f453d37fd5ce5e647f0ea86a01a63a82675" and .head_branch == "engine-proof/fra-stingerquill-9" and .event == "push" and .status == "completed" and .conclusion == "failure"' "$RUNNER_TEMP/v11-run.json"
-          gh api repos/keloide/phase/actions/jobs/114228038098 > "$RUNNER_TEMP/v11-job.json"
-          jq -e '.id == 114228038098 and .run_id == 38056134872 and .run_attempt == 1 and .head_sha == "42408f453d37fd5ce5e647f0ea86a01a63a82675" and .name == "stage1-base" and .status == "completed" and .conclusion == "success"' "$RUNNER_TEMP/v11-job.json"
-          echo 'Reusing exact V11 stage1-base normal artifacts; this job performs no native Tool build or new measurement.'
-      - name: Restore fixed V11 stage1-base normal artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: stage1-base-outputs-and-parse-diff
-          path: stage1-outputs/base
-          repository: keloide/phase
-          run-id: '38056134872'
-          github-token: ${{ github.token }}
-      - if: ${{ false }} # Fixed V11 reuse; original native step preserved below.
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+          gh api repos/keloide/phase/actions/jobs/114228038098 > "$RUNNER_TEMP/v11-base-job.json"
+          jq -e '.id == 114228038098 and .run_id == 38056134872 and .run_attempt == 1 and .head_sha == "42408f453d37fd5ce5e647f0ea86a01a63a82675" and .name == "stage1-base" and .status == "completed" and .conclusion == "success"' "$RUNNER_TEMP/v11-base-job.json"
+          gh api repos/keloide/phase/actions/artifacts/11671484818 > "$RUNNER_TEMP/v11-base-artifact.json"
+          jq -e '.id == 11671484818 and .name == "stage1-base-outputs-and-parse-diff" and .size_in_bytes == 44689035 and .expired == false and .digest == "sha256:ea0eb2f034fa1e81090b36f2a0f62fa5394c66803c3e1bb857a9506e38d512a8" and .workflow_run.id == 38056134872 and .workflow_run.head_sha == "42408f453d37fd5ce5e647f0ea86a01a63a82675"' "$RUNNER_TEMP/v11-base-artifact.json"
+          # No old candidate or old C8/C10 comparison is licensed as new-head evidence.
+          echo 'Licensed retained C8 generation/audits/repeats only; fresh C11 outputs and current comparisons remain required.'
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: nightly-2026-04-19
           components: rustfmt, clippy, rustc-codegen-cranelift-preview
           target: wasm32-unknown-unknown
           cache: false
-      - if: ${{ false }} # Fixed V11 reuse; original native input download preserved.
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: pinned-inputs
           path: restored-inputs
           repository: keloide/phase
           run-id: ${{ env.INPUT_RUN_ID }}
           github-token: ${{ github.token }}
-      - if: ${{ false }} # Fixed V11 reuse; original native input download preserved.
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - name: Restore exact retained C8 BASE artifact by immutable ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: '11671484818'
+          merge-multiple: true
+          path: retained-v11-base
+          repository: keloide/phase
+          run-id: '38056134872'
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: stage1-candidate-outputs
           path: stage1-candidate-outputs
-      - name: Project clean BASE against the same full input root and compare
-        if: ${{ false }} # Fixed V11 reuse; original native script preserved.
+      - name: Reuse licensed C8 exports and run fresh C8-built comparisons with C11
         working-directory: stage1-base-projection
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-base-projection-target
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -557,35 +902,36 @@ jobs:
           chmod -R a-w data/mtgjson
           test -z "$(git status --porcelain --untracked-files=no)"
           ./scripts/engine-source-hash.sh "$BASE_SHA"
-          cargo build --profile tool --features cli --bin tokens-gen --bin oracle-gen \
-            --bin coverage-report --bin card-data-validate --bin coverage-parse-diff
-          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats --output data/card-data.json
-          test "$(jq length data/card-data.json)" -eq 35880
-          "$CARGO_TARGET_DIR/tool/coverage-report" data/ --all --brief > data/coverage-data.json
-          "$CARGO_TARGET_DIR/tool/oracle-gen" semantic-audit data/
-          test -z "$(git status --porcelain --untracked-files=no)"
-          mkdir -p "$GITHUB_WORKSPACE/stage1-outputs/base"
-          # Retain primary raw exports even if a later product gate fails.
-          cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
-            data/semantic-audit.md "$GITHUB_WORKSPACE/stage1-outputs/base/"
-          # One repeat from the SAME BASE binary and complete pinned input root.
-          chmod -R a-w data
+          python3 - "$GITHUB_WORKSPACE/retained-v11-base" <<'PYBASE'
+          from pathlib import Path
+          import hashlib, json, sys
+          root = Path(sys.argv[1])
+          expected = {'base-repeat-diff.json': (203, '1573d60083061ebd0a81370a4cd5c8554686b41ba3c8c3a1799840998dab6a1d'), 'base-repeat-diff.md': (172, '123aff5bc2d73281e7eae3a330e5d96042f89ba7b79bd2b90c272cb747b1319e'), 'candidate-repeat-diff.json': (203, '4d82471d4d9f94abcbf14af9e86e368ca31492dafcf8d519cd0bc91a99a5ebe9'), 'candidate-repeat-diff.md': (172, '48a0e835382bcda6def7163494acce3068b0322a9b836610318397ae9bb2871e'), 'card-data.json': (99597098, 'bee07b6fa2d9e52e2d32ba9b1a55bb9c94352b5281a4a93a003369ce2ad83a61'), 'coverage-data.json': (66003307, '4e5020162c0ac5300fe4bf8cf9d9e37d13efc117da773b37f9804e9dc3e09294'), 'coverage-regression.log': (482, 'bb12c89bc060e9cbc58422ceff35b5aad5f8b6b0d622e6c2f6e252a2abaf062c'), 'new-semantic-findings.json': (3, '37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570'), 'parse-diff.json': (203, 'f36a1ff59ab0abfc1ea8a040b5c3aaf189655dd52378e5ad19922a3a57cb630b'), 'parse-diff.md': (172, '48a0e835382bcda6def7163494acce3068b0322a9b836610318397ae9bb2871e'), 'repeat/card-data.json': (99597098, 'bee07b6fa2d9e52e2d32ba9b1a55bb9c94352b5281a4a93a003369ce2ad83a61'), 'repeat/coverage-data.json': (66004715, 'd3b3d9d8b129a82914589d5caef94dc5d079bbf6ea71745d345f10dfc0312db1'), 'repeat/coverage-report.log': (1040, '8ef63e3ad1d712d7d9ad03346c7db94ea3c79f5e8ea475b8256f09d4908af34d'), 'repeat/oracle-gen.log': (249, '3bb0dc9ffff285d4dc8b5dad01d0f5851b38797f052c461f0583b428c576bbf2'), 'repeat-parse-diff.json': (203, 'f36a1ff59ab0abfc1ea8a040b5c3aaf189655dd52378e5ad19922a3a57cb630b'), 'repeat-parse-diff.md': (172, '48a0e835382bcda6def7163494acce3068b0322a9b836610318397ae9bb2871e'), 'semantic-audit.json': (67210, '9c774f449c38dec1ba8d56baa6c059248d00ac07ec3429d19eccc13e23de04a6'), 'semantic-audit.md': (1658, '9fae7e798a6c0c0eef8951ce4426dc75086d70a93dcb1facb419b66618ad60dc')}
+          actual = {str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()}
+          assert actual == set(expected), (actual - set(expected), set(expected) - actual)
+          for relative, (size, digest) in expected.items():
+              path = root / relative
+              assert not path.is_symlink(), relative
+              data = path.read_bytes()
+              assert len(data) == size and hashlib.sha256(data).hexdigest() == digest, relative
+          assert len(json.loads((root / 'card-data.json').read_text())) == 35880
+          assert len(json.loads((root / 'repeat/card-data.json').read_text())) == 35880
+          print('All eighteen immutable historical files validated; only C8 data/audits/repeats/self-comparison are reused')
+          PYBASE
           mkdir -p "$GITHUB_WORKSPACE/stage1-outputs/base/repeat"
-          "$CARGO_TARGET_DIR/tool/oracle-gen" data --stats \
-            --output "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/card-data.json" \
-            2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/oracle-gen.log"
-          "$CARGO_TARGET_DIR/tool/coverage-report" "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/" \
-            --all --brief > "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/coverage-data.json" \
-            2> "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/coverage-report.log"
-          test "$(jq length "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/card-data.json")" -eq 35880
-          test -z "$(git status --porcelain --untracked-files=no)"
+          cp "$GITHUB_WORKSPACE/retained-v11-base/"{card-data.json,coverage-data.json,semantic-audit.json,semantic-audit.md} data/
+          cp data/card-data.json data/coverage-data.json data/semantic-audit.json data/semantic-audit.md "$GITHUB_WORKSPACE/stage1-outputs/base/"
+          cp "$GITHUB_WORKSPACE/retained-v11-base/repeat/"{card-data.json,coverage-data.json,oracle-gen.log,coverage-report.log} "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/"
+          cp "$GITHUB_WORKSPACE/retained-v11-base/"{base-repeat-diff.json,base-repeat-diff.md} "$GITHUB_WORKSPACE/stage1-outputs/base/"
+          # Preserve the actual successful historical native log with explicit historical identity.
+          gh api --allow-escape-sequences repos/keloide/phase/actions/jobs/114228038098/logs > "$GITHUB_WORKSPACE/stage1-outputs/base/retained-v11-base-native-job.log"
+          echo '4a54d87c2afbb348722e59ffaff854d162e50601922c922a9010fd2500a0759d  '"$GITHUB_WORKSPACE/stage1-outputs/base/retained-v11-base-native-job.log" | sha256sum --check
+          cp "$RUNNER_TEMP/v11-run.json" "$RUNNER_TEMP/v11-base-job.json" "$RUNNER_TEMP/v11-base-artifact.json" "$GITHUB_WORKSPACE/stage1-outputs/base/"
+          # V11 normal artifacts contain no executable comparator; build only this required BASE-owned binary.
+          cargo build --profile tool --features cli --bin coverage-parse-diff
+          chmod -R a-w data
           # All comparisons use the existing BASE-built comparator. Self comparisons
           # carry identical source SHAs and retain any noise without imposing a zero gate.
-          "$CARGO_TARGET_DIR/tool/coverage-parse-diff" data/coverage-data.json \
-            "$GITHUB_WORKSPACE/stage1-outputs/base/repeat/coverage-data.json" \
-            --base-sha "$BASE_SHA" --head-sha "$BASE_SHA" \
-            --markdown "$GITHUB_WORKSPACE/stage1-outputs/base/base-repeat-diff.md" \
-            --json "$GITHUB_WORKSPACE/stage1-outputs/base/base-repeat-diff.json"
           "$CARGO_TARGET_DIR/tool/coverage-parse-diff" "$GITHUB_WORKSPACE/stage1-candidate-outputs/coverage-data.json" \
             "$GITHUB_WORKSPACE/stage1-candidate-outputs/repeat/coverage-data.json" \
             --base-sha "$CANDIDATE_SHA" --head-sha "$CANDIDATE_SHA" \
@@ -722,7 +1068,7 @@ jobs:
     needs: [stage1-candidate, stage1-base]
     if: github.repository == 'keloide/phase'
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -806,7 +1152,7 @@ jobs:
           print('Actual source has only the positive proptest registration:', path, line, excerpt)
           PYFEATURES
           cargo nextest list -p phase-engine -p phase-ai -p probe-pin \
-            --features "$TEST_FEATURES" -E "$FOCUSED_FILTER" --message-format json \
+            --features "$TEST_FEATURES" -E "$DISCOVERY_FILTER" --message-format json \
             > "$GITHUB_WORKSPACE/stage1-outputs/completion/focused-nextest-list.json" \
             2> "$GITHUB_WORKSPACE/stage1-outputs/completion/focused-nextest-list.stderr.log"
           python3 - "$GITHUB_WORKSPACE/stage1-outputs/completion/focused-nextest-list.json" <<'PYLIST'
@@ -821,14 +1167,18 @@ jobs:
           for package in ['phase-engine', 'phase-ai', 'probe-pin']:
               count = sum(p == package for p, b, n in selected)
               assert count > 0, package
-              print('Collected selected tests:', package, count)
-          for owner in ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::']:
+              print('Collected broad native-discovery tests:', package, count)
+          for owner in ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'torch_the_tower_die_exile::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::']:
               count = sum(p == 'phase-engine' and n.startswith(owner) for p, b, n in selected)
               assert count > 0, owner
               print('Collected owner:', owner, count)
           for binary in ['resolution-face-census', 'oracle-gen']:
               assert any(p == 'phase-engine' and b == binary for p, b, n in selected), binary
           required = [
+              ('phase-engine', 'engine', 'game::game_object::tests::reset_for_battlefield_exit_clears_marked_damage'),
+              ('phase-engine', 'engine', 'game::zones::tests::battlefield_exit_marked_damage_is_reproduced_by_resolved_command_replay'),
+              ('phase-engine', 'integration', 'essence_burn::essence_burn_rewrite_bounce_reentry_drops_old_grant'),
+              ('phase-engine', 'integration', 'torch_the_tower_die_exile::torch_the_tower_replacement_expires_from_the_layer_baseline_at_cleanup'),
               ('phase-engine', 'integration', 'essence_burn::essence_burn_face_down_keeps_die_exile'),
               ('phase-engine', 'integration', 'engine_invariants::legal_action_driven_sequences_preserve_engine_invariants'),
               ('phase-engine', 'integration', 'engine_invariants::generated_priority_actions_remain_reducer_legal_in_default_opening_state'),
@@ -841,7 +1191,21 @@ jobs:
               print('Required selected test:', *item)
           assert any(p == 'phase-ai' and n.startswith('policies::x_reference::') for p, b, n in selected)
           assert any(p == 'phase-engine' and 'census' in n for p, b, n in selected)
-          print('Total focused selected test count:', len(selected))
+          print('Total broad native-discovery test count:', len(selected))
+          # The narrow runtime filter contains every changed owner and every named/binary source census.
+          runtime_prefixes = ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'essence_burn::', 'torch_the_tower_die_exile::']
+          runtime_selected = [(p, b, n) for p, b, n in selected if p == 'phase-engine' and
+                              (any(n.startswith(prefix) for prefix in runtime_prefixes) or 'census' in n or 'census' in b)]
+          for owner in runtime_prefixes:
+              count = sum(n.startswith(owner) for p, b, n in runtime_selected)
+              assert count > 0, owner
+              print('Focused runtime owner:', owner, count)
+          assert sum(n.startswith('essence_burn::') for p, b, n in runtime_selected) == 27
+          assert sum(n.startswith('torch_the_tower_die_exile::') for p, b, n in runtime_selected) == 7
+          for item in required[:4]:
+              assert runtime_selected.count(item) == 1, item
+          print('Expected focused runtime selection from this current native discovery:', len(runtime_selected))
+          # Broad parser/AI/probe/feature-positive suites remain compiled/discovered here and execute in full Step 5.
           PYLIST
           cargo nextest run -p phase-engine -p phase-ai -p probe-pin \
             --features "$TEST_FEATURES" -E "$FOCUSED_FILTER" 2>&1 \
@@ -992,6 +1356,308 @@ jobs:
           grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/u3-restored-green.log"
           test -z "$(git status --porcelain)"
           git diff --cached --quiet
+      - name: Complete revised production P red controls then exact restored owning and normal greens
+        if: env.MODE == 'final'
+        working-directory: stage1-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-completion-target
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          python3 - <<'PYCONTROLS'
+          from pathlib import Path
+          import os, re
+          sources = {
+              'LIVE_EXIT_TEST': 'crates/engine/src/game/game_object.rs',
+              'RECORDED_EXIT_TEST': 'crates/engine/src/game/zones.rs',
+              'NORMAL_EXIT_TEST': 'crates/engine/tests/integration/essence_burn.rs',
+          }
+          bodies = {}
+          for key, path in sources.items():
+              name = os.environ[key].split('::')[-1]
+              source = Path(path).read_text()
+              hits = list(re.finditer(r'(?m)^\s*fn ' + re.escape(name) + r'\(', source))
+              assert len(hits) == 1, (key, path, len(hits))
+              body = source[hits[0].start():]
+              stop = re.search(r'(?m)^\s*#\[test\]', body)
+              if stop:
+                  body = body[:stop.start()]
+              marker = os.environ[key.replace('_TEST', '_RED_ASSERTION_TEXT')]
+              assert body.count(marker) == 1, (key, marker)
+              bodies[key] = body
+          live = bodies['LIVE_EXIT_TEST']
+          assert 'obj.damage_marked = 5;' in live and live.count('obj.reset_for_battlefield_exit();') == 2
+          assert re.search(r'obj\.damage_marked,\s*0,\s*"' + re.escape(os.environ['LIVE_EXIT_RED_ASSERTION_TEXT']), live)
+          replay = bodies['RECORDED_EXIT_TEST']
+          ordered = ['let mut replayed = live.clone();', 'assert_eq!(replayed.objects[&host].damage_marked, 5);',
+                     'move_to_zone(&mut live, host, destination, &mut Vec::new());',
+                     'actual damaged battlefield exit records its command', 'live damaged exit clears damage',
+                     'apply_resolved_zone_change(&mut replayed, &command)', os.environ['RECORDED_EXIT_RED_ASSERTION_TEXT']]
+          positions = [replay.index(x) for x in ordered]
+          assert positions == sorted(positions), positions
+          assert re.search(r'live\.objects\[&host\]\.damage_marked,\s*0,\s*"live damaged exit clears damage"', replay)
+          assert re.search(r'replayed\.objects\[&host\]\.damage_marked,\s*0,\s*"' + re.escape(os.environ['RECORDED_EXIT_RED_ASSERTION_TEXT']), replay)
+          normal = bodies['NORMAL_EXIT_TEST']
+          first = normal[:normal.index('let db = crate::support::shared_card_db()')]
+          for positive in ['"Shock"', '"Unsummon"', 'damage_marked, 2', 'live_resolution_count(&normal, ordinary_host), 0',
+                           'bounced.owner, P1', '.hand', '.contains(&ordinary_host)', os.environ['NORMAL_EXIT_RED_ASSERTION_TEXT']]:
+              assert positive in first, positive
+          assert re.search(r'bounced\.damage_marked,\s*0,\s*"' + re.escape(os.environ['NORMAL_EXIT_RED_ASSERTION_TEXT']), first)
+          print('Exact owning controls and first no-grant Shock/Unsummon immediate-Hand guard are present')
+          PYCONTROLS
+          # Lists bind immutable test identities once; subsequent reversals check complete test-byte equality.
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --list 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/exact-normal_exit_test-list.log"
+          test "$(grep -Fxc "$NORMAL_EXIT_TEST: test" "$GITHUB_WORKSPACE/stage1-outputs/completion/exact-normal_exit_test-list.log")" -eq 1
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$LIVE_EXIT_TEST" -- --exact --list 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/exact-live_exit_test-list.log"
+          test "$(grep -Fxc "$LIVE_EXIT_TEST: test" "$GITHUB_WORKSPACE/stage1-outputs/completion/exact-live_exit_test-list.log")" -eq 1
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$RECORDED_EXIT_TEST" -- --exact --list 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/exact-recorded_exit_test-list.log"
+          test "$(grep -Fxc "$RECORDED_EXIT_TEST: test" "$GITHUB_WORKSPACE/stage1-outputs/completion/exact-recorded_exit_test-list.log")" -eq 1
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$TORCH_CLEANUP_TEST" -- --exact --list 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/exact-torch_cleanup_test-list.log"
+          test "$(grep -Fxc "$TORCH_CLEANUP_TEST: test" "$GITHUB_WORKSPACE/stage1-outputs/completion/exact-torch_cleanup_test-list.log")" -eq 1
+          ! grep -F 'REPLACE_' <<< "$REVISED_PRODUCTION_PATCH"
+          mapfile -t production_paths <<< "$REVISED_PRODUCTION_PATHS"
+          test "${#production_paths[@]}" -eq 7
+          printf '%s\n' "$REVISED_PRODUCTION_PATCH" > "$RUNNER_TEMP/revised-production.patch"
+          # Check complete P against this stage's fixed BASE using an isolated runtime index.
+          baseline_index="$RUNNER_TEMP/revised-frozen-base.index"
+          test ! -e "$baseline_index"
+          GIT_INDEX_FILE="$baseline_index" git read-tree "$BASE_SHA"
+          GIT_INDEX_FILE="$baseline_index" git apply --cached --check "$RUNNER_TEMP/revised-production.patch"
+          rm "$baseline_index"
+          git apply --reverse --check "$RUNNER_TEMP/revised-production.patch"
+          trap 'git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"' EXIT
+          git apply --reverse "$RUNNER_TEMP/revised-production.patch"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --cached --quiet
+          changed_count=0
+          while IFS= read -r -d '' path; do
+            printf '%s\n' "${production_paths[@]}" | grep -Fx -- "$path" > /dev/null
+            changed_count=$((changed_count + 1))
+          done < <(git diff --name-only -z)
+          test "$changed_count" -eq "${#production_paths[@]}"
+          git diff --quiet HEAD -- crates/engine/tests/ crates/engine/src/parser/
+          # Owning unit tests share the production files: their complete module bytes must stay committed.
+          python3 - "${production_paths[@]}" <<'PYTESTBYTES'
+          from pathlib import Path
+          import re, subprocess, sys
+          for path in sys.argv[1:]:
+              committed = subprocess.check_output(['git', 'show', 'HEAD:' + path], text=True)
+              current = Path(path).read_text()
+              old = re.search(r'(?m)^mod tests \{', committed)
+              new = re.search(r'(?m)^mod tests \{', current)
+              assert old and new, path
+              assert committed[old.start():] == current[new.start():], ('Owning unit-test drift', path)
+          print('Complete owning unit-test modules remain exact committed bytes')
+          PYTESTBYTES
+          set +e
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-primary-red.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          test "${statuses[0]}" -ne 0
+          test "${statuses[1]}" -eq 0
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-primary-red.log"
+          grep -E 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-primary-red.log"
+          grep -Fx "test $U3_RUNTIME_TEST ... FAILED" "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-primary-red.log"
+          grep -F "$U3_RED_ASSERTION_TEXT" "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-primary-red.log"
+          set +e
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-normal-exit-red.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          test "${statuses[0]}" -ne 0
+          test "${statuses[1]}" -eq 0
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-normal-exit-red.log"
+          grep -E 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-normal-exit-red.log"
+          grep -Fx "test $NORMAL_EXIT_TEST ... FAILED" "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-normal-exit-red.log"
+          grep -F "$NORMAL_EXIT_RED_ASSERTION_TEXT" "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-normal-exit-red.log"
+          git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          git diff --exit-code "$CANDIDATE_SHA" -- crates/engine/tests/ crates/engine/src/parser/ "${production_paths[@]}"
+          trap - EXIT
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-u3_runtime_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-u3_runtime_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-u3_runtime_test.log"
+          grep -Fx "test $U3_RUNTIME_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-u3_runtime_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-normal_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-normal_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-normal_exit_test.log"
+          grep -Fx "test $NORMAL_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-normal_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$LIVE_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-live_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-live_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-live_exit_test.log"
+          grep -Fx "test $LIVE_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-live_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$RECORDED_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-recorded_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-recorded_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-recorded_exit_test.log"
+          grep -Fx "test $RECORDED_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-recorded_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$TORCH_CLEANUP_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-torch_cleanup_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-torch_cleanup_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-torch_cleanup_test.log"
+          grep -Fx "test $TORCH_CLEANUP_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/revised-restored-torch_cleanup_test.log"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+      - name: Selective live exit scalar red with normal applier-enabled green then exact restoration
+        if: env.MODE == 'final'
+        working-directory: stage1-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-completion-target
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          ! grep -F 'REPLACE_' <<< "$LIVE_EXIT_SCALAR_PATCH"
+          mapfile -t production_paths <<< "crates/engine/src/game/game_object.rs"
+          test "${#production_paths[@]}" -eq 1
+          printf '%s\n' "$LIVE_EXIT_SCALAR_PATCH" > "$RUNNER_TEMP/live-production.patch"
+          git apply --reverse --check "$RUNNER_TEMP/live-production.patch"
+          trap 'git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"' EXIT
+          git apply --reverse "$RUNNER_TEMP/live-production.patch"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --cached --quiet
+          changed_count=0
+          while IFS= read -r -d '' path; do
+            printf '%s\n' "${production_paths[@]}" | grep -Fx -- "$path" > /dev/null
+            changed_count=$((changed_count + 1))
+          done < <(git diff --name-only -z)
+          test "$changed_count" -eq "${#production_paths[@]}"
+          git diff --quiet HEAD -- crates/engine/tests/ crates/engine/src/parser/
+          # Owning unit tests share the production files: their complete module bytes must stay committed.
+          python3 - "${production_paths[@]}" <<'PYTESTBYTES'
+          from pathlib import Path
+          import re, subprocess, sys
+          for path in sys.argv[1:]:
+              committed = subprocess.check_output(['git', 'show', 'HEAD:' + path], text=True)
+              current = Path(path).read_text()
+              old = re.search(r'(?m)^mod tests \{', committed)
+              new = re.search(r'(?m)^mod tests \{', current)
+              assert old and new, path
+              assert committed[old.start():] == current[new.start():], ('Owning unit-test drift', path)
+          print('Complete owning unit-test modules remain exact committed bytes')
+          PYTESTBYTES
+          set +e
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$LIVE_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/live-owner-red.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          test "${statuses[0]}" -ne 0
+          test "${statuses[1]}" -eq 0
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-owner-red.log"
+          grep -E 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-owner-red.log"
+          grep -Fx "test $LIVE_EXIT_TEST ... FAILED" "$GITHUB_WORKSPACE/stage1-outputs/completion/live-owner-red.log"
+          grep -F "$LIVE_EXIT_RED_ASSERTION_TEXT" "$GITHUB_WORKSPACE/stage1-outputs/completion/live-owner-red.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/live-scalar-reversed-normal-green.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-scalar-reversed-normal-green.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-scalar-reversed-normal-green.log"
+          grep -Fx "test $NORMAL_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/live-scalar-reversed-normal-green.log"
+          git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          git diff --exit-code "$CANDIDATE_SHA" -- crates/engine/tests/ crates/engine/src/parser/ "${production_paths[@]}"
+          trap - EXIT
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-u3_runtime_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-u3_runtime_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-u3_runtime_test.log"
+          grep -Fx "test $U3_RUNTIME_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-u3_runtime_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-normal_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-normal_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-normal_exit_test.log"
+          grep -Fx "test $NORMAL_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-normal_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$LIVE_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-live_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-live_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-live_exit_test.log"
+          grep -Fx "test $LIVE_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-live_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$RECORDED_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-recorded_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-recorded_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-recorded_exit_test.log"
+          grep -Fx "test $RECORDED_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/live-restored-recorded_exit_test.log"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+      - name: Selective recorded exit scalar red from actual damaged prestate then exact restoration
+        if: env.MODE == 'final'
+        working-directory: stage1-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage1-completion-target
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          ! grep -F 'REPLACE_' <<< "$RECORDED_EXIT_SCALAR_PATCH"
+          mapfile -t production_paths <<< "crates/engine/src/game/zones.rs"
+          test "${#production_paths[@]}" -eq 1
+          printf '%s\n' "$RECORDED_EXIT_SCALAR_PATCH" > "$RUNNER_TEMP/recorded-production.patch"
+          git apply --reverse --check "$RUNNER_TEMP/recorded-production.patch"
+          trap 'git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"' EXIT
+          git apply --reverse "$RUNNER_TEMP/recorded-production.patch"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --cached --quiet
+          changed_count=0
+          while IFS= read -r -d '' path; do
+            printf '%s\n' "${production_paths[@]}" | grep -Fx -- "$path" > /dev/null
+            changed_count=$((changed_count + 1))
+          done < <(git diff --name-only -z)
+          test "$changed_count" -eq "${#production_paths[@]}"
+          git diff --quiet HEAD -- crates/engine/tests/ crates/engine/src/parser/
+          # Owning unit tests share the production files: their complete module bytes must stay committed.
+          python3 - "${production_paths[@]}" <<'PYTESTBYTES'
+          from pathlib import Path
+          import re, subprocess, sys
+          for path in sys.argv[1:]:
+              committed = subprocess.check_output(['git', 'show', 'HEAD:' + path], text=True)
+              current = Path(path).read_text()
+              old = re.search(r'(?m)^mod tests \{', committed)
+              new = re.search(r'(?m)^mod tests \{', current)
+              assert old and new, path
+              assert committed[old.start():] == current[new.start():], ('Owning unit-test drift', path)
+          print('Complete owning unit-test modules remain exact committed bytes')
+          PYTESTBYTES
+          set +e
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$RECORDED_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-owner-red.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          test "${statuses[0]}" -ne 0
+          test "${statuses[1]}" -eq 0
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-owner-red.log"
+          grep -E 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-owner-red.log"
+          grep -Fx "test $RECORDED_EXIT_TEST ... FAILED" "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-owner-red.log"
+          grep -F "$RECORDED_EXIT_RED_ASSERTION_TEXT" "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-owner-red.log"
+          git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          git diff --exit-code "$CANDIDATE_SHA" -- crates/engine/tests/ crates/engine/src/parser/ "${production_paths[@]}"
+          trap - EXIT
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-u3_runtime_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-u3_runtime_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-u3_runtime_test.log"
+          grep -Fx "test $U3_RUNTIME_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-u3_runtime_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-normal_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-normal_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-normal_exit_test.log"
+          grep -Fx "test $NORMAL_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-normal_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$LIVE_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-live_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-live_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-live_exit_test.log"
+          grep -Fx "test $LIVE_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-live_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$RECORDED_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-recorded_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-recorded_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-recorded_exit_test.log"
+          grep -Fx "test $RECORDED_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage1-outputs/completion/recorded-restored-recorded_exit_test.log"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
       - name: Full Step 5 at the artifact-inclusive committed candidate
         if: env.MODE == 'final'
         working-directory: stage1-completion
@@ -1013,8 +1679,8 @@ jobs:
           ./scripts/check-prelowered-ratchet.sh
           ./scripts/check-skill-doc.sh
           ./scripts/check-engine-authorities.sh "$BASE_SHA"
-          # Exact C8/C10 Tool generation/export/validation/coverage/semantic and BASE comparator
-          # passed in fixed V11; these two jobs guard and restore those same normal artifacts.
+          # Tool generation/export/validation/coverage/semantic ran in the exact candidate projection.
+          # Its job and the independently built BASE comparator must both have succeeded.
           test "${{ needs.stage1-candidate.result }}" = success
           test "${{ needs.stage1-base.result }}" = success
           ./scripts/coverage-regression-check.sh "$GITHUB_WORKSPACE/stage1-base-outputs/coverage-data.json" \
@@ -1051,7 +1717,7 @@ jobs:
     needs: [stage1-candidate, stage1-base, stage1-runtime-red, stage1-completion]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-12-results-stage1
+      RESULT_BRANCH: engine-proof/fra-stingerquill-13-results-stage1
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage1-outputs.tar.gz
     permissions:
       contents: write
@@ -1375,7 +2041,7 @@ jobs:
     needs: [stage2-generation]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-12-results-stage2
+      RESULT_BRANCH: engine-proof/fra-stingerquill-13-results-stage2
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage2-outputs.tar.gz
     permissions:
       contents: write
@@ -1984,7 +2650,7 @@ jobs:
       MERGED_SOURCE_SHA: ${{ needs.wait-final.outputs.merged_source_sha }}
       ACCEPTED_CANDIDATE_SHA: ${{ needs.wait-final.outputs.accepted_candidate_sha }}
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -2068,7 +2734,7 @@ jobs:
           print('Actual source has only the positive proptest registration:', path, line, excerpt)
           PYFEATURES
           cargo nextest list -p phase-engine -p phase-ai -p probe-pin \
-            --features "$TEST_FEATURES" -E "$FOCUSED_FILTER" --message-format json \
+            --features "$TEST_FEATURES" -E "$DISCOVERY_FILTER" --message-format json \
             > "$GITHUB_WORKSPACE/stage3-outputs/completion/focused-nextest-list.json" \
             2> "$GITHUB_WORKSPACE/stage3-outputs/completion/focused-nextest-list.stderr.log"
           python3 - "$GITHUB_WORKSPACE/stage3-outputs/completion/focused-nextest-list.json" <<'PYLIST'
@@ -2083,14 +2749,18 @@ jobs:
           for package in ['phase-engine', 'phase-ai', 'probe-pin']:
               count = sum(p == package for p, b, n in selected)
               assert count > 0, package
-              print('Collected selected tests:', package, count)
-          for owner in ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::']:
+              print('Collected broad native-discovery tests:', package, count)
+          for owner in ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'torch_the_tower_die_exile::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::']:
               count = sum(p == 'phase-engine' and n.startswith(owner) for p, b, n in selected)
               assert count > 0, owner
               print('Collected owner:', owner, count)
           for binary in ['resolution-face-census', 'oracle-gen']:
               assert any(p == 'phase-engine' and b == binary for p, b, n in selected), binary
           required = [
+              ('phase-engine', 'engine', 'game::game_object::tests::reset_for_battlefield_exit_clears_marked_damage'),
+              ('phase-engine', 'engine', 'game::zones::tests::battlefield_exit_marked_damage_is_reproduced_by_resolved_command_replay'),
+              ('phase-engine', 'integration', 'essence_burn::essence_burn_rewrite_bounce_reentry_drops_old_grant'),
+              ('phase-engine', 'integration', 'torch_the_tower_die_exile::torch_the_tower_replacement_expires_from_the_layer_baseline_at_cleanup'),
               ('phase-engine', 'integration', 'essence_burn::essence_burn_face_down_keeps_die_exile'),
               ('phase-engine', 'integration', 'engine_invariants::legal_action_driven_sequences_preserve_engine_invariants'),
               ('phase-engine', 'integration', 'engine_invariants::generated_priority_actions_remain_reducer_legal_in_default_opening_state'),
@@ -2103,7 +2773,21 @@ jobs:
               print('Required selected test:', *item)
           assert any(p == 'phase-ai' and n.startswith('policies::x_reference::') for p, b, n in selected)
           assert any(p == 'phase-engine' and 'census' in n for p, b, n in selected)
-          print('Total focused selected test count:', len(selected))
+          print('Total broad native-discovery test count:', len(selected))
+          # The narrow runtime filter contains every changed owner and every named/binary source census.
+          runtime_prefixes = ['game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'essence_burn::', 'torch_the_tower_die_exile::']
+          runtime_selected = [(p, b, n) for p, b, n in selected if p == 'phase-engine' and
+                              (any(n.startswith(prefix) for prefix in runtime_prefixes) or 'census' in n or 'census' in b)]
+          for owner in runtime_prefixes:
+              count = sum(n.startswith(owner) for p, b, n in runtime_selected)
+              assert count > 0, owner
+              print('Focused runtime owner:', owner, count)
+          assert sum(n.startswith('essence_burn::') for p, b, n in runtime_selected) == 27
+          assert sum(n.startswith('torch_the_tower_die_exile::') for p, b, n in runtime_selected) == 7
+          for item in required[:4]:
+              assert runtime_selected.count(item) == 1, item
+          print('Expected focused runtime selection from this current native discovery:', len(runtime_selected))
+          # Broad parser/AI/probe/feature-positive suites remain compiled/discovered here and execute in full Step 5.
           PYLIST
           cargo nextest run -p phase-engine -p phase-ai -p probe-pin \
             --features "$TEST_FEATURES" -E "$FOCUSED_FILTER" 2>&1 \
@@ -2261,6 +2945,308 @@ jobs:
           grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/u3-restored-green.log"
           test -z "$(git status --porcelain)"
           git diff --cached --quiet
+      - name: Complete revised production P red controls then exact restored owning and normal greens
+        if: env.MODE == 'final'
+        working-directory: stage3-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-completion-target
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          python3 - <<'PYCONTROLS'
+          from pathlib import Path
+          import os, re
+          sources = {
+              'LIVE_EXIT_TEST': 'crates/engine/src/game/game_object.rs',
+              'RECORDED_EXIT_TEST': 'crates/engine/src/game/zones.rs',
+              'NORMAL_EXIT_TEST': 'crates/engine/tests/integration/essence_burn.rs',
+          }
+          bodies = {}
+          for key, path in sources.items():
+              name = os.environ[key].split('::')[-1]
+              source = Path(path).read_text()
+              hits = list(re.finditer(r'(?m)^\s*fn ' + re.escape(name) + r'\(', source))
+              assert len(hits) == 1, (key, path, len(hits))
+              body = source[hits[0].start():]
+              stop = re.search(r'(?m)^\s*#\[test\]', body)
+              if stop:
+                  body = body[:stop.start()]
+              marker = os.environ[key.replace('_TEST', '_RED_ASSERTION_TEXT')]
+              assert body.count(marker) == 1, (key, marker)
+              bodies[key] = body
+          live = bodies['LIVE_EXIT_TEST']
+          assert 'obj.damage_marked = 5;' in live and live.count('obj.reset_for_battlefield_exit();') == 2
+          assert re.search(r'obj\.damage_marked,\s*0,\s*"' + re.escape(os.environ['LIVE_EXIT_RED_ASSERTION_TEXT']), live)
+          replay = bodies['RECORDED_EXIT_TEST']
+          ordered = ['let mut replayed = live.clone();', 'assert_eq!(replayed.objects[&host].damage_marked, 5);',
+                     'move_to_zone(&mut live, host, destination, &mut Vec::new());',
+                     'actual damaged battlefield exit records its command', 'live damaged exit clears damage',
+                     'apply_resolved_zone_change(&mut replayed, &command)', os.environ['RECORDED_EXIT_RED_ASSERTION_TEXT']]
+          positions = [replay.index(x) for x in ordered]
+          assert positions == sorted(positions), positions
+          assert re.search(r'live\.objects\[&host\]\.damage_marked,\s*0,\s*"live damaged exit clears damage"', replay)
+          assert re.search(r'replayed\.objects\[&host\]\.damage_marked,\s*0,\s*"' + re.escape(os.environ['RECORDED_EXIT_RED_ASSERTION_TEXT']), replay)
+          normal = bodies['NORMAL_EXIT_TEST']
+          first = normal[:normal.index('let db = crate::support::shared_card_db()')]
+          for positive in ['"Shock"', '"Unsummon"', 'damage_marked, 2', 'live_resolution_count(&normal, ordinary_host), 0',
+                           'bounced.owner, P1', '.hand', '.contains(&ordinary_host)', os.environ['NORMAL_EXIT_RED_ASSERTION_TEXT']]:
+              assert positive in first, positive
+          assert re.search(r'bounced\.damage_marked,\s*0,\s*"' + re.escape(os.environ['NORMAL_EXIT_RED_ASSERTION_TEXT']), first)
+          print('Exact owning controls and first no-grant Shock/Unsummon immediate-Hand guard are present')
+          PYCONTROLS
+          # Lists bind immutable test identities once; subsequent reversals check complete test-byte equality.
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --list 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/exact-normal_exit_test-list.log"
+          test "$(grep -Fxc "$NORMAL_EXIT_TEST: test" "$GITHUB_WORKSPACE/stage3-outputs/completion/exact-normal_exit_test-list.log")" -eq 1
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$LIVE_EXIT_TEST" -- --exact --list 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/exact-live_exit_test-list.log"
+          test "$(grep -Fxc "$LIVE_EXIT_TEST: test" "$GITHUB_WORKSPACE/stage3-outputs/completion/exact-live_exit_test-list.log")" -eq 1
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$RECORDED_EXIT_TEST" -- --exact --list 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/exact-recorded_exit_test-list.log"
+          test "$(grep -Fxc "$RECORDED_EXIT_TEST: test" "$GITHUB_WORKSPACE/stage3-outputs/completion/exact-recorded_exit_test-list.log")" -eq 1
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$TORCH_CLEANUP_TEST" -- --exact --list 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/exact-torch_cleanup_test-list.log"
+          test "$(grep -Fxc "$TORCH_CLEANUP_TEST: test" "$GITHUB_WORKSPACE/stage3-outputs/completion/exact-torch_cleanup_test-list.log")" -eq 1
+          ! grep -F 'REPLACE_' <<< "$REVISED_PRODUCTION_PATCH"
+          mapfile -t production_paths <<< "$REVISED_PRODUCTION_PATHS"
+          test "${#production_paths[@]}" -eq 7
+          printf '%s\n' "$REVISED_PRODUCTION_PATCH" > "$RUNNER_TEMP/revised-production.patch"
+          # Check complete P against this stage's fixed BASE using an isolated runtime index.
+          baseline_index="$RUNNER_TEMP/revised-frozen-base.index"
+          test ! -e "$baseline_index"
+          GIT_INDEX_FILE="$baseline_index" git read-tree "$BASE_SHA"
+          GIT_INDEX_FILE="$baseline_index" git apply --cached --check "$RUNNER_TEMP/revised-production.patch"
+          rm "$baseline_index"
+          git apply --reverse --check "$RUNNER_TEMP/revised-production.patch"
+          trap 'git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"' EXIT
+          git apply --reverse "$RUNNER_TEMP/revised-production.patch"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --cached --quiet
+          changed_count=0
+          while IFS= read -r -d '' path; do
+            printf '%s\n' "${production_paths[@]}" | grep -Fx -- "$path" > /dev/null
+            changed_count=$((changed_count + 1))
+          done < <(git diff --name-only -z)
+          test "$changed_count" -eq "${#production_paths[@]}"
+          git diff --quiet HEAD -- crates/engine/tests/ crates/engine/src/parser/
+          # Owning unit tests share the production files: their complete module bytes must stay committed.
+          python3 - "${production_paths[@]}" <<'PYTESTBYTES'
+          from pathlib import Path
+          import re, subprocess, sys
+          for path in sys.argv[1:]:
+              committed = subprocess.check_output(['git', 'show', 'HEAD:' + path], text=True)
+              current = Path(path).read_text()
+              old = re.search(r'(?m)^mod tests \{', committed)
+              new = re.search(r'(?m)^mod tests \{', current)
+              assert old and new, path
+              assert committed[old.start():] == current[new.start():], ('Owning unit-test drift', path)
+          print('Complete owning unit-test modules remain exact committed bytes')
+          PYTESTBYTES
+          set +e
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-primary-red.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          test "${statuses[0]}" -ne 0
+          test "${statuses[1]}" -eq 0
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-primary-red.log"
+          grep -E 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-primary-red.log"
+          grep -Fx "test $U3_RUNTIME_TEST ... FAILED" "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-primary-red.log"
+          grep -F "$U3_RED_ASSERTION_TEXT" "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-primary-red.log"
+          set +e
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-normal-exit-red.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          test "${statuses[0]}" -ne 0
+          test "${statuses[1]}" -eq 0
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-normal-exit-red.log"
+          grep -E 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-normal-exit-red.log"
+          grep -Fx "test $NORMAL_EXIT_TEST ... FAILED" "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-normal-exit-red.log"
+          grep -F "$NORMAL_EXIT_RED_ASSERTION_TEXT" "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-normal-exit-red.log"
+          git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          git diff --exit-code "$CANDIDATE_SHA" -- crates/engine/tests/ crates/engine/src/parser/ "${production_paths[@]}"
+          trap - EXIT
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-u3_runtime_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-u3_runtime_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-u3_runtime_test.log"
+          grep -Fx "test $U3_RUNTIME_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-u3_runtime_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-normal_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-normal_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-normal_exit_test.log"
+          grep -Fx "test $NORMAL_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-normal_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$LIVE_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-live_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-live_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-live_exit_test.log"
+          grep -Fx "test $LIVE_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-live_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$RECORDED_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-recorded_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-recorded_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-recorded_exit_test.log"
+          grep -Fx "test $RECORDED_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-recorded_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$TORCH_CLEANUP_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-torch_cleanup_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-torch_cleanup_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-torch_cleanup_test.log"
+          grep -Fx "test $TORCH_CLEANUP_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/revised-restored-torch_cleanup_test.log"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+      - name: Selective live exit scalar red with normal applier-enabled green then exact restoration
+        if: env.MODE == 'final'
+        working-directory: stage3-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-completion-target
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          ! grep -F 'REPLACE_' <<< "$LIVE_EXIT_SCALAR_PATCH"
+          mapfile -t production_paths <<< "crates/engine/src/game/game_object.rs"
+          test "${#production_paths[@]}" -eq 1
+          printf '%s\n' "$LIVE_EXIT_SCALAR_PATCH" > "$RUNNER_TEMP/live-production.patch"
+          git apply --reverse --check "$RUNNER_TEMP/live-production.patch"
+          trap 'git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"' EXIT
+          git apply --reverse "$RUNNER_TEMP/live-production.patch"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --cached --quiet
+          changed_count=0
+          while IFS= read -r -d '' path; do
+            printf '%s\n' "${production_paths[@]}" | grep -Fx -- "$path" > /dev/null
+            changed_count=$((changed_count + 1))
+          done < <(git diff --name-only -z)
+          test "$changed_count" -eq "${#production_paths[@]}"
+          git diff --quiet HEAD -- crates/engine/tests/ crates/engine/src/parser/
+          # Owning unit tests share the production files: their complete module bytes must stay committed.
+          python3 - "${production_paths[@]}" <<'PYTESTBYTES'
+          from pathlib import Path
+          import re, subprocess, sys
+          for path in sys.argv[1:]:
+              committed = subprocess.check_output(['git', 'show', 'HEAD:' + path], text=True)
+              current = Path(path).read_text()
+              old = re.search(r'(?m)^mod tests \{', committed)
+              new = re.search(r'(?m)^mod tests \{', current)
+              assert old and new, path
+              assert committed[old.start():] == current[new.start():], ('Owning unit-test drift', path)
+          print('Complete owning unit-test modules remain exact committed bytes')
+          PYTESTBYTES
+          set +e
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$LIVE_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/live-owner-red.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          test "${statuses[0]}" -ne 0
+          test "${statuses[1]}" -eq 0
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-owner-red.log"
+          grep -E 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-owner-red.log"
+          grep -Fx "test $LIVE_EXIT_TEST ... FAILED" "$GITHUB_WORKSPACE/stage3-outputs/completion/live-owner-red.log"
+          grep -F "$LIVE_EXIT_RED_ASSERTION_TEXT" "$GITHUB_WORKSPACE/stage3-outputs/completion/live-owner-red.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/live-scalar-reversed-normal-green.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-scalar-reversed-normal-green.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-scalar-reversed-normal-green.log"
+          grep -Fx "test $NORMAL_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/live-scalar-reversed-normal-green.log"
+          git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          git diff --exit-code "$CANDIDATE_SHA" -- crates/engine/tests/ crates/engine/src/parser/ "${production_paths[@]}"
+          trap - EXIT
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-u3_runtime_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-u3_runtime_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-u3_runtime_test.log"
+          grep -Fx "test $U3_RUNTIME_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-u3_runtime_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-normal_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-normal_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-normal_exit_test.log"
+          grep -Fx "test $NORMAL_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-normal_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$LIVE_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-live_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-live_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-live_exit_test.log"
+          grep -Fx "test $LIVE_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-live_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$RECORDED_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-recorded_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-recorded_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-recorded_exit_test.log"
+          grep -Fx "test $RECORDED_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/live-restored-recorded_exit_test.log"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+      - name: Selective recorded exit scalar red from actual damaged prestate then exact restoration
+        if: env.MODE == 'final'
+        working-directory: stage3-completion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stage3-completion-target
+          INSTA_UPDATE: 'no'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          ! grep -F 'REPLACE_' <<< "$RECORDED_EXIT_SCALAR_PATCH"
+          mapfile -t production_paths <<< "crates/engine/src/game/zones.rs"
+          test "${#production_paths[@]}" -eq 1
+          printf '%s\n' "$RECORDED_EXIT_SCALAR_PATCH" > "$RUNNER_TEMP/recorded-production.patch"
+          git apply --reverse --check "$RUNNER_TEMP/recorded-production.patch"
+          trap 'git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"' EXIT
+          git apply --reverse "$RUNNER_TEMP/recorded-production.patch"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --cached --quiet
+          changed_count=0
+          while IFS= read -r -d '' path; do
+            printf '%s\n' "${production_paths[@]}" | grep -Fx -- "$path" > /dev/null
+            changed_count=$((changed_count + 1))
+          done < <(git diff --name-only -z)
+          test "$changed_count" -eq "${#production_paths[@]}"
+          git diff --quiet HEAD -- crates/engine/tests/ crates/engine/src/parser/
+          # Owning unit tests share the production files: their complete module bytes must stay committed.
+          python3 - "${production_paths[@]}" <<'PYTESTBYTES'
+          from pathlib import Path
+          import re, subprocess, sys
+          for path in sys.argv[1:]:
+              committed = subprocess.check_output(['git', 'show', 'HEAD:' + path], text=True)
+              current = Path(path).read_text()
+              old = re.search(r'(?m)^mod tests \{', committed)
+              new = re.search(r'(?m)^mod tests \{', current)
+              assert old and new, path
+              assert committed[old.start():] == current[new.start():], ('Owning unit-test drift', path)
+          print('Complete owning unit-test modules remain exact committed bytes')
+          PYTESTBYTES
+          set +e
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$RECORDED_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-owner-red.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          test "${statuses[0]}" -ne 0
+          test "${statuses[1]}" -eq 0
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-owner-red.log"
+          grep -E 'test result: FAILED\. 0 passed; 1 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-owner-red.log"
+          grep -Fx "test $RECORDED_EXIT_TEST ... FAILED" "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-owner-red.log"
+          grep -F "$RECORDED_EXIT_RED_ASSERTION_TEXT" "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-owner-red.log"
+          git restore --source="$CANDIDATE_SHA" -- "${production_paths[@]}"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
+          git diff --exit-code "$CANDIDATE_SHA" -- crates/engine/tests/ crates/engine/src/parser/ "${production_paths[@]}"
+          trap - EXIT
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$U3_RUNTIME_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-u3_runtime_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-u3_runtime_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-u3_runtime_test.log"
+          grep -Fx "test $U3_RUNTIME_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-u3_runtime_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --test integration "$NORMAL_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-normal_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-normal_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-normal_exit_test.log"
+          grep -Fx "test $NORMAL_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-normal_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$LIVE_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-live_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-live_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-live_exit_test.log"
+          grep -Fx "test $LIVE_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-live_exit_test.log"
+          cargo test -p phase-engine --features "$TEST_FEATURES" --lib "$RECORDED_EXIT_TEST" -- --exact --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-recorded_exit_test.log"
+          grep -Fx 'running 1 test' "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-recorded_exit_test.log"
+          grep -E 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-recorded_exit_test.log"
+          grep -Fx "test $RECORDED_EXIT_TEST ... ok" "$GITHUB_WORKSPACE/stage3-outputs/completion/recorded-restored-recorded_exit_test.log"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          git diff --cached --quiet
       - name: Full Step 5 at the artifact-inclusive committed candidate
         if: env.MODE == 'final'
         working-directory: stage3-completion
@@ -2320,7 +3306,7 @@ jobs:
     needs: [stage3-candidate, stage3-base, stage3-runtime-red, stage3-completion]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-12-results-stage3
+      RESULT_BRANCH: engine-proof/fra-stingerquill-13-results-stage3
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage3-outputs.tar.gz
     permissions:
       contents: write
