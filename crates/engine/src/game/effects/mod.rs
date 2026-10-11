@@ -22613,12 +22613,60 @@ mod tests {
         let outcome = runner.cast(volcanic).target_objects(&[bolt]).resolve();
 
         outcome.assert_zone(&[bolt], Zone::Hand);
-        assert_eq!(
-            outcome.damage_marked(goblin),
-            3,
-            "each opponent creature must take the returned card's mana value (3)"
-        );
-        assert_eq!(outcome.damage_marked(ogre), 3);
+        // CR 608.2c: the selected instant returns to hand before damage is dealt.
+        let returned_at = outcome
+            .events()
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    GameEvent::ZoneChanged {
+                        object_id,
+                        from: Some(Zone::Graveyard),
+                        to: Zone::Hand,
+                        ..
+                    } if *object_id == bolt
+                )
+            })
+            .expect("the selected instant must actually return from the graveyard to hand");
+        for victim in [goblin, ogre] {
+            // CR 202.3: the returned instant's generic mana cost gives mana value three.
+            let damage: Vec<_> = outcome
+                .events()
+                .iter()
+                .filter_map(|event| match event {
+                    GameEvent::DamageDealt {
+                        target: TargetRef::Object(id),
+                        amount,
+                        is_combat,
+                        ..
+                    } if *id == victim => Some((*amount, *is_combat)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                damage,
+                vec![(3, false)],
+                "each opponent creature must take the returned card's mana value (3)"
+            );
+            let damaged_at = outcome
+                .events()
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        GameEvent::DamageDealt { target: TargetRef::Object(id), .. } if *id == victim
+                    )
+                })
+                .expect("each opponent creature must actually receive damage");
+            assert!(
+                returned_at < damaged_at,
+                "return must precede each damage event"
+            );
+            // CR 704.5g + CR 400.7: each lethal hit leaves a new, unmarked graveyard object.
+            outcome.assert_zone(&[victim], Zone::Graveyard);
+            assert_eq!(outcome.damage_marked(victim), 0);
+        }
         outcome.assert_zone(&[volcanic], Zone::Exile);
     }
 
