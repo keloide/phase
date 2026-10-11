@@ -3458,6 +3458,9 @@ impl GameObject {
     /// Separate from entry reset because some state (counters, transform) is already handled
     /// by `apply_zone_exit_cleanup` in zones.rs.
     pub fn reset_for_battlefield_exit(&mut self) {
+        // CR 400.7 + CR 120.6: the new off-battlefield object does not retain
+        // the departing permanent's marked damage; exit snapshots precede this reset.
+        self.damage_marked = 0;
         self.base_controller = Some(self.owner);
         // CR 701.37b: Monstrous designation clears when a permanent leaves the battlefield.
         self.monstrous = false;
@@ -4249,6 +4252,29 @@ mod tests {
         assert!(
             obj.cast_from_zone.is_none(),
             "cast_from_zone exit-clear pin (CR 400.7 + CR 603.4)"
+        );
+    }
+
+    #[test]
+    fn reset_for_battlefield_exit_clears_marked_damage() {
+        let mut obj = GameObject::new(
+            ObjectId(1),
+            CardId(1),
+            PlayerId(0),
+            "Damaged permanent".to_string(),
+            Zone::Battlefield,
+        );
+        obj.damage_marked = 5;
+        assert_eq!(obj.damage_marked, 5);
+        obj.reset_for_battlefield_exit();
+        assert_eq!(
+            obj.damage_marked, 0,
+            "battlefield-exit owner must clear five marked damage"
+        );
+        obj.reset_for_battlefield_exit();
+        assert_eq!(
+            obj.damage_marked, 0,
+            "repeated exit reset remains damage-free"
         );
     }
 

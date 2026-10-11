@@ -1029,6 +1029,21 @@ fn begin_real_rites_cost(
     assert!(
         matches!(&r.state().waiting_for, WaitingFor::PayCost { player: actual, choices, .. } if *actual == player && choices.contains(&host))
     );
+    // CR 601.2a precedes cost payment (601.2h); the real announcement is
+    // already on the stack while object storage remains in Hand until finalize.
+    assert_eq!(r.state().stack.len(), 1);
+    let entry = &r.state().stack[0];
+    assert_eq!(
+        (entry.id, entry.source_id, entry.controller),
+        (spell, spell, player)
+    );
+    assert!(
+        matches!(&entry.kind, engine::types::game_state::StackEntryKind::Spell {
+        card_id: actual_card, ability: None,
+        casting_variant: engine::types::game_state::CastingVariant::Normal,
+        actual_mana_spent: 0,
+    } if *actual_card == card_id)
+    );
     r.act(GameAction::SelectCards { cards: vec![host] })
         .expect("select the actual legal sacrifice cost")
 }
@@ -1040,6 +1055,16 @@ fn assert_cost_cast_completed(
     use engine::types::events::GameEvent;
     assert_eq!(r.state().objects[&spell].zone, Zone::Stack);
     assert_eq!(r.state().stack.len(), 1);
+    let entry = &r.state().stack[0];
+    assert_eq!((entry.id, entry.source_id), (spell, spell));
+    assert_eq!(entry.controller, r.state().objects[&spell].controller);
+    assert!(
+        matches!(&entry.kind, engine::types::game_state::StackEntryKind::Spell {
+        card_id, ability: Some(_),
+        casting_variant: engine::types::game_state::CastingVariant::Normal,
+        actual_mana_spent: 1,
+    } if *card_id == r.state().objects[&spell].card_id)
+    );
     assert!(r.state().pending_cost_move_resume.is_none());
     assert!(r.state().pending_replacement.is_none());
     assert!(matches!(r.state().waiting_for, WaitingFor::Priority { .. }));
@@ -1075,7 +1100,19 @@ fn assert_real_cost_choice(
     );
     assert_eq!(r.state().objects[&host].zone, Zone::Battlefield);
     assert_eq!(r.state().objects[&spell].zone, Zone::Hand);
-    assert!(r.state().stack.is_empty());
+    assert_eq!(r.state().stack.len(), 1);
+    let entry = &r.state().stack[0];
+    assert_eq!(
+        (entry.id, entry.source_id, entry.controller),
+        (spell, spell, player)
+    );
+    assert!(
+        matches!(&entry.kind, engine::types::game_state::StackEntryKind::Spell {
+        card_id, ability: None,
+        casting_variant: engine::types::game_state::CastingVariant::Normal,
+        actual_mana_spent: 0,
+    } if *card_id == r.state().objects[&spell].card_id)
+    );
     assert!(
         matches!(r.state().pending_cost_move_resume.as_ref(), Some(PendingCostMoveResume::SacrificeForCost { player: actual, chosen, paused_at_index: 0, .. }) if *actual == player && chosen == &vec![host])
     );
@@ -1362,6 +1399,49 @@ fn fund_after_cleanup(r: &mut GameRunner, player: PlayerId) {
 
 #[test]
 fn essence_burn_rewrite_bounce_reentry_drops_old_grant() {
+    // Independent normal spells reach the damage lifetime even with no grant.
+    let mut ordinary = lifetime_board();
+    let ordinary_host = real(&mut ordinary, P1, "Catacomb Slug", Zone::Battlefield);
+    let shock = real(&mut ordinary, P0, "Shock", Zone::Hand);
+    let unsummon = real(&mut ordinary, P0, "Unsummon", Zone::Hand);
+    let mut normal = ordinary.build();
+    let normal_card = normal.state().objects[&ordinary_host].card_id;
+    let normal_incarnation = normal.state().objects[&ordinary_host].incarnation;
+    normal
+        .cast(shock)
+        .target_object(ordinary_host)
+        .resolve()
+        .assert_zone(&[ordinary_host], Zone::Battlefield)
+        .assert_zone(&[shock], Zone::Graveyard)
+        .assert_stack_size(0);
+    assert_eq!(normal.state().objects[&ordinary_host].damage_marked, 2);
+    assert_eq!(live_resolution_count(&normal, ordinary_host), 0);
+    assert!(normal.state().objects[&ordinary_host]
+        .replacement_definitions
+        .is_empty());
+    normal
+        .cast(unsummon)
+        .target_object(ordinary_host)
+        .resolve()
+        .assert_zone(&[ordinary_host], Zone::Hand)
+        .assert_zone(&[unsummon], Zone::Graveyard)
+        .assert_stack_size(0);
+    let bounced = &normal.state().objects[&ordinary_host];
+    assert_eq!(bounced.card_id, normal_card);
+    assert!(bounced.incarnation > normal_incarnation);
+    assert_eq!(bounced.owner, P1);
+    assert!(normal
+        .state()
+        .players
+        .iter()
+        .find(|p| p.id == P1)
+        .unwrap()
+        .hand
+        .contains(&ordinary_host));
+    assert_eq!(
+        bounced.damage_marked, 0,
+        "normal Shock then Unsummon must clear marked damage immediately in its owner's hand"
+    );
     let db = crate::support::shared_card_db().expect("required real printed Slug");
     let face = db.get_face_by_name("Catacomb Slug").unwrap();
     let mut s = lifetime_board();

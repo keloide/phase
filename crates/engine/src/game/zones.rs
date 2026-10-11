@@ -1166,6 +1166,11 @@ pub fn apply_resolved_zone_change(
         .get_mut(&command.object.object_id)
         .expect("validated zone command object remains live");
     object.zone = command.to;
+    // CR 400.7 + CR 120.6: recorded replay bypasses the live exit reset,
+    // so reproduce only its marked-damage clear on a real battlefield exit.
+    if command.from == Zone::Battlefield && command.to != Zone::Battlefield {
+        object.damage_marked = 0;
+    }
     clear_hand_or_graveyard_casting_permissions_on_exit(object, command.from, command.to);
     // CR 400.7 + CR 601.2i: replay bypasses `apply_zone_exit_cleanup`, so it
     // must reproduce the live Stack-exit carrier clear from the recorded move.
@@ -5426,6 +5431,103 @@ mod tests {
             )),
             "an attachment that did not become unattached must not announce one: {events:?}"
         );
+    }
+
+    #[test]
+    fn battlefield_exit_marked_damage_is_reproduced_by_resolved_command_replay() {
+        for destination in [Zone::Hand, Zone::Graveyard, Zone::Exile] {
+            let mut live = setup();
+            let host = create_object(
+                &mut live,
+                CardId(1),
+                PlayerId(0),
+                "Damaged host".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = live.objects.get_mut(&host).unwrap();
+                obj.card_types
+                    .core_types
+                    .push(crate::types::card_type::CoreType::Creature);
+                obj.power = Some(2);
+                obj.toughness = Some(6);
+                obj.damage_marked = 5;
+            }
+            let old_incarnation = live.objects[&host].incarnation;
+            let mut replayed = live.clone();
+            assert_eq!(replayed.objects[&host].damage_marked, 5);
+            move_to_zone(&mut live, host, destination, &mut Vec::new());
+            let command =
+                live.resolved_rules_journal
+                    .entries()
+                    .iter()
+                    .filter_map(|entry| entry.command.as_ref())
+                    .find_map(|command| match command {
+                        crate::types::resolved_commands::ResolvedRulesCommand::ZoneChange(
+                            command,
+                        ) if command.object.object_id == host => Some(command.as_ref().clone()),
+                        _ => None,
+                    })
+                    .expect("actual damaged battlefield exit records its command");
+            assert_eq!(command.from, Zone::Battlefield);
+            assert_eq!(command.to, destination);
+            assert_eq!(command.zone_change_record.controller, PlayerId(0));
+            assert_eq!(command.zone_change_record.owner, PlayerId(0));
+            assert_eq!(command.zone_change_record.power, Some(2));
+            assert_eq!(command.zone_change_record.toughness, Some(6));
+            assert!(command
+                .zone_change_record
+                .core_types
+                .contains(&crate::types::card_type::CoreType::Creature));
+            assert_eq!(
+                live.objects[&host].damage_marked, 0,
+                "live damaged exit clears damage"
+            );
+            assert_eq!(live.objects[&host].zone, destination);
+            assert!(live.objects[&host].incarnation > old_incarnation);
+            apply_resolved_zone_change(&mut replayed, &command)
+                .expect("actual recorded exit replays from damaged pre-cleanup state");
+            assert_eq!(
+                replayed.objects[&host].damage_marked, 0,
+                "recorded battlefield exit must clear five marked damage from damaged prestate"
+            );
+            assert_eq!(replayed.objects[&host].zone, destination);
+            assert_eq!(
+                replayed.objects[&host].incarnation,
+                command.resulting_incarnation
+            );
+            assert_eq!(replayed.objects[&host].card_id, live.objects[&host].card_id);
+            assert_eq!(replayed.objects[&host].owner, live.objects[&host].owner);
+            assert_eq!(replayed.zone_changes_this_turn, live.zone_changes_this_turn);
+        }
+        let mut unchanged = setup();
+        let host = create_object(
+            &mut unchanged,
+            CardId(2),
+            PlayerId(0),
+            "Same-zone host".to_string(),
+            Zone::Battlefield,
+        );
+        unchanged.objects.get_mut(&host).unwrap().damage_marked = 5;
+        let entries = unchanged.resolved_rules_journal.entries().len();
+        move_to_zone(&mut unchanged, host, Zone::Battlefield, &mut Vec::new());
+        assert_eq!(unchanged.objects[&host].damage_marked, 5);
+        assert_eq!(unchanged.resolved_rules_journal.entries().len(), entries);
+        let off_battlefield = create_object(
+            &mut unchanged,
+            CardId(3),
+            PlayerId(0),
+            "Undamaged card".to_string(),
+            Zone::Hand,
+        );
+        move_to_zone(
+            &mut unchanged,
+            off_battlefield,
+            Zone::Exile,
+            &mut Vec::new(),
+        );
+        assert_eq!(unchanged.objects[&off_battlefield].zone, Zone::Exile);
+        assert_eq!(unchanged.objects[&off_battlefield].damage_marked, 0);
     }
 
     #[test]
