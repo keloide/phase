@@ -3,7 +3,7 @@
 
 use engine::game::combat::AttackTarget;
 use engine::game::scenario::{GameScenario, P0, P1};
-use engine::types::ability::{ShieldKind, TargetFilter};
+use engine::types::ability::{ShieldKind, TargetFilter, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::counter::CounterType;
 use engine::types::events::GameEvent;
@@ -11,6 +11,7 @@ use engine::types::game_state::WaitingFor;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::replacements::ReplacementEvent;
+use engine::types::zones::Zone;
 const VIGOR_ORACLE: &str = "Trample\n\
 If damage would be dealt to another creature you control, prevent that damage. \
 Put a +1/+1 counter on that creature for each 1 damage prevented this way.\n\
@@ -208,11 +209,34 @@ fn vigor_does_not_prevent_damage_to_opponents_creature() {
     // full 3 damage and gets no counters.
     let outcome = runner.cast(bolt).target_object(goblin).resolve();
 
+    let damage: Vec<_> = outcome
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::DamageDealt {
+                source_id,
+                target: TargetRef::Object(id),
+                amount,
+                is_combat,
+                ..
+            } if *id == goblin => Some((*source_id, *amount, *is_combat)),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        outcome.damage_marked(goblin),
-        3,
+        damage,
+        vec![(bolt, 3, false)],
         "damage to an opponent's creature must not be prevented by Vigor"
     );
+    assert!(
+        !outcome.events().iter().any(|event| matches!(event,
+            GameEvent::DamagePrevented { target: TargetRef::Object(id), .. } if *id == goblin
+        )),
+        "actual Bolt damage guards the absence of Vigor prevention"
+    );
+    // CR 400.7: lethal Goblin has cleared damage on its new graveyard object.
+    outcome.assert_zone(&[goblin], Zone::Graveyard);
+    assert_eq!(outcome.damage_marked(goblin), 0);
     outcome.assert_counters(goblin, CounterType::Plus1Plus1, 0);
 }
 

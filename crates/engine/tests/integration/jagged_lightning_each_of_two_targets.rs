@@ -19,7 +19,9 @@
 
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::EngineError;
+use engine::types::ability::TargetRef;
 use engine::types::actions::AlternativeCastDecision;
+use engine::types::events::GameEvent;
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
@@ -49,8 +51,8 @@ fn damage_on(outcome: &engine::game::scenario::CastOutcome, id: ObjectId) -> u32
 /// NOTHING and survives state-based actions (CR 704.5g).
 ///
 /// Revert behaviour: the pre-fix `DamageAll { Typed[Creature] }` parse hits all
-/// three creatures, so `damage_on(bystander)` reads 3 and the bystander is in
-/// the graveyard — both assertions below fail.
+/// three creatures, emitting an extra 3-damage event and killing the bystander
+/// — its no-damage-event and battlefield assertions below fail.
 #[test]
 fn t1_jagged_lightning_damages_only_the_two_chosen_creatures() {
     let mut scenario = GameScenario::new();
@@ -71,21 +73,38 @@ fn t1_jagged_lightning_damages_only_the_two_chosen_creatures() {
         .target_objects(&[first, second])
         .resolve();
 
-    assert_eq!(
-        damage_on(&outcome, first),
-        3,
-        "the first chosen target must take 3"
-    );
-    assert_eq!(
-        damage_on(&outcome, second),
-        3,
-        "the second chosen target must take 3"
-    );
+    for (recipient, message) in [
+        (first, "the first chosen target must take 3"),
+        (second, "the second chosen target must take 3"),
+    ] {
+        let damage: Vec<_> = outcome
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target: TargetRef::Object(id),
+                    amount,
+                    is_combat,
+                    ..
+                } if *id == recipient => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(damage, vec![(spell, 3, false)], "{message}");
+        // CR 400.7: the new graveyard object does not retain marked damage.
+        assert_eq!(outcome.state().objects[&recipient].damage_marked, 0);
+    }
     assert_eq!(
         damage_on(&outcome, bystander),
         0,
-        "CR 601.2c: an unchosen creature is not a target and takes no damage — \
-         a `DamageAll` parse would read 3 here"
+        "CR 601.2c: an unchosen creature is not a target and takes no damage"
+    );
+    assert!(
+        !outcome.events().iter().any(|event| matches!(event,
+            GameEvent::DamageDealt { target: TargetRef::Object(id), .. } if *id == bystander
+        )),
+        "the two positive chosen-target events exclude the bystander"
     );
     // CR 704.5g: 3 damage on a 3-toughness creature is lethal. The bystander
     // must still be on the battlefield.
@@ -195,12 +214,36 @@ fn t4_meteor_blast_x_is_the_target_count() {
         .target_objects(&[first, second])
         .resolve();
 
-    assert_eq!(damage_on(&outcome, first), 4);
-    assert_eq!(damage_on(&outcome, second), 4);
+    for recipient in [first, second] {
+        let damage: Vec<_> = outcome
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target: TargetRef::Object(id),
+                    amount,
+                    is_combat,
+                    ..
+                } if *id == recipient => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(damage, vec![(spell, 4, false)]);
+        // CR 400.7: each lethal chosen creature is a new, cleared graveyard object.
+        assert_eq!(outcome.state().objects[&recipient].zone, Zone::Graveyard);
+        assert_eq!(outcome.state().objects[&recipient].damage_marked, 0);
+    }
     assert_eq!(
         damage_on(&outcome, bystander),
         0,
         "only the X announced targets are damaged"
+    );
+    assert!(
+        !outcome.events().iter().any(|event| matches!(event,
+            GameEvent::DamageDealt { target: TargetRef::Object(id), .. } if *id == bystander
+        )),
+        "both positive chosen-target events exclude the bystander"
     );
     outcome.assert_zone(&[bystander], Zone::Battlefield);
 }

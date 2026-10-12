@@ -6,6 +6,7 @@
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
+use engine::types::events::GameEvent;
 use engine::types::game_state::{CastPaymentMode, WaitingFor};
 use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
@@ -50,14 +51,15 @@ fn violent_eruption_choose_target_path_divides_damage_among_two_targets() {
     add_red_mana(&mut runner, P0, 6);
 
     let card_id = runner.state().objects[&spell].card_id;
-    runner
+    let mut events = runner
         .act(GameAction::CastSpell {
             object_id: spell,
             card_id,
             targets: vec![],
             payment_mode: CastPaymentMode::Auto,
         })
-        .expect("cast Violent Eruption should be accepted");
+        .expect("cast Violent Eruption should be accepted")
+        .events;
 
     assert!(
         matches!(
@@ -68,20 +70,29 @@ fn violent_eruption_choose_target_path_divides_damage_among_two_targets() {
     );
 
     // Mirror the client: one ChooseTarget per slot (opponent player, then creature).
-    runner
-        .act(GameAction::ChooseTarget {
-            target: Some(TargetRef::Player(P1)),
-        })
-        .expect("first ChooseTarget (player) should succeed");
-    runner
-        .act(GameAction::ChooseTarget {
-            target: Some(TargetRef::Object(bear)),
-        })
-        .expect("second ChooseTarget (creature) should succeed");
+    events.extend(
+        runner
+            .act(GameAction::ChooseTarget {
+                target: Some(TargetRef::Player(P1)),
+            })
+            .expect("first ChooseTarget (player) should succeed")
+            .events,
+    );
+    events.extend(
+        runner
+            .act(GameAction::ChooseTarget {
+                target: Some(TargetRef::Object(bear)),
+            })
+            .expect("second ChooseTarget (creature) should succeed")
+            .events,
+    );
     // Skip remaining optional slots — mirrors the client "done" action.
-    runner
-        .act(GameAction::ChooseTarget { target: None })
-        .expect("skipping optional tail should complete target selection");
+    events.extend(
+        runner
+            .act(GameAction::ChooseTarget { target: None })
+            .expect("skipping optional tail should complete target selection")
+            .events,
+    );
 
     let WaitingFor::DistributeAmong { total, targets, .. } = runner.state().waiting_for.clone()
     else {
@@ -97,19 +108,57 @@ fn violent_eruption_choose_target_path_divides_damage_among_two_targets() {
         "both chosen targets must participate in the distribution",
     );
 
-    runner
-        .act(GameAction::DistributeAmong {
-            distribution: vec![(TargetRef::Player(P1), 1), (TargetRef::Object(bear), 3)],
-        })
-        .expect("1/3 distribution should be accepted");
-
-    runner.advance_until_stack_empty();
-
-    assert_eq!(
-        runner.state().objects[&bear].damage_marked,
-        3,
-        "creature must take only its assigned share",
+    events.extend(
+        runner
+            .act(GameAction::DistributeAmong {
+                distribution: vec![(TargetRef::Player(P1), 1), (TargetRef::Object(bear), 3)],
+            })
+            .expect("1/3 distribution should be accepted")
+            .events,
     );
+
+    for _ in 0..60 {
+        if runner.state().stack.is_empty() {
+            break;
+        }
+        events.extend(
+            runner
+                .act(GameAction::PassPriority)
+                .expect("resolve Eruption")
+                .events,
+        );
+    }
+    assert!(
+        runner.state().stack.is_empty(),
+        "Eruption must finish resolving"
+    );
+
+    for (recipient, expected) in [(TargetRef::Object(bear), 3), (TargetRef::Player(P1), 1)] {
+        let damage: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target,
+                    amount,
+                    is_combat,
+                    ..
+                } if *target == recipient => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            damage,
+            vec![(spell, expected, false)],
+            "creature must take only its assigned share"
+        );
+    }
+    // CR 400.7: the lethal creature is cleared in its new graveyard zone.
+    assert_eq!(
+        runner.state().objects[&bear].zone,
+        engine::types::zones::Zone::Graveyard
+    );
+    assert_eq!(runner.state().objects[&bear].damage_marked, 0);
     let p1_life = runner
         .state()
         .players

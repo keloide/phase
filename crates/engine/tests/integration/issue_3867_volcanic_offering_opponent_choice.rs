@@ -23,6 +23,7 @@ use engine::game::scenario::{GameScenario, P0, P1};
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
+use engine::types::events::GameEvent;
 use engine::types::game_state::{CastPaymentMode, WaitingFor};
 use engine::types::mana::ManaCost;
 use engine::types::phase::Phase;
@@ -76,14 +77,15 @@ fn waiting_for_player_flips_controller_opponent_across_slots_and_controller_keep
     let mut runner = scenario.build();
     let spell_card = runner.state().objects[&spell].card_id;
 
-    runner
+    let mut events = runner
         .act(GameAction::CastSpell {
             object_id: spell,
             card_id: spell_card,
             targets: vec![],
             payment_mode: CastPaymentMode::Auto,
         })
-        .expect("casting the free instant must succeed");
+        .expect("casting the free instant must succeed")
+        .events;
 
     // Slot 0: controller (P0) announces the first nonbasic land.
     assert_eq!(
@@ -91,11 +93,14 @@ fn waiting_for_player_flips_controller_opponent_across_slots_and_controller_keep
         P0,
         "slot 0 (target nonbasic land you don't control) is announced by the controller"
     );
-    runner
-        .act(GameAction::ChooseTarget {
-            target: Some(TargetRef::Object(land_a)),
-        })
-        .expect("controller announces land A");
+    events.extend(
+        runner
+            .act(GameAction::ChooseTarget {
+                target: Some(TargetRef::Object(land_a)),
+            })
+            .expect("controller announces land A")
+            .events,
+    );
 
     // Slot 1: opponent (P1) announces the second nonbasic land ("of an
     // opponent's choice"). THIS is the chooser flip.
@@ -104,11 +109,14 @@ fn waiting_for_player_flips_controller_opponent_across_slots_and_controller_keep
         P1,
         "slot 1 (of an opponent's choice) is announced by the opponent"
     );
-    runner
-        .act(GameAction::ChooseTarget {
-            target: Some(TargetRef::Object(land_b)),
-        })
-        .expect("opponent announces land B");
+    events.extend(
+        runner
+            .act(GameAction::ChooseTarget {
+                target: Some(TargetRef::Object(land_b)),
+            })
+            .expect("opponent announces land B")
+            .events,
+    );
 
     // Slot 2: controller again (damage to a creature it doesn't control).
     assert_eq!(
@@ -116,11 +124,14 @@ fn waiting_for_player_flips_controller_opponent_across_slots_and_controller_keep
         P0,
         "slot 2 (creature you don't control) is announced by the controller"
     );
-    runner
-        .act(GameAction::ChooseTarget {
-            target: Some(TargetRef::Object(creature_a)),
-        })
-        .expect("controller announces creature A");
+    events.extend(
+        runner
+            .act(GameAction::ChooseTarget {
+                target: Some(TargetRef::Object(creature_a)),
+            })
+            .expect("controller announces creature A")
+            .events,
+    );
 
     // Slot 3: opponent again ("target creature of an opponent's choice").
     assert_eq!(
@@ -130,11 +141,14 @@ fn waiting_for_player_flips_controller_opponent_across_slots_and_controller_keep
     );
     // This is the FINAL slot. Completing it must NOT leave the opponent in
     // control of the spell (B1).
-    runner
-        .act(GameAction::ChooseTarget {
-            target: Some(TargetRef::Object(creature_b)),
-        })
-        .expect("opponent announces creature B");
+    events.extend(
+        runner
+            .act(GameAction::ChooseTarget {
+                target: Some(TargetRef::Object(creature_b)),
+            })
+            .expect("opponent announces creature B")
+            .events,
+    );
 
     // B1: after the final (opponent-chosen) slot completes, the spell is on the
     // stack controlled by its CONTROLLER (P0), and priority returns to P0.
@@ -152,7 +166,21 @@ fn waiting_for_player_flips_controller_opponent_across_slots_and_controller_keep
     );
 
     // Resolve and confirm both lands destroyed, both creatures took 7 damage.
-    runner.advance_until_stack_empty();
+    for _ in 0..60 {
+        if runner.state().stack.is_empty() {
+            break;
+        }
+        events.extend(
+            runner
+                .act(GameAction::PassPriority)
+                .expect("resolve Offering")
+                .events,
+        );
+    }
+    assert!(
+        runner.state().stack.is_empty(),
+        "Offering must finish resolving"
+    );
 
     // CR 701.7b: a destroyed permanent is moved to its owner's graveyard, where it
     // keeps its card types — so "destroyed" means it left the battlefield.
@@ -169,17 +197,37 @@ fn waiting_for_player_flips_controller_opponent_across_slots_and_controller_keep
     assert!(land_a_gone, "opponent land A must be destroyed");
     assert!(land_b_gone, "opponent land B must be destroyed");
 
-    // Creatures with 5 toughness taking 7 damage die as a state-based action.
-    assert!(
-        !runner.state().objects.contains_key(&creature_a)
-            || runner.state().objects[&creature_a].damage_marked >= 7,
-        "opponent creature A must take 7 damage (and die)"
-    );
-    assert!(
-        !runner.state().objects.contains_key(&creature_b)
-            || runner.state().objects[&creature_b].damage_marked >= 7,
-        "opponent creature B must take 7 damage (and die)"
-    );
+    // CR 400.7: completed damage remains in events; new graveyard objects are cleared.
+    for (recipient, message) in [
+        (
+            creature_a,
+            "opponent creature A must take 7 damage (and die)",
+        ),
+        (
+            creature_b,
+            "opponent creature B must take 7 damage (and die)",
+        ),
+    ] {
+        let damage: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target: TargetRef::Object(id),
+                    amount,
+                    is_combat,
+                    ..
+                } if *id == recipient => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(damage, vec![(spell, 7, false)], "{message}");
+        assert_eq!(runner.state().objects[&recipient].zone, Zone::Graveyard);
+        assert_eq!(runner.state().objects[&recipient].damage_marked, 0);
+    }
+    assert_eq!(runner.state().objects[&land_a].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&land_b].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
 }
 
 /// CR 601.2c: Each printed instance of "target" may choose the same legal object.

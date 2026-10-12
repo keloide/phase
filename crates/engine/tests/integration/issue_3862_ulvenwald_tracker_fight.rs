@@ -4,9 +4,12 @@
 //! https://github.com/phase-rs/phase/issues/3862
 
 use engine::game::scenario::{GameScenario, P0, P1};
+use engine::types::ability::TargetRef;
+use engine::types::events::GameEvent;
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
+use engine::types::zones::Zone;
 
 const ULVENWALD_TRACKER_ORACLE: &str =
     "{1}{G}, {T}: Target creature you control fights another target creature.";
@@ -37,16 +40,37 @@ fn ulvenwald_tracker_dual_target_fight_does_not_include_tracker() {
 
     let mut runner = scenario.build();
 
-    runner
+    let outcome = runner
         .activate(tracker, 0)
         .target_objects(&[bear, wolf])
         .resolve();
 
-    assert_eq!(
-        runner.state().objects[&wolf].damage_marked,
-        3,
-        "Bear (3 power) must deal 3 damage to Wolf"
-    );
+    // CR 701.14a/d: the chosen creatures, rather than Tracker, deal fight damage.
+    for (recipient, dealer, amount) in [(wolf, bear, 3), (bear, wolf, 2)] {
+        let damage: Vec<_> = outcome
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target: TargetRef::Object(id),
+                    amount,
+                    is_combat,
+                    ..
+                } if *id == recipient => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            damage,
+            vec![(dealer, amount, false)],
+            "Bear (3 power) must deal 3 damage to Wolf; Wolf deals 2 back"
+        );
+    }
+    // CR 400.7: lethal Wolf's new graveyard object has no marked damage.
+    assert_eq!(runner.state().objects[&wolf].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&wolf].damage_marked, 0);
+    assert_eq!(runner.state().objects[&bear].zone, Zone::Battlefield);
     assert_eq!(
         runner.state().objects[&bear].damage_marked,
         2,
@@ -56,6 +80,14 @@ fn ulvenwald_tracker_dual_target_fight_does_not_include_tracker() {
         runner.state().objects[&tracker].damage_marked,
         0,
         "Ulvenwald Tracker is not a fighter in this fight"
+    );
+    assert_eq!(runner.state().objects[&tracker].zone, Zone::Battlefield);
+    assert!(
+        !outcome.events().iter().any(|event| matches!(event,
+            GameEvent::DamageDealt { source_id, target, .. }
+                if *source_id == tracker || *target == TargetRef::Object(tracker)
+        )),
+        "the positive fighter events exclude Tracker as dealer and recipient"
     );
 }
 

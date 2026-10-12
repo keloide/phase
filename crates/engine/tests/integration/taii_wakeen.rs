@@ -23,12 +23,16 @@
 
 use engine::game::combat::AttackTarget;
 use engine::game::scenario::{GameScenario, P0, P1};
-use engine::types::ability::{Effect, QuantityExpr, TargetFilter, TypeFilter, TypedFilter};
+use engine::types::ability::{
+    Effect, QuantityExpr, TargetFilter, TargetRef, TypeFilter, TypedFilter,
+};
 use engine::types::actions::GameAction;
+use engine::types::events::GameEvent;
 use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
+use engine::types::zones::Zone;
 
 const TAII: &str = "Whenever a source you control deals noncombat damage to a creature \
 equal to that creature's toughness, draw a card.\n\
@@ -173,39 +177,67 @@ fn a1_no_fire_on_combat_damage() {
     let mut runner = scenario.build();
     let p0_hand_before = runner.state().players[P0.0 as usize].hand.len();
 
-    // Advance to P0's declare-attackers, attack, block, and let combat damage
-    // resolve.
-    for _ in 0..200 {
-        match &runner.state().waiting_for {
-            WaitingFor::DeclareAttackers { .. } => {
-                let _ = runner.act(GameAction::DeclareAttackers {
-                    attacks: vec![(attacker, AttackTarget::Player(P1))],
-                    bands: vec![],
-                });
-            }
-            WaitingFor::DeclareBlockers { .. } => {
-                let _ = runner.act(GameAction::DeclareBlockers {
-                    assignments: vec![(blocker, attacker)],
-                });
-            }
-            WaitingFor::Priority { .. } => {
-                // Stop once combat damage has been dealt (blocker marked).
-                if runner.state().objects[&blocker].damage_marked >= 3 {
-                    break;
-                }
-                if runner.act(GameAction::PassPriority).is_err() {
-                    break;
-                }
-            }
-            _ => break,
+    runner.advance_to_combat();
+    let mut events = runner
+        .declare_attackers(&[(attacker, AttackTarget::Player(P1))])
+        .expect("attack")
+        .events;
+    for _ in 0..10 {
+        if matches!(
+            runner.state().waiting_for,
+            WaitingFor::DeclareBlockers { .. }
+        ) {
+            break;
         }
+        events.extend(
+            runner
+                .act(GameAction::PassPriority)
+                .expect("reach blockers")
+                .events,
+        );
     }
-
+    events.extend(
+        runner
+            .declare_blockers(&[(blocker, attacker)])
+            .expect("block")
+            .events,
+    );
+    let outcome = runner.combat_damage();
+    events.extend_from_slice(outcome.events());
+    let damage: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::DamageDealt {
+                source_id,
+                target: TargetRef::Object(id),
+                amount,
+                is_combat,
+                ..
+            } if *id == blocker => Some((*source_id, *amount, *is_combat)),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        runner.state().objects[&blocker].damage_marked,
-        3,
+        damage,
+        vec![(attacker, 3, true)],
         "test precondition: 3 combat damage was dealt to the 3-toughness blocker"
     );
+    // CR 400.7: the positive combat event precedes the cleared new graveyard object.
+    assert_eq!(runner.state().objects[&blocker].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&blocker].damage_marked, 0);
+    assert!(matches!(
+        runner.state().phase,
+        Phase::EndCombat | Phase::PostCombatMain
+    ));
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::Priority { .. }
+    ));
+    assert!(
+        runner.state().stack.is_empty(),
+        "no damage-triggered draw remains pending"
+    );
+    assert!(runner.state().resolution_stack.is_empty());
     assert_eq!(
         runner.state().players[P0.0 as usize].hand.len(),
         p0_hand_before,

@@ -267,16 +267,43 @@ fn time_to_feed_incumbent_fight_unchanged_by_b2_guard() {
     let mut runner = scenario.build();
     // Declared order: opponent creature first ("Choose target creature an opponent
     // controls"), then the you-control fighter.
-    drive_cast(&mut runner, spell, &[opp, mine], false);
+    let action = super::rules::cast_spell_action(&runner, spell);
+    let events = super::rules::drive_with_response(&mut runner, action, &[opp, mine], None);
+    // CR 701.14a/d: each selected fighter deals its own power as noncombat damage.
+    for (recipient, dealer, amount) in [(mine, opp, 4), (opp, mine, 2)] {
+        let damage: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                engine::types::events::GameEvent::DamageDealt {
+                    source_id,
+                    target: TargetRef::Object(id),
+                    amount,
+                    is_combat,
+                    ..
+                } if *id == recipient => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            damage,
+            vec![(dealer, amount, false)],
+            "each fighter takes the other selected creature's power"
+        );
+    }
     assert_eq!(
         damage(&runner, opp),
         2,
         "opponent (4/4) takes 2 from your 2/3 fighter"
     );
+    // CR 400.7: your lethally damaged fighter has no damage in its new zone.
     assert_eq!(
-        damage(&runner, mine),
-        4,
-        "your fighter takes 4 from the opponent 4/4"
+        runner.state().objects[&mine].zone,
+        engine::types::zones::Zone::Graveyard
+    );
+    assert_eq!(damage(&runner, mine), 0);
+    assert_eq!(
+        runner.state().objects[&opp].zone,
+        engine::types::zones::Zone::Battlefield
     );
 }
 

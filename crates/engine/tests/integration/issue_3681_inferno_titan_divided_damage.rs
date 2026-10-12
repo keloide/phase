@@ -12,9 +12,11 @@
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
+use engine::types::events::GameEvent;
 use engine::types::game_state::{CastPaymentMode, WaitingFor};
 use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
+use engine::types::zones::Zone;
 
 /// Canonical Oracle text (verified against client/public/card-data.json).
 const INFERNO_ORACLE: &str =
@@ -121,7 +123,7 @@ fn inferno_titan_etb_divides_damage_across_three_targets() {
     assert!(target_slots[2].optional, "third slot must be optional");
 
     // Choose all three distinct targets in one selection.
-    runner
+    let mut events = runner
         .act(GameAction::SelectTargets {
             targets: vec![
                 TargetRef::Object(bear),
@@ -129,7 +131,8 @@ fn inferno_titan_etb_divides_damage_across_three_targets() {
                 TargetRef::Player(P1),
             ],
         })
-        .expect("selecting three distinct targets should be accepted");
+        .expect("selecting three distinct targets should be accepted")
+        .events;
 
     // After targets are chosen, the engine must prompt for the division.
     match runner.state().waiting_for.clone() {
@@ -145,18 +148,59 @@ fn inferno_titan_etb_divides_damage_across_three_targets() {
     }
 
     // Distribute 1 / 1 / 1 across the three targets.
-    runner
-        .act(GameAction::DistributeAmong {
-            distribution: vec![
-                (TargetRef::Object(bear), 1),
-                (TargetRef::Object(elf), 1),
-                (TargetRef::Player(P1), 1),
-            ],
-        })
-        .expect("1/1/1 distribution should be accepted");
+    events.extend(
+        runner
+            .act(GameAction::DistributeAmong {
+                distribution: vec![
+                    (TargetRef::Object(bear), 1),
+                    (TargetRef::Object(elf), 1),
+                    (TargetRef::Player(P1), 1),
+                ],
+            })
+            .expect("1/1/1 distribution should be accepted")
+            .events,
+    );
 
     // Let the triggered ability resolve.
-    runner.advance_until_stack_empty();
+    for _ in 0..60 {
+        if runner.state().stack.is_empty() {
+            break;
+        }
+        events.extend(
+            runner
+                .act(GameAction::PassPriority)
+                .expect("resolve the divided trigger")
+                .events,
+        );
+    }
+    assert!(
+        runner.state().stack.is_empty(),
+        "the divided trigger must resolve"
+    );
+    for recipient in [
+        TargetRef::Object(bear),
+        TargetRef::Object(elf),
+        TargetRef::Player(P1),
+    ] {
+        let damage: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target,
+                    amount,
+                    is_combat,
+                    ..
+                } if *target == recipient => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            damage,
+            vec![(titan, 1, false)],
+            "each target takes exactly its assigned portion"
+        );
+    }
 
     // CR 120.3: each target takes exactly its assigned portion.
     assert_eq!(
@@ -164,11 +208,10 @@ fn inferno_titan_etb_divides_damage_across_three_targets() {
         1,
         "Bear must take 1 damage"
     );
-    assert_eq!(
-        runner.state().objects[&elf].damage_marked,
-        1,
-        "Elf must take 1 damage"
-    );
+    assert_eq!(runner.state().objects[&bear].zone, Zone::Battlefield);
+    // CR 400.7: Elf took its lethal share; its new graveyard object is cleared.
+    assert_eq!(runner.state().objects[&elf].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&elf].damage_marked, 0);
     let p1_life = runner
         .state()
         .players

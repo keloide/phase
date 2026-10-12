@@ -941,17 +941,39 @@ fn narset_deals_damage_to_targeted_permanent_not_discarded_card() {
     // Accept the optional discard through the REAL production pipeline. With
     // exactly one hand card (the just-drawn MV5 card), the discard itself
     // resolves inline with no further choice.
-    runner
-        .act(GameAction::DecideOptionalEffect { accept: true })
-        .expect("accepting the optional discard resolves the reflexive damage");
+    events.extend(
+        runner
+            .act(GameAction::DecideOptionalEffect { accept: true })
+            .expect("accepting the optional discard resolves the reflexive damage")
+            .events,
+    );
 
+    let damage: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            engine::types::events::GameEvent::DamageDealt {
+                source_id,
+                target: TargetRef::Object(id),
+                amount,
+                is_combat,
+                ..
+            } if *id == target => Some((*source_id, *amount, *is_combat)),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        runner.state().objects[&target].damage_marked,
-        5,
+        damage,
+        vec![(source, 5, false)],
         "the TARGETED creature must take damage equal to the discarded \
          card's mana value (5) — not have the damage redirected to the \
          discarded card itself"
     );
+    assert!(!events.iter().any(|event| matches!(event,
+        engine::types::events::GameEvent::DamageDealt { target: TargetRef::Object(id), .. } if *id == drawn
+    )), "the positive targeted damage event excludes the discarded card");
+    // CR 400.7: the targeted creature's new graveyard object has cleared damage.
+    assert_eq!(runner.state().objects[&target].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&target].damage_marked, 0);
     assert!(
         runner.state().players[P0.0 as usize]
             .graveyard

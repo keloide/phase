@@ -15,9 +15,11 @@
 use super::rules::{GameRunner, GameScenario, Phase, WaitingFor, P0, P1};
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
+use engine::types::events::GameEvent;
 use engine::types::game_state::{CastPaymentMode, DistributionUnit};
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
+use engine::types::zones::Zone;
 
 const SHATTERSKULL_ORACLE: &str = "Shatterskull Smashing deals X damage divided as you choose among up to two target creatures and/or planeswalkers. If X is 6 or more, Shatterskull Smashing deals twice X damage divided as you choose among them instead.";
 
@@ -36,7 +38,7 @@ fn shatterskull_x1_offers_single_target_slot_no_softlock() {
     scenario.at_phase(Phase::PreCombatMain);
 
     let goblin = scenario.add_creature(P1, "Goblin A", 1, 1).id();
-    let _ogre = scenario.add_creature(P1, "Ogre B", 3, 3).id();
+    let ogre = scenario.add_creature(P1, "Ogre B", 3, 3).id();
 
     let spell = scenario
         .add_spell_to_hand_from_oracle(P0, "Shatterskull Smashing", false, SHATTERSKULL_ORACLE)
@@ -74,8 +76,7 @@ fn shatterskull_x1_offers_single_target_slot_no_softlock() {
 
     // Choosing the one allowed target then resolves to a single DistributeAmong
     // (or auto-resolves) without deadlock.
-    drive_single_target(&mut runner, goblin);
-    let _ = _ogre;
+    let mut events = drive_single_target(&mut runner, goblin);
 
     // The pipeline must reach a DistributeAmong over exactly one target, or have
     // already auto-distributed — never a two-target deadlock.
@@ -89,25 +90,61 @@ fn shatterskull_x1_offers_single_target_slot_no_softlock() {
         assert_eq!(total, 1, "damage pool equals X=1");
         assert_eq!(unit, DistributionUnit::Damage);
         assert_eq!(targets.len(), 1, "exactly one target to divide among");
-        runner
-            .act(GameAction::DistributeAmong {
-                distribution: targets.iter().map(|t| (t.clone(), 1)).collect(),
-            })
-            .expect("single-target distribution must be legal");
+        events.extend(
+            runner
+                .act(GameAction::DistributeAmong {
+                    distribution: targets.iter().map(|t| (t.clone(), 1)).collect(),
+                })
+                .expect("single-target distribution must be legal")
+                .events,
+        );
     }
 
-    runner.advance_until_stack_empty();
+    for _ in 0..60 {
+        if runner.state().stack.is_empty() {
+            break;
+        }
+        events.extend(
+            runner
+                .act(GameAction::PassPriority)
+                .expect("resolve the single-target spell")
+                .events,
+        );
+    }
+    assert!(
+        runner.state().stack.is_empty(),
+        "the single-target spell must finish resolving"
+    );
 
     // 1 damage landed on the single chosen creature.
-    let dmg = runner
-        .state()
-        .objects
-        .get(&goblin)
-        .map(|o| o.damage_marked)
-        .unwrap_or(0);
+    let damage: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::DamageDealt {
+                source_id,
+                target: TargetRef::Object(id),
+                amount,
+                is_combat,
+                ..
+            } if *id == goblin => Some((*source_id, *amount, *is_combat)),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        dmg, 1,
+        damage,
+        vec![(spell, 1, false)],
         "all X=1 damage assigned to the single chosen target"
+    );
+    // CR 400.7: the lethal target's graveyard object has cleared marked damage.
+    assert_eq!(runner.state().objects[&goblin].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&goblin].damage_marked, 0);
+    assert_eq!(runner.state().objects[&ogre].zone, Zone::Battlefield);
+    assert_eq!(runner.state().objects[&ogre].damage_marked, 0);
+    assert!(
+        !events.iter().any(|event| matches!(event,
+            GameEvent::DamageDealt { target: TargetRef::Object(id), .. } if *id == ogre
+        )),
+        "the positive X=1 event excludes the unchosen Ogre"
     );
     assert!(
         !matches!(
@@ -150,18 +187,23 @@ fn single_target_slot_count(runner: &GameRunner) -> usize {
     }
 }
 
-fn drive_single_target(runner: &mut GameRunner, target: ObjectId) {
+fn drive_single_target(runner: &mut GameRunner, target: ObjectId) -> Vec<GameEvent> {
     let mut guard = 0;
+    let mut events = Vec::new();
     while matches!(
         runner.state().waiting_for,
         WaitingFor::TargetSelection { .. }
     ) {
         guard += 1;
         assert!(guard < 5, "single-slot target selection must terminate");
-        runner
-            .act(GameAction::ChooseTarget {
-                target: Some(TargetRef::Object(target)),
-            })
-            .expect("ChooseTarget should succeed");
+        events.extend(
+            runner
+                .act(GameAction::ChooseTarget {
+                    target: Some(TargetRef::Object(target)),
+                })
+                .expect("ChooseTarget should succeed")
+                .events,
+        );
     }
+    events
 }
