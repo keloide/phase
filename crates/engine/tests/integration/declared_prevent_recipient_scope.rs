@@ -13,7 +13,7 @@ use engine::game::game_object::AttachTarget;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::trigger_index::reindex_object_triggers;
 use engine::parser::oracle::parse_oracle_text;
-use engine::types::ability::{Effect, EffectKind, EffectScope};
+use engine::types::ability::{Effect, EffectKind, EffectScope, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::counter::{parse_counter_type, CounterType};
 use engine::types::events::GameEvent;
