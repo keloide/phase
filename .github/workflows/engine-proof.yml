@@ -1,4 +1,4 @@
-# TEMPORARY FORK-ONLY V20 BOUND FINAL; ROOT MUST BIND SOURCE/MODE/RESULT REFS; ALL NATIVE CHECKS UNPROBED. Never include this YAML in product history/PR.
+# TEMPORARY FORK-ONLY V21 BOUND FINAL; ROOT MUST BIND SOURCE/MODE/RESULT REFS; ALL NATIVE CHECKS UNPROBED. Never include this YAML in product history/PR.
 # Exactly three fixed stages and two one-shot API-only waits; no retry or self-dispatch.
 # Root fills the initial SHA pair, exact proof branch, three publication and three result refs.
 # The original pinned inputs are restored from run 37483983597; only exact C8 BASE outputs are licensed for reuse.
@@ -7,8 +7,8 @@
 # Only root may accept stage 1, once-fetch/merge, copy/commit stage-2 canonical bytes,
 # and publish final HEAD. Wait jobs are not candidate verification or acceptance.
 # Root adjudicated source-idle interpretation: phase-fit 109; temporary workflow SHA differs.
-name: Temporary finite immutable engine proof 20
-run-name: Engine proof 20 ${{ github.ref_name }}
+name: Temporary finite immutable engine proof 21
+run-name: Engine proof 21 ${{ github.ref_name }}
 
 on:
   push:
@@ -22,13 +22,13 @@ env:
   RTK_DISABLED: '1'
   CARGO_INCREMENTAL: '0'
   BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
-  CANDIDATE_SHA: e68364d7b8d26b5b8a7c5c65646dd377b98bb94c
+  CANDIDATE_SHA: 3f970dbcf01138de751de77aa5d26462637cd3e7
   MODE: final
   PHASE_BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
   TEST_FEATURES: phase-engine/test-support,phase-engine/cli,phase-engine/proptest
   # Discover broad required suites/features; execute changed runtime owners and source censuses before the once-required full workspace suite.
   DISCOVERY_FILTER: 'package(phase-engine) | (package(phase-ai) & (binary(gate_cli) | test(/policies::x_reference::/))) | (package(probe-pin) & binary(pure_logic))'
-  FOCUSED_FILTER: 'package(phase-engine) & (test(/^game::combat_damage::/) | test(/^game::effects::deal_damage::/) | test(/^game::effects::tests::/) | test(/^game::effects::reflexive_occurrence_verdict_tests::/) | test(/^game::effects::add_target_replacement::/) | test(/^game::morph::/) | test(/^game::printed_cards::/) | test(/^game::flip::/) | test(/^game::game_object::/) | test(/^game::turns::/) | test(/^game::zones::/) | test(/^parser::oracle_effect::/) | test(/^essence_burn::/) | test(/^torch_the_tower_die_exile::/) | test(/^declared_prevent_recipient_scope::/) | test(/^flame_spill_excess_damage::/) | test(/^harms_way_redirect::/) | test(/^issue_1135_ents_fury_fight::/) | test(/^issue_2856_shatterskull_divide_softlock::/) | test(/^issue_3681_inferno_titan_divided_damage::/) | test(/^issue_3862_ulvenwald_tracker_fight::/) | test(/^issue_3867_volcanic_offering_opponent_choice::/) | test(/^issue_3878_go_shintai_combat_damage::/) | test(/^issue_5145_violent_eruption_choose_target_distribution::/) | test(/^jagged_lightning_each_of_two_targets::/) | test(/^play_with_fire_damage_scry::/) | test(/^reflexive_discard_this_way::/) | test(/^s07_malamet_castpath::/) | test(/^stack_entry_node_reach::/) | test(/^taii_wakeen::/) | test(/^thoughtweft_trample_regression::/) | test(/^vigor_regression::/) | test(/census/) | binary(/census/))'
+  FOCUSED_FILTER: 'package(phase-engine) & (test(/^game::combat_damage::/) | test(/^game::effects::deal_damage::/) | test(/^game::effects::tests::/) | test(/^game::effects::reflexive_occurrence_verdict_tests::/) | test(/^game::effects::add_target_replacement::/) | test(/^game::morph::/) | test(/^game::printed_cards::/) | test(/^game::flip::/) | test(/^game::game_object::/) | test(/^game::turns::/) | test(/^game::zones::/) | test(/^parser::oracle_effect::/) | test(/^essence_burn::/) | test(/^torch_the_tower_die_exile::/) | test(/^declared_prevent_recipient_scope::/) | test(/^flame_spill_excess_damage::/) | test(/^harms_way_redirect::/) | test(/^issue_1135_ents_fury_fight::/) | test(/^issue_2856_shatterskull_divide_softlock::/) | test(/^issue_3681_inferno_titan_divided_damage::/) | test(/^issue_3862_ulvenwald_tracker_fight::/) | test(/^issue_3867_volcanic_offering_opponent_choice::/) | test(/^issue_3878_go_shintai_combat_damage::/) | test(/^issue_5145_violent_eruption_choose_target_distribution::/) | test(/^jagged_lightning_each_of_two_targets::/) | test(/^play_with_fire_damage_scry::/) | test(/^reflexive_discard_this_way::/) | test(/^s07_malamet_castpath::/) | test(/^stack_entry_node_reach::/) | test(/^taii_wakeen::/) | test(/^thoughtweft_trample_regression::/) | test(/^vigor_regression::/) | test(/^issue_735_cost_paid_object_non_regression::/) | test(/census/) | binary(/census/))'
   U3_RUNTIME_TEST: essence_burn::essence_burn_face_down_keeps_die_exile
   U3_RED_ASSERTION_TEXT: "Essence Burn's this-turn replacement must exile the same host after Cyber Conversion"
   # Retained ORIGINAL U3 production-only control; complete revised P is separate below.
@@ -546,6 +546,7 @@ env:
     crates/engine/tests/integration/issue_3867_volcanic_offering_opponent_choice.rs
     crates/engine/tests/integration/issue_3878_go_shintai_combat_damage.rs
     crates/engine/tests/integration/issue_5145_violent_eruption_choose_target_distribution.rs
+    crates/engine/tests/integration/issue_735_cost_paid_object_non_regression.rs
     crates/engine/tests/integration/jagged_lightning_each_of_two_targets.rs
     crates/engine/tests/integration/play_with_fire_damage_scry.rs
     crates/engine/tests/integration/reflexive_discard_this_way.rs
@@ -627,6 +628,7 @@ env:
     crates/engine/tests/integration/issue_3867_volcanic_offering_opponent_choice.rs
     crates/engine/tests/integration/issue_3878_go_shintai_combat_damage.rs
     crates/engine/tests/integration/issue_5145_violent_eruption_choose_target_distribution.rs
+    crates/engine/tests/integration/issue_735_cost_paid_object_non_regression.rs
     crates/engine/tests/integration/jagged_lightning_each_of_two_targets.rs
     crates/engine/tests/integration/main.rs
     crates/engine/tests/integration/play_with_fire_damage_scry.rs
@@ -886,7 +888,7 @@ jobs:
           set -euo pipefail
           test "$BASE_SHA" = ab1363d1f30141c118db0c83de0da617e0c07c65
           test "$PHASE_BASE_SHA" = "$BASE_SHA"
-          test "$CANDIDATE_SHA" = e68364d7b8d26b5b8a7c5c65646dd377b98bb94c
+          test "$CANDIDATE_SHA" = 3f970dbcf01138de751de77aa5d26462637cd3e7
           test "$INPUT_RUN_ID" = 37483983597
           test "$GATED_SETS_AS_OF" = 2026-10-05
           test "$MODE" = final
@@ -1217,7 +1219,7 @@ jobs:
               count = sum(p == package for p, b, n in selected)
               assert count > 0, package
               print('Collected broad native-discovery tests:', package, count)
-          for owner in ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'torch_the_tower_die_exile::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::']:
+          for owner in ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'torch_the_tower_die_exile::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::', 'issue_735_cost_paid_object_non_regression::']:
               count = sum(p == 'phase-engine' and n.startswith(owner) for p, b, n in selected)
               assert count > 0, owner
               print('Collected owner:', owner, count)
@@ -1260,6 +1262,9 @@ jobs:
               ('phase-ai', 'gate_cli', 'every_binary_an_integration_test_spawns_is_shipped_to_the_test_shards'),
               ('phase-ai', 'gate_cli', 'every_workflow_gate_invocation_spells_the_baseline_workload'),
               ('probe-pin', 'pure_logic', 'every_write_of_the_pinned_file_routes_through_splice'),
+              ('phase-engine', 'integration', 'issue_735_cost_paid_object_non_regression::ents_fury_own_target_gets_counter_then_pump'),
+              ('phase-engine', 'integration', 'issue_735_cost_paid_object_non_regression::tribute_entering_power_3_draws_a_card'),
+              ('phase-engine', 'integration', 'issue_735_cost_paid_object_non_regression::tribute_entering_power_2_puts_counters_not_draw'),
               ('phase-engine', 'engine', 'parser::oracle_effect::tests::ents_fury_condition_reads_own_target_power'),
               ('phase-engine', 'engine', 'parser::oracle_effect::tests::property_suffix_keeps_its_instruction_object_authority'),
           ]
@@ -1270,7 +1275,7 @@ jobs:
           assert any(p == 'phase-engine' and 'census' in n for p, b, n in selected)
           print('Total broad native-discovery test count:', len(selected))
           # The narrow runtime filter contains every changed owner and every named/binary source census.
-          runtime_prefixes = ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'parser::oracle_effect::', 'essence_burn::', 'torch_the_tower_die_exile::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::']
+          runtime_prefixes = ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'parser::oracle_effect::', 'essence_burn::', 'torch_the_tower_die_exile::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::', 'issue_735_cost_paid_object_non_regression::']
           runtime_selected = [(p, b, n) for p, b, n in selected if p == 'phase-engine' and
                               (any(n.startswith(prefix) for prefix in runtime_prefixes) or 'census' in n or 'census' in b)]
           for owner in runtime_prefixes:
@@ -1794,7 +1799,7 @@ jobs:
     needs: [stage1-candidate, stage1-base, stage1-runtime-red, stage1-completion]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-20-results-stage1
+      RESULT_BRANCH: engine-proof/fra-stingerquill-21-results-stage1
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage1-outputs.tar.gz
     permissions:
       contents: write
@@ -2118,7 +2123,7 @@ jobs:
     needs: [stage2-generation, stage1-candidate]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push' && needs.stage1-candidate.outputs.mode == 'final'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-20-results-stage2
+      RESULT_BRANCH: engine-proof/fra-stingerquill-21-results-stage2
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage2-outputs.tar.gz
     permissions:
       contents: write
@@ -2827,7 +2832,7 @@ jobs:
               count = sum(p == package for p, b, n in selected)
               assert count > 0, package
               print('Collected broad native-discovery tests:', package, count)
-          for owner in ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'torch_the_tower_die_exile::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::']:
+          for owner in ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'torch_the_tower_die_exile::', 'parser::oracle_target::', 'parser::oracle_effect::', 'parser::oracle_ir::snapshot_tests::', 'essence_burn::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::', 'issue_735_cost_paid_object_non_regression::']:
               count = sum(p == 'phase-engine' and n.startswith(owner) for p, b, n in selected)
               assert count > 0, owner
               print('Collected owner:', owner, count)
@@ -2870,6 +2875,9 @@ jobs:
               ('phase-ai', 'gate_cli', 'every_binary_an_integration_test_spawns_is_shipped_to_the_test_shards'),
               ('phase-ai', 'gate_cli', 'every_workflow_gate_invocation_spells_the_baseline_workload'),
               ('probe-pin', 'pure_logic', 'every_write_of_the_pinned_file_routes_through_splice'),
+              ('phase-engine', 'integration', 'issue_735_cost_paid_object_non_regression::ents_fury_own_target_gets_counter_then_pump'),
+              ('phase-engine', 'integration', 'issue_735_cost_paid_object_non_regression::tribute_entering_power_3_draws_a_card'),
+              ('phase-engine', 'integration', 'issue_735_cost_paid_object_non_regression::tribute_entering_power_2_puts_counters_not_draw'),
               ('phase-engine', 'engine', 'parser::oracle_effect::tests::ents_fury_condition_reads_own_target_power'),
               ('phase-engine', 'engine', 'parser::oracle_effect::tests::property_suffix_keeps_its_instruction_object_authority'),
           ]
@@ -2880,7 +2888,7 @@ jobs:
           assert any(p == 'phase-engine' and 'census' in n for p, b, n in selected)
           print('Total broad native-discovery test count:', len(selected))
           # The narrow runtime filter contains every changed owner and every named/binary source census.
-          runtime_prefixes = ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'parser::oracle_effect::', 'essence_burn::', 'torch_the_tower_die_exile::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::']
+          runtime_prefixes = ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'parser::oracle_effect::', 'essence_burn::', 'torch_the_tower_die_exile::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::', 'issue_735_cost_paid_object_non_regression::']
           runtime_selected = [(p, b, n) for p, b, n in selected if p == 'phase-engine' and
                               (any(n.startswith(prefix) for prefix in runtime_prefixes) or 'census' in n or 'census' in b)]
           for owner in runtime_prefixes:
@@ -3411,7 +3419,7 @@ jobs:
     needs: [stage3-candidate, stage3-base, stage3-runtime-red, stage3-completion, stage1-candidate]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push' && needs.stage1-candidate.outputs.mode == 'final'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-20-results-stage3
+      RESULT_BRANCH: engine-proof/fra-stingerquill-21-results-stage3
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage3-outputs.tar.gz
     permissions:
       contents: write
