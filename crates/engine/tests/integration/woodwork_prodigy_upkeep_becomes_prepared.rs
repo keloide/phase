@@ -18,7 +18,7 @@
 //! (`has_prepare_face`) requires is staged synthetically the same way.
 
 use engine::game::game_object::BackFaceData;
-use engine::game::scenario::{GameRunner, GameScenario, P0};
+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::ability::EffectKind;
 use engine::types::actions::GameAction;
 use engine::types::card::LayoutKind;
@@ -71,6 +71,15 @@ fn setup_twins() -> (GameRunner, ObjectId, ObjectId, ObjectId, ObjectId) {
     let cloudshift = scenario
         .add_spell_to_hand_from_oracle(P0, "Cloudshift", true, CLOUDSHIFT_ORACLE)
         .id();
+    // CR 704.5a-adjacent decking guard: `advance_to_next_upkeep_with_trigger`
+    // below walks natural draw steps to the next upkeep. Empty libraries
+    // would deck a player mid-advance and end the game as `GameOver`
+    // (observed as `unexpected waiting state ... GameOver` at line 419).
+    // Pad both libraries so the advance survives to the next upkeep.
+    for index in 0..20 {
+        scenario.add_card_to_library_top(P0, &format!("Woodwork Library P0 {index}"));
+        scenario.add_card_to_library_top(P1, &format!("Woodwork Library P1 {index}"));
+    }
     let mut runner = scenario.build();
 
     // The Biblioplex gate (`has_prepare_face`, CR 722.3a reminder) no-ops
