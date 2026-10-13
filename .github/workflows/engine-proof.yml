@@ -1,13 +1,14 @@
-# TEMPORARY FORK-ONLY V17 MACHINERY; C15-BOUND, STATIC ONLY; ALL NATIVE CHECKS UNPROBED. Never include this YAML in product history/PR.
+# TEMPORARY FORK-ONLY V18 TEMPLATE; ROOT MUST BIND SOURCE/MODE/RESULT REFS; ALL NATIVE CHECKS UNPROBED. Never include this YAML in product history/PR.
 # Exactly three fixed stages and two one-shot API-only waits; no retry or self-dispatch.
 # Root fills the initial SHA pair, exact proof branch, three publication and three result refs.
 # The original pinned inputs are restored from run 37483983597; only exact C8 BASE outputs are licensed for reuse.
+# MODE=generate returns PREPARATORY candidate generation only; root must commit the generated fixture before MODE=final acceptance.
 # Initial/final MODE=final requires committed canonical bytes before each full proof.
 # Only root may accept stage 1, once-fetch/merge, copy/commit stage-2 canonical bytes,
 # and publish final HEAD. Wait jobs are not candidate verification or acceptance.
 # Root adjudicated source-idle interpretation: phase-fit 109; temporary workflow SHA differs.
-name: Temporary finite immutable engine proof 17
-run-name: Engine proof 17 ${{ github.ref_name }}
+name: Temporary finite immutable engine proof 18
+run-name: Engine proof 18 ${{ github.ref_name }}
 
 on:
   push:
@@ -21,13 +22,13 @@ env:
   RTK_DISABLED: '1'
   CARGO_INCREMENTAL: '0'
   BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
-  CANDIDATE_SHA: 4ad9f9e0e9c28d94930ec9f428ecc17b66ab2ac2
-  MODE: final
+  CANDIDATE_SHA: e7b82d02ee4f2ad2fc2ce2ffdaa2af1c4b66fb80
+  MODE: generate
   PHASE_BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
   TEST_FEATURES: phase-engine/test-support,phase-engine/cli,phase-engine/proptest
   # Discover broad required suites/features; execute changed runtime owners and source censuses before the once-required full workspace suite.
   DISCOVERY_FILTER: 'package(phase-engine) | (package(phase-ai) & (binary(gate_cli) | test(/policies::x_reference::/))) | (package(probe-pin) & binary(pure_logic))'
-  FOCUSED_FILTER: 'package(phase-engine) & (test(/^game::combat_damage::/) | test(/^game::effects::deal_damage::/) | test(/^game::effects::tests::/) | test(/^game::effects::reflexive_occurrence_verdict_tests::/) | test(/^game::effects::add_target_replacement::/) | test(/^game::morph::/) | test(/^game::printed_cards::/) | test(/^game::flip::/) | test(/^game::game_object::/) | test(/^game::turns::/) | test(/^game::zones::/) | test(/^essence_burn::/) | test(/^torch_the_tower_die_exile::/) | test(/^declared_prevent_recipient_scope::/) | test(/^flame_spill_excess_damage::/) | test(/^harms_way_redirect::/) | test(/^issue_1135_ents_fury_fight::/) | test(/^issue_2856_shatterskull_divide_softlock::/) | test(/^issue_3681_inferno_titan_divided_damage::/) | test(/^issue_3862_ulvenwald_tracker_fight::/) | test(/^issue_3867_volcanic_offering_opponent_choice::/) | test(/^issue_3878_go_shintai_combat_damage::/) | test(/^issue_5145_violent_eruption_choose_target_distribution::/) | test(/^jagged_lightning_each_of_two_targets::/) | test(/^play_with_fire_damage_scry::/) | test(/^reflexive_discard_this_way::/) | test(/^s07_malamet_castpath::/) | test(/^stack_entry_node_reach::/) | test(/^taii_wakeen::/) | test(/^thoughtweft_trample_regression::/) | test(/^vigor_regression::/) | test(/census/) | binary(/census/))'
+  FOCUSED_FILTER: 'package(phase-engine) & (test(/^game::combat_damage::/) | test(/^game::effects::deal_damage::/) | test(/^game::effects::tests::/) | test(/^game::effects::reflexive_occurrence_verdict_tests::/) | test(/^game::effects::add_target_replacement::/) | test(/^game::morph::/) | test(/^game::printed_cards::/) | test(/^game::flip::/) | test(/^game::game_object::/) | test(/^game::turns::/) | test(/^game::zones::/) | test(/^parser::oracle_effect::/) | test(/^essence_burn::/) | test(/^torch_the_tower_die_exile::/) | test(/^declared_prevent_recipient_scope::/) | test(/^flame_spill_excess_damage::/) | test(/^harms_way_redirect::/) | test(/^issue_1135_ents_fury_fight::/) | test(/^issue_2856_shatterskull_divide_softlock::/) | test(/^issue_3681_inferno_titan_divided_damage::/) | test(/^issue_3862_ulvenwald_tracker_fight::/) | test(/^issue_3867_volcanic_offering_opponent_choice::/) | test(/^issue_3878_go_shintai_combat_damage::/) | test(/^issue_5145_violent_eruption_choose_target_distribution::/) | test(/^jagged_lightning_each_of_two_targets::/) | test(/^play_with_fire_damage_scry::/) | test(/^reflexive_discard_this_way::/) | test(/^s07_malamet_castpath::/) | test(/^stack_entry_node_reach::/) | test(/^taii_wakeen::/) | test(/^thoughtweft_trample_regression::/) | test(/^vigor_regression::/) | test(/census/) | binary(/census/))'
   U3_RUNTIME_TEST: essence_burn::essence_burn_face_down_keeps_die_exile
   U3_RED_ASSERTION_TEXT: "Essence Burn's this-turn replacement must exile the same host after Cyber Conversion"
   # Retained ORIGINAL U3 production-only control; complete revised P is separate below.
@@ -530,6 +531,9 @@ env:
     crates/engine/src/game/printed_cards.rs
     crates/engine/src/game/turns.rs
     crates/engine/src/game/zones.rs
+    crates/engine/src/parser/oracle_effect/conditions.rs
+    crates/engine/src/parser/oracle_effect/mod.rs
+    crates/engine/src/parser/oracle_effect/tests.rs
     crates/engine/tests/fixtures/integration_cards.json.gz
     crates/engine/tests/integration/declared_prevent_recipient_scope.rs
     crates/engine/tests/integration/essence_burn.rs
@@ -604,6 +608,7 @@ env:
     crates/engine/src/game/printed_cards.rs
     crates/engine/src/game/turns.rs
     crates/engine/src/game/zones.rs
+    crates/engine/src/parser/oracle_effect/conditions.rs
     crates/engine/src/parser/oracle_effect/mod.rs
     crates/engine/src/parser/oracle_effect/tests.rs
     crates/engine/src/parser/oracle_ir/snapshot_tests.rs
@@ -668,7 +673,6 @@ jobs:
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           test "$INPUT_RUN_ID" = 37483983597
           test "$GATED_SETS_AS_OF" = 2026-10-05
-          test "$MODE" = final
           test "$BASE_SHA" = "$PHASE_BASE_SHA"
           test "$PHASE_BASE_SHA" = ab1363d1f30141c118db0c83de0da617e0c07c65
           test "$GITHUB_REF_NAME" = engine-proof/fra-stingerquill-9
@@ -820,9 +824,8 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=no)"
           if [ "$MODE" = generate ]; then
             python3 scripts/gen-test-fixture.py
-          else
-            python3 scripts/gen-test-fixture.py --check
           fi
+          python3 scripts/gen-test-fixture.py --check
           cp data/card-data.json data/coverage-data.json data/semantic-audit.json \
             data/semantic-audit.md "$GITHUB_WORKSPACE/stage1-outputs/candidate/"
           cp crates/engine/tests/fixtures/integration_cards.json.gz "$GITHUB_WORKSPACE/stage1-outputs/candidate/"
@@ -843,10 +846,14 @@ jobs:
           done
           test "$(jq length "$GITHUB_WORKSPACE/stage1-outputs/candidate/repeat/card-data.json")" -eq 35880
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          test -z "$(git status --porcelain --untracked-files=no)"
+          if [ "$MODE" = final ]; then test -z "$(git status --porcelain --untracked-files=no)"; fi
           git diff --cached --quiet
           git status --short
-          echo "Projection tool part of Step 5 passed on exact $CANDIDATE_SHA; BASE $BASE_SHA; pin $INPUT_RUN_ID."
+          if [ "$MODE" = generate ]; then
+            echo "PREPARATORY supported candidate generation only on exact $CANDIDATE_SHA; BASE $BASE_SHA; pin $INPUT_RUN_ID. Root must commit the generated fixture before immutable acceptance; runtime/full Step 5/handoff UNPROBED."
+          else
+            echo "Projection tool part of Step 5 passed on exact $CANDIDATE_SHA; BASE $BASE_SHA; pin $INPUT_RUN_ID."
+          fi
       - name: Upload candidate normal outputs and fixture
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -859,7 +866,7 @@ jobs:
   stage1-base:
     name: stage1-base
     needs: stage1-candidate
-    if: github.repository == 'keloide/phase'
+    if: github.repository == 'keloide/phase' && needs.stage1-candidate.outputs.mode == 'final'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -879,7 +886,7 @@ jobs:
           set -euo pipefail
           test "$BASE_SHA" = ab1363d1f30141c118db0c83de0da617e0c07c65
           test "$PHASE_BASE_SHA" = "$BASE_SHA"
-          test "$CANDIDATE_SHA" = 4ad9f9e0e9c28d94930ec9f428ecc17b66ab2ac2
+          test "$CANDIDATE_SHA" = e7b82d02ee4f2ad2fc2ce2ffdaa2af1c4b66fb80
           test "$INPUT_RUN_ID" = 37483983597
           test "$GATED_SETS_AS_OF" = 2026-10-05
           test "$MODE" = final
@@ -1108,7 +1115,7 @@ jobs:
   stage1-completion:
     name: stage1-completion
     needs: [stage1-candidate, stage1-base]
-    if: github.repository == 'keloide/phase'
+    if: github.repository == 'keloide/phase' && needs.stage1-candidate.outputs.mode == 'final'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -1253,6 +1260,8 @@ jobs:
               ('phase-ai', 'gate_cli', 'every_binary_an_integration_test_spawns_is_shipped_to_the_test_shards'),
               ('phase-ai', 'gate_cli', 'every_workflow_gate_invocation_spells_the_baseline_workload'),
               ('probe-pin', 'pure_logic', 'every_write_of_the_pinned_file_routes_through_splice'),
+              ('phase-engine', 'engine', 'parser::oracle_effect::tests::ents_fury_condition_reads_own_target_power'),
+              ('phase-engine', 'engine', 'parser::oracle_effect::tests::property_suffix_keeps_its_instruction_object_authority'),
           ]
           for item in required:
               assert selected.count(item) == 1, item
@@ -1261,7 +1270,7 @@ jobs:
           assert any(p == 'phase-engine' and 'census' in n for p, b, n in selected)
           print('Total broad native-discovery test count:', len(selected))
           # The narrow runtime filter contains every changed owner and every named/binary source census.
-          runtime_prefixes = ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'essence_burn::', 'torch_the_tower_die_exile::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::']
+          runtime_prefixes = ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'parser::oracle_effect::', 'essence_burn::', 'torch_the_tower_die_exile::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::']
           runtime_selected = [(p, b, n) for p, b, n in selected if p == 'phase-engine' and
                               (any(n.startswith(prefix) for prefix in runtime_prefixes) or 'census' in n or 'census' in b)]
           for owner in runtime_prefixes:
@@ -1270,7 +1279,7 @@ jobs:
               print('Focused runtime owner:', owner, count)
           assert sum(n.startswith('essence_burn::') for p, b, n in runtime_selected) == 27
           assert sum(n.startswith('torch_the_tower_die_exile::') for p, b, n in runtime_selected) == 7
-          for item in required[:30]:
+          for item in required[:30] + required[-2:]:
               assert runtime_selected.count(item) == 1, item
           print('Expected focused runtime selection from this current native discovery:', len(runtime_selected))
           # Broad parser/AI/probe/feature-positive suites remain compiled/discovered here and execute in full Step 5.
@@ -1785,7 +1794,7 @@ jobs:
     needs: [stage1-candidate, stage1-base, stage1-runtime-red, stage1-completion]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-17-results-stage1
+      RESULT_BRANCH: engine-proof/fra-stingerquill-18-results-stage1
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage1-outputs.tar.gz
     permissions:
       contents: write
@@ -2106,10 +2115,10 @@ jobs:
 
   stage2-transport:
     name: stage2-transport
-    needs: [stage2-generation]
-    if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
+    needs: [stage2-generation, stage1-candidate]
+    if: always() && github.repository == 'keloide/phase' && github.event_name == 'push' && needs.stage1-candidate.outputs.mode == 'final'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-17-results-stage2
+      RESULT_BRANCH: engine-proof/fra-stingerquill-18-results-stage2
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage2-outputs.tar.gz
     permissions:
       contents: write
@@ -2861,6 +2870,8 @@ jobs:
               ('phase-ai', 'gate_cli', 'every_binary_an_integration_test_spawns_is_shipped_to_the_test_shards'),
               ('phase-ai', 'gate_cli', 'every_workflow_gate_invocation_spells_the_baseline_workload'),
               ('probe-pin', 'pure_logic', 'every_write_of_the_pinned_file_routes_through_splice'),
+              ('phase-engine', 'engine', 'parser::oracle_effect::tests::ents_fury_condition_reads_own_target_power'),
+              ('phase-engine', 'engine', 'parser::oracle_effect::tests::property_suffix_keeps_its_instruction_object_authority'),
           ]
           for item in required:
               assert selected.count(item) == 1, item
@@ -2869,7 +2880,7 @@ jobs:
           assert any(p == 'phase-engine' and 'census' in n for p, b, n in selected)
           print('Total broad native-discovery test count:', len(selected))
           # The narrow runtime filter contains every changed owner and every named/binary source census.
-          runtime_prefixes = ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'essence_burn::', 'torch_the_tower_die_exile::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::']
+          runtime_prefixes = ['game::combat_damage::', 'game::effects::deal_damage::', 'game::effects::tests::', 'game::effects::reflexive_occurrence_verdict_tests::', 'game::effects::add_target_replacement::', 'game::morph::', 'game::printed_cards::', 'game::flip::', 'game::game_object::', 'game::turns::', 'game::zones::', 'parser::oracle_effect::', 'essence_burn::', 'torch_the_tower_die_exile::', 'declared_prevent_recipient_scope::', 'flame_spill_excess_damage::', 'harms_way_redirect::', 'issue_1135_ents_fury_fight::', 'issue_2856_shatterskull_divide_softlock::', 'issue_3681_inferno_titan_divided_damage::', 'issue_3862_ulvenwald_tracker_fight::', 'issue_3867_volcanic_offering_opponent_choice::', 'issue_3878_go_shintai_combat_damage::', 'issue_5145_violent_eruption_choose_target_distribution::', 'jagged_lightning_each_of_two_targets::', 'play_with_fire_damage_scry::', 'reflexive_discard_this_way::', 's07_malamet_castpath::', 'stack_entry_node_reach::', 'taii_wakeen::', 'thoughtweft_trample_regression::', 'vigor_regression::']
           runtime_selected = [(p, b, n) for p, b, n in selected if p == 'phase-engine' and
                               (any(n.startswith(prefix) for prefix in runtime_prefixes) or 'census' in n or 'census' in b)]
           for owner in runtime_prefixes:
@@ -2878,7 +2889,7 @@ jobs:
               print('Focused runtime owner:', owner, count)
           assert sum(n.startswith('essence_burn::') for p, b, n in runtime_selected) == 27
           assert sum(n.startswith('torch_the_tower_die_exile::') for p, b, n in runtime_selected) == 7
-          for item in required[:30]:
+          for item in required[:30] + required[-2:]:
               assert runtime_selected.count(item) == 1, item
           print('Expected focused runtime selection from this current native discovery:', len(runtime_selected))
           # Broad parser/AI/probe/feature-positive suites remain compiled/discovered here and execute in full Step 5.
@@ -3397,10 +3408,10 @@ jobs:
 
   stage3-transport:
     name: stage3-transport
-    needs: [stage3-candidate, stage3-base, stage3-runtime-red, stage3-completion]
-    if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
+    needs: [stage3-candidate, stage3-base, stage3-runtime-red, stage3-completion, stage1-candidate]
+    if: always() && github.repository == 'keloide/phase' && github.event_name == 'push' && needs.stage1-candidate.outputs.mode == 'final'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-17-results-stage3
+      RESULT_BRANCH: engine-proof/fra-stingerquill-18-results-stage3
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage3-outputs.tar.gz
     permissions:
       contents: write
