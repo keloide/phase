@@ -59659,12 +59659,10 @@ fn tribute_world_tree_keeps_cost_paid_object_scope() {
     );
 }
 
-/// Non-regression (issue #735): Ent's Fury keeps `ObjectScope::CostPaidObject`
-/// for "if its power is 4 or greater". It is an instant with no trigger subject
-/// (None), so Edit B's `_ => CostPaidObject` fall-through binds "its" to the
-/// clause-local target — unchanged by the fix.
+/// SHAPE: CR 115.1 + CR 608.2c + CR 608.2h: Ent's Fury's first instruction
+/// reads its own chosen creature's power, before the counter and independent pump.
 #[test]
-fn ents_fury_keeps_cost_paid_object_scope() {
+fn ents_fury_condition_reads_own_target_power() {
     use crate::types::ability::{ObjectScope, QuantityRef};
 
     let parsed = parse_oracle_text(
@@ -59676,11 +59674,20 @@ fn ents_fury_keeps_cost_paid_object_scope() {
         &["Sorcery".to_string()],
         &[],
     );
-    let condition = parsed
-        .abilities
-        .iter()
-        .find_map(|a| a.condition.clone())
-        .expect("Ent's Fury must carry a QuantityCheck condition");
+    let counter = parsed.abilities.first().expect("Ent's Fury spell ability");
+    assert!(
+        matches!(
+            counter.effect.as_ref(),
+            Effect::PutCounter { counter_type: CounterType::Plus1Plus1, count: QuantityExpr::Fixed { value: 1 }, target: TargetFilter::Typed(filter) }
+                if filter.type_filters == vec![TypeFilter::Creature]
+                    && filter.controller == Some(ControllerRef::You)
+        ),
+        "recognized counter on the own chosen creature: {counter:#?}"
+    );
+    let condition = counter
+        .condition
+        .as_ref()
+        .expect("counter's own property gate");
 
     assert!(
         matches!(
@@ -59688,15 +59695,178 @@ fn ents_fury_keeps_cost_paid_object_scope() {
             AbilityCondition::QuantityCheck {
                 lhs: QuantityExpr::Ref {
                     qty: QuantityRef::Power {
-                        scope: ObjectScope::CostPaidObject
+                        scope: ObjectScope::Target
                     }
                 },
                 comparator: Comparator::GE,
                 rhs: QuantityExpr::Fixed { value: 4 },
             }
         ),
-        "Ent's Fury must keep Power{{CostPaidObject}} GE 4, got {condition:?}"
+        "Ent's Fury must read Power{{Target}} GE 4, got {condition:?}"
     );
+    let pump = counter
+        .sub_ability
+        .as_deref()
+        .expect("independent pump follows");
+    assert!(matches!(
+        pump.effect.as_ref(),
+        Effect::Pump {
+            power: PtValue::Fixed(1),
+            toughness: PtValue::Fixed(1),
+            target: TargetFilter::ParentTarget
+        }
+    ));
+    assert_eq!(pump.duration, Some(Duration::UntilEndOfTurn));
+    assert!(
+        pump.condition.is_none(),
+        "the pump is independent of the counter gate"
+    );
+    assert_eq!(pump.sub_link, SubAbilityLink::SequentialSibling);
+    let fight = pump.sub_ability.as_deref().expect("fight follows pump");
+    assert!(
+        matches!(fight.effect.as_ref(), Effect::Fight { subject: TargetFilter::SelfRef, target: TargetFilter::Typed(filter) } if filter.controller == Some(ControllerRef::Opponent))
+    );
+}
+
+/// SHAPE: CR 115.1 + CR 608.2c + CR 608.2h: the recognized property suffix
+/// reads the object declared by its own instruction in both IR and lowering.
+/// Player/phase parse contexts must not override that declaration with Source.
+#[test]
+fn property_suffix_keeps_its_instruction_object_authority() {
+    const ENT: &str = "Put a +1/+1 counter on target creature you control if its power is 4 or greater. Then that creature gets +1/+1 until end of turn and fights target creature you don't control.";
+    const WELCOME: &str = "Madness {X}{U}{U} (If you discard this card, discard it into exile. When you do, cast it for its madness cost or put it into your graveyard.)\nGain control of target creature if its toughness is 2 or less. If this spell's madness cost was paid, instead gain control of that creature if its toughness is X or less.";
+    for (name, oracle, quantity, comparator, value) in [
+        (
+            "Ent's Fury",
+            ENT,
+            QuantityRef::Power {
+                scope: ObjectScope::Target,
+            },
+            Comparator::GE,
+            4,
+        ),
+        (
+            "Welcome to the Fold",
+            WELCOME,
+            QuantityRef::Toughness {
+                scope: ObjectScope::Target,
+            },
+            Comparator::LE,
+            2,
+        ),
+    ] {
+        let expected = AbilityCondition::QuantityCheck {
+            lhs: QuantityExpr::Ref {
+                qty: quantity.clone(),
+            },
+            comparator,
+            rhs: QuantityExpr::Fixed { value },
+        };
+        let full_card = parse_oracle_text(oracle, name, &[], &["Sorcery".to_string()], &[]);
+        let mut full_nodes = Vec::new();
+        for ability in &full_card.abilities {
+            collect_defs(ability, &mut full_nodes);
+        }
+        assert!(
+            full_nodes
+                .iter()
+                .any(|def| def.condition.as_ref() == Some(&expected)),
+            "full printed card retains the recognized chosen-object gate: {full_card:#?}"
+        );
+
+        // oracle.rs routes each printed line separately after stripping reminder
+        // text. The last line is the complete effect instruction, including the
+        // unsupported Welcome override; the full keyword line remains above.
+        let effect_line = crate::parser::oracle_util::strip_reminder_text(
+            oracle.lines().last().expect("printed effect line"),
+        );
+        for subject in [
+            None,
+            Some(TargetFilter::Controller),
+            Some(TargetFilter::Player),
+            Some(TargetFilter::Any),
+        ] {
+            let mut context = ParseContext {
+                subject,
+                ..ParseContext::default()
+            };
+            let ir = parse_effect_chain_ir(&effect_line, AbilityKind::Spell, &mut context);
+            let owner = ir.clauses.first().expect("own instruction in IR");
+            assert!(
+                matches!(
+                    &owner.parsed.effect,
+                    Effect::PutCounter {
+                        counter_type: CounterType::Plus1Plus1,
+                        count: QuantityExpr::Fixed { value: 1 },
+                        ..
+                    } | Effect::GainControl { .. }
+                ),
+                "recognized own instruction: {owner:#?}"
+            );
+            assert!(
+                matches!(extract_target_filter_from_effect(&owner.parsed.effect), Some(TargetFilter::Typed(filter)) if filter.type_filters == vec![TypeFilter::Creature]),
+                "own object declaration: {owner:#?}"
+            );
+            assert_eq!(owner.target_reads, TargetReadOrigin::OwnAnnouncement);
+            assert!(owner.multi_target.is_none() && owner.parsed.multi_target.is_none());
+            assert_eq!(
+                owner.condition.as_ref(),
+                Some(&expected),
+                "IR gate for {name} / {:?}",
+                context.subject
+            );
+            let lowered = lower_effect_chain_ir(&ir);
+            assert_eq!(
+                lowered.condition.as_ref(),
+                Some(&expected),
+                "lowered gate for {name} / {:?}",
+                context.subject
+            );
+            assert_eq!(lowered.effect.as_ref(), &owner.parsed.effect);
+            let mut nodes = Vec::new();
+            collect_defs(&lowered, &mut nodes);
+            match quantity {
+                QuantityRef::Power { .. } => {
+                    assert!(
+                        matches!(lowered.effect.as_ref(), Effect::PutCounter { counter_type: CounterType::Plus1Plus1, count: QuantityExpr::Fixed { value: 1 }, target: TargetFilter::Typed(filter) } if filter.controller == Some(ControllerRef::You)),
+                        "Ent retains its own counter instruction and controller: {lowered:#?}"
+                    );
+                    assert!(nodes.iter().any(|def| matches!(
+                        def.effect.as_ref(),
+                        Effect::Pump {
+                            power: PtValue::Fixed(1),
+                            toughness: PtValue::Fixed(1),
+                            target: TargetFilter::ParentTarget
+                        }
+                    ) && def.condition.is_none()
+                        && def.duration == Some(Duration::UntilEndOfTurn)));
+                    assert!(nodes.iter().any(|def| matches!(def.effect.as_ref(), Effect::Fight { target: TargetFilter::Typed(filter), .. } if filter.controller == Some(ControllerRef::Opponent))));
+                    assert!(nodes
+                        .iter()
+                        .all(|def| !matches!(def.effect.as_ref(), Effect::Unimplemented { .. })));
+                }
+                QuantityRef::Toughness { .. } => {
+                    assert!(
+                        matches!(lowered.effect.as_ref(), Effect::GainControl { target: TargetFilter::Typed(filter) } if filter.controller.is_none()),
+                        "Welcome retains its own chosen creature instruction: {lowered:#?}"
+                    );
+                    assert!(
+                        nodes
+                            .iter()
+                            .any(|def| matches!(def.effect.as_ref(), Effect::Unimplemented { .. })),
+                        "Welcome's unrelated override remains unsupported: {lowered:#?}"
+                    );
+                    assert!(
+                        full_nodes
+                            .iter()
+                            .any(|def| matches!(def.effect.as_ref(), Effect::Unimplemented { .. })),
+                        "full Welcome is not promoted to supported: {full_card:#?}"
+                    );
+                }
+                _ => unreachable!("only the two printed P/T property dimensions"),
+            }
+        }
+    }
 }
 
 /// CR 508.1c + CR 611.2c: Teyo, Geometric Tactician's [−2] must lower to a

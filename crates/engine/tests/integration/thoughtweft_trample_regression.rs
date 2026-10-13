@@ -19,13 +19,13 @@
 //! real combat. This isolates the layered-P/T + granted-keyword combat behavior
 //! the bug report exercised without depending on card-data being loaded.
 
-use engine::game::combat::AttackTarget;
+use engine::game::combat::{AttackTarget, TrampleKind};
 use engine::game::layers::evaluate_layers;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::ability::{ContinuousModification, Duration, TargetFilter, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
-use engine::types::game_state::WaitingFor;
+use engine::types::game_state::{CombatDamageAssignmentMode, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
 use engine::types::phase::Phase;
@@ -143,8 +143,61 @@ fn thoughtweft_buffed_trample_excess_reaches_player() {
             .expect("block the trampler")
             .events,
     );
-    let outcome = runner.combat_damage();
-    events.extend_from_slice(outcome.events());
+    // CR 510.1a/c/d + CR 510.2 + CR 702.19b: submit the actual normal
+    // assignment, including its closing action's simultaneous damage events.
+    for _ in 0..32 {
+        if matches!(
+            runner.state().phase,
+            Phase::EndCombat | Phase::PostCombatMain
+        ) && matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
+        {
+            break;
+        }
+        let action = match runner.state().waiting_for.clone() {
+            WaitingFor::Priority { .. } => GameAction::PassPriority,
+            WaitingFor::AssignCombatDamage {
+                player,
+                attacker_id,
+                total_damage,
+                blockers,
+                assignment_modes,
+                trample,
+                defending_player,
+                attack_target,
+                ..
+            } => {
+                assert_eq!(player, P0, "attacker's controller assigns combat damage");
+                assert_eq!(attacker_id, attacker);
+                assert_eq!(total_damage, 3, "assignment reads layered power");
+                assert_eq!(blockers.len(), 1);
+                assert_eq!(blockers[0].blocker_id, blocker);
+                assert_eq!(blockers[0].lethal_minimum, 2);
+                assert_eq!(trample, Some(TrampleKind::Standard));
+                assert_eq!(defending_player, P1);
+                assert_eq!(attack_target, AttackTarget::Player(P1));
+                assert!(assignment_modes.contains(&CombatDamageAssignmentMode::Normal));
+                GameAction::AssignCombatDamage {
+                    mode: CombatDamageAssignmentMode::Normal,
+                    assignments: vec![(blocker, 2)],
+                    trample_damage: 1,
+                    controller_damage: 0,
+                }
+            }
+            unexpected => panic!(
+                "unexpected combat prompt: {unexpected:?}; state: {:?}",
+                runner.state()
+            ),
+        };
+        events.extend(runner.act(action).expect("complete normal combat").events);
+    }
+    assert!(
+        matches!(
+            runner.state().phase,
+            Phase::EndCombat | Phase::PostCombatMain
+        ) && matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "combat action bound exhausted before normal end-combat priority: {:?}",
+        runner.state()
+    );
 
     // CR 510.1c: the trample attacker assigns lethal (2 = the blocker's
     // toughness) to its single blocker before any excess is assigned. This is the

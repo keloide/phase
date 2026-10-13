@@ -40926,6 +40926,30 @@ fn parse_effect_chain_ir_body(
             (route, suffix_route) => route.or(suffix_route),
         };
         let suffix_cond = suffix_cond.map(|(condition, _)| condition);
+        // Retain this producer's gate and its existing reflexive wrapper until
+        // the stripped instruction supplies typed target-declaration authority.
+        let mut property_gate = property_cond
+            .as_ref()
+            .filter(|gate| {
+                matches!(
+                    gate,
+                    AbilityCondition::QuantityCheck {
+                        lhs: QuantityExpr::Ref {
+                            qty: QuantityRef::Power { .. } | QuantityRef::Toughness { .. }
+                        },
+                        ..
+                    }
+                )
+            })
+            .map(|gate| {
+                (
+                    gate.clone(),
+                    if_you_do
+                        .as_ref()
+                        .filter(|condition| condition.has_when_you_do_marker())
+                        .cloned(),
+                )
+            });
         let guard_condition = condition
             .or(counter_cond)
             .or(mv_cond)
@@ -40981,7 +41005,10 @@ fn parse_effect_chain_ir_body(
         // is redundant when the parent is optional (optional already gates the sub).
         let (unless_strip, text) = strip_unless_entered_suffix(&text, ctx);
         let condition = match unless_strip {
-            UnlessSuffixStrip::Parsed(c) => Some(c),
+            UnlessSuffixStrip::Parsed(c) => {
+                property_gate = None;
+                Some(c)
+            }
             _ => condition,
         };
         // CR 608.2c: Strip leading "instead " when a condition was extracted.
@@ -41006,8 +41033,75 @@ fn parse_effect_chain_ir_body(
                         last.boundary = chunk.boundary_after;
                     }
                 }
+                let mut bound_outer = outer_condition.clone();
+                // CR 115.1 + CR 608.2c + CR 608.2h: the head of THIS stripped
+                // instruction must itself declare its single chosen object.
+                // Never search for a target in another emitted clause; another
+                // declaration makes the outer suffix ambiguous. Every body
+                // clause retains the same gate and condition extent.
+                if property_gate.is_some()
+                    && body_ir.clauses.first().is_some_and(|clause| {
+                        clause.target_reads == TargetReadOrigin::OwnAnnouncement
+                            && triggers::extract_target_filter_from_effect(&clause.parsed.effect)
+                                .is_some_and(|target| {
+                                    filter_introduces_typed_object(target)
+                                        && !target.is_context_ref()
+                                        && !target_filter_is_explicit_player_target(target)
+                                })
+                    })
+                {
+                    let owner = &body_ir.clauses[0];
+                    if owner.multi_target.is_some()
+                        || owner.parsed.multi_target.is_some()
+                        || std::iter::successors(owner.parsed.sub_ability.as_deref(), |def| {
+                            def.sub_ability.as_deref()
+                        })
+                        .any(|def| {
+                            def.multi_target.is_some()
+                                || triggers::extract_target_filter_from_effect(&def.effect)
+                                    .is_some()
+                        })
+                        || body_ir
+                            .clauses
+                            .iter()
+                            .skip(1)
+                            .any(clause_announces_own_target)
+                    {
+                        unimplemented_clause(
+                            &mut builder,
+                            "property_suffix_ambiguous_object",
+                            normalized_text,
+                            chunk.boundary_after,
+                        );
+                        continue;
+                    }
+                    if let Some((mut gate, reflexive)) = property_gate.clone() {
+                        if let AbilityCondition::QuantityCheck {
+                            lhs:
+                                lhs @ QuantityExpr::Ref {
+                                    qty: QuantityRef::Power { .. } | QuantityRef::Toughness { .. },
+                                },
+                            ..
+                        } = &mut gate
+                        {
+                            lower::rebind_cost_paid_object_pt_to_target(lhs);
+                            if let QuantityExpr::Ref {
+                                qty: QuantityRef::Power { scope } | QuantityRef::Toughness { scope },
+                            } = lhs
+                            {
+                                if *scope == ObjectScope::Source {
+                                    *scope = ObjectScope::Target;
+                                }
+                            }
+                            bound_outer = match reflexive {
+                                Some(marker) => marker.with_when_you_do_guard(gate),
+                                None => gate,
+                            };
+                        }
+                    }
+                }
                 for clause in &mut body_ir.clauses {
-                    apply_outer_condition_to_clause(outer_condition, clause);
+                    apply_outer_condition_to_clause(&bound_outer, clause);
                     // CR 115.1 + CR 608.2c: the outer gate governs every body
                     // clause, so each one that announces its own target is
                     // refused exactly as the single-clause guard below refuses it.
@@ -41071,7 +41165,7 @@ fn parse_effect_chain_ir_body(
         } else {
             (None, text)
         };
-        let mut condition = match (condition, unless_same_name_condition) {
+        let mut condition = match (condition, unless_same_name_condition.clone()) {
             (Some(existing), Some(unless_cond)) => Some(AbilityCondition::And {
                 conditions: vec![existing, unless_cond],
             }),
@@ -42875,6 +42969,66 @@ fn parse_effect_chain_ir_body(
                 .is_some_and(|prev| parsed_clause_targets_self_ref(&prev.parsed))
         {
             replace_target_with_self(&mut clause.effect);
+        }
+
+        // CR 115.1 + CR 608.2c + CR 608.2h: bind only the property suffix
+        // retained from THIS chunk, after its parsed instruction declares one
+        // object. This is not a rewrite of other conditions or chain targets.
+        if property_gate.is_some()
+            && triggers::extract_target_filter_from_effect(&clause.effect).is_some_and(|target| {
+                filter_introduces_typed_object(target)
+                    && !target.is_context_ref()
+                    && !target_filter_is_explicit_player_target(target)
+            })
+        {
+            if multi_target.is_some()
+                || clause.multi_target.is_some()
+                || std::iter::successors(clause.sub_ability.as_deref(), |def| {
+                    def.sub_ability.as_deref()
+                })
+                .any(|def| {
+                    def.multi_target.is_some()
+                        || triggers::extract_target_filter_from_effect(&def.effect).is_some()
+                })
+            {
+                unimplemented_clause(
+                    &mut builder,
+                    "property_suffix_ambiguous_object",
+                    normalized_text,
+                    chunk.boundary_after,
+                );
+                continue;
+            }
+            if let Some((mut gate, reflexive)) = property_gate {
+                if let AbilityCondition::QuantityCheck {
+                    lhs:
+                        lhs @ QuantityExpr::Ref {
+                            qty: QuantityRef::Power { .. } | QuantityRef::Toughness { .. },
+                        },
+                    ..
+                } = &mut gate
+                {
+                    lower::rebind_cost_paid_object_pt_to_target(lhs);
+                    if let QuantityExpr::Ref {
+                        qty: QuantityRef::Power { scope } | QuantityRef::Toughness { scope },
+                    } = lhs
+                    {
+                        if *scope == ObjectScope::Source {
+                            *scope = ObjectScope::Target;
+                        }
+                    }
+                    let bound = match reflexive {
+                        Some(marker) => marker.with_when_you_do_guard(gate),
+                        None => gate,
+                    };
+                    condition = Some(match unless_same_name_condition {
+                        Some(unless_cond) => AbilityCondition::And {
+                            conditions: vec![bound, unless_cond],
+                        },
+                        None => bound,
+                    });
+                }
+            }
         }
 
         if condition
