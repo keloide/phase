@@ -1,4 +1,4 @@
-# TEMPORARY FORK-ONLY V18 TEMPLATE; ROOT MUST BIND SOURCE/MODE/RESULT REFS; ALL NATIVE CHECKS UNPROBED. Never include this YAML in product history/PR.
+# TEMPORARY FORK-ONLY V19 BOUND GENERATION; ROOT MUST BIND SOURCE/MODE/RESULT REFS; ALL NATIVE CHECKS UNPROBED. Never include this YAML in product history/PR.
 # Exactly three fixed stages and two one-shot API-only waits; no retry or self-dispatch.
 # Root fills the initial SHA pair, exact proof branch, three publication and three result refs.
 # The original pinned inputs are restored from run 37483983597; only exact C8 BASE outputs are licensed for reuse.
@@ -7,8 +7,8 @@
 # Only root may accept stage 1, once-fetch/merge, copy/commit stage-2 canonical bytes,
 # and publish final HEAD. Wait jobs are not candidate verification or acceptance.
 # Root adjudicated source-idle interpretation: phase-fit 109; temporary workflow SHA differs.
-name: Temporary finite immutable engine proof 18
-run-name: Engine proof 18 ${{ github.ref_name }}
+name: Temporary finite immutable engine proof 19
+run-name: Engine proof 19 ${{ github.ref_name }}
 
 on:
   push:
@@ -22,7 +22,7 @@ env:
   RTK_DISABLED: '1'
   CARGO_INCREMENTAL: '0'
   BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
-  CANDIDATE_SHA: e7b82d02ee4f2ad2fc2ce2ffdaa2af1c4b66fb80
+  CANDIDATE_SHA: e8b728f325c25da75ac114ea5e7d53c0c3bfc882
   MODE: generate
   PHASE_BASE_SHA: ab1363d1f30141c118db0c83de0da617e0c07c65
   TEST_FEATURES: phase-engine/test-support,phase-engine/cli,phase-engine/proptest
@@ -886,7 +886,7 @@ jobs:
           set -euo pipefail
           test "$BASE_SHA" = ab1363d1f30141c118db0c83de0da617e0c07c65
           test "$PHASE_BASE_SHA" = "$BASE_SHA"
-          test "$CANDIDATE_SHA" = e7b82d02ee4f2ad2fc2ce2ffdaa2af1c4b66fb80
+          test "$CANDIDATE_SHA" = e8b728f325c25da75ac114ea5e7d53c0c3bfc882
           test "$INPUT_RUN_ID" = 37483983597
           test "$GATED_SETS_AS_OF" = 2026-10-05
           test "$MODE" = final
@@ -1794,7 +1794,7 @@ jobs:
     needs: [stage1-candidate, stage1-base, stage1-runtime-red, stage1-completion]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-18-results-stage1
+      RESULT_BRANCH: engine-proof/fra-stingerquill-19-results-stage1
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage1-outputs.tar.gz
     permissions:
       contents: write
@@ -2118,7 +2118,7 @@ jobs:
     needs: [stage2-generation, stage1-candidate]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push' && needs.stage1-candidate.outputs.mode == 'final'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-18-results-stage2
+      RESULT_BRANCH: engine-proof/fra-stingerquill-19-results-stage2
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage2-outputs.tar.gz
     permissions:
       contents: write
@@ -3411,7 +3411,7 @@ jobs:
     needs: [stage3-candidate, stage3-base, stage3-runtime-red, stage3-completion, stage1-candidate]
     if: always() && github.repository == 'keloide/phase' && github.event_name == 'push' && needs.stage1-candidate.outputs.mode == 'final'
     env:
-      RESULT_BRANCH: engine-proof/fra-stingerquill-18-results-stage3
+      RESULT_BRANCH: engine-proof/fra-stingerquill-19-results-stage3
       ARCHIVE_PATH: engine-proof-results/fra-stingerquill-stage3-outputs.tar.gz
     permissions:
       contents: write
