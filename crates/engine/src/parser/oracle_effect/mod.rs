@@ -41337,7 +41337,7 @@ fn parse_effect_chain_ir_body(
             Prepositional,
             SubjectOnly,
         }
-        let (text, condition, decline_dispatch) =
+        let (text, mut condition, decline_dispatch) =
             if let Some((body, decline_condition)) = strip_for_each_opponent_who_doesnt(&text) {
                 // CR 608.2e + CR 101.3: Do NOT stamp `player_scope` on the body
                 // — it inherits the parent's `player_scope: Opponent` iteration
