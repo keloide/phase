@@ -1601,6 +1601,7 @@ fn a_damage_trigger_reads_the_damaged_player_through_its_scoped_player() {
             amount: 2,
             is_combat: true,
             excess: 0,
+            source_incarnation: None,
         }),
     );
     let on_stack = state.stack.back().expect("entry");
@@ -2781,6 +2782,7 @@ fn a_ward_counter_never_reports_the_targeting_abilitys_source_as_acted_on() {
                 target: TargetRef::Object(warded),
                 source_id: aimer,
                 source_controller: PlayerId(0),
+                targeter: None,
             }),
         );
         let acted_on = reach(&state, ward)[0].2.clone();
@@ -3383,6 +3385,7 @@ fn a_node_below_a_choice_published_for_a_scoped_player_acts_on_nothing() {
             amount: 2,
             is_combat: true,
             excess: 0,
+            source_incarnation: None,
         });
         let entry = push_trigger(
             &mut state,
