@@ -9858,6 +9858,12 @@ fn dispatch_pending_trigger_context_core(
                 &trigger.ability,
                 trigger.trigger_event.as_ref(),
             ) {
+                // CR 608.2d: an inline body can still pause — a multi-type
+                // mana-echo body pauses for its SingleColor choice (see the
+                // echo pre-check in `effects::mana::resolve`). Mirror the
+                // immediate backend's pause check so the pause is reported,
+                // not stranded as a silent `ResolvedInline`.
+                let waiting_before = state.waiting_for.clone();
                 super::mana_abilities::resolve_triggered_mana_ability_inline(
                     state,
                     &trigger.ability,
@@ -9866,6 +9872,11 @@ fn dispatch_pending_trigger_context_core(
                     None,
                 );
                 restore_trigger_event_context(state, context_snapshot);
+                if state.waiting_for != waiting_before
+                    && is_accepted_triggered_mana_pause(&state.waiting_for)
+                {
+                    return TriggerDispatchDisposition::Paused;
+                }
                 return TriggerDispatchDisposition::ResolvedInline;
             }
             push_pending_trigger_to_stack_with_firing_and_duration_events(

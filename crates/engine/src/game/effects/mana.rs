@@ -201,19 +201,20 @@ pub fn resolve(
     // below) without a stack entry, so the inline gate must not swallow it.
     // Single-type echo yields no prompt here and falls through to the normal
     // gate, resolving with no interaction.
-    let echo_pause = match &ability.effect {
-        Effect::Mana {
-            produced: ManaProduction::TriggerEventManaType,
-            ..
-        } => crate::game::mana_abilities::mana_choice_prompt(
+    let echo_pause = crate::game::mana_abilities::echo_body_owes_type_choice(
+        ability,
+        state.current_trigger_event.as_ref(),
+    )
+    .then(|| {
+        crate::game::mana_abilities::mana_choice_prompt(
             &ability.effect,
             state,
             ability.source_id,
             Some(ability),
             Some(count_ability),
-        ),
-        _ => None,
-    };
+        )
+    })
+    .flatten();
     let mana_choice = echo_pause.or_else(|| {
         (!is_triggered_mana_inline)
             .then(|| {
@@ -958,11 +959,12 @@ fn resolve_mana_types_impl(
         // mana type).
         //
         // This branch only runs when no choice is owed: a multi-type event
-        // pauses earlier in `mana_choice_prompt` (stack path — CR 608.2d
-        // SingleColor choice, completed for exactly one mana) or is declined
-        // inline acceptance in `classify_pending_triggered_mana` (inline path
-        // — routed to the stack so the same prompt fires). Emitting one unit
-        // per *distinct* color here therefore always yields exactly one mana.
+        // pauses earlier in the echo pre-check in `resolve` (CR 608.2d
+        // SingleColor choice, completed for exactly one mana), in both the
+        // inline fixed-point path and the stack path; the Pass-1 skip keeps
+        // the bare loop out, and single-type echo falls through here.
+        // Emitting one unit per *distinct* color here therefore always yields
+        // exactly one mana.
         ManaProduction::TriggerEventManaType => {
             use crate::types::events::GameEvent;
             match &state.current_trigger_event {
