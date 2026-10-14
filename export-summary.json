@@ -1,0 +1,10 @@
+{
+  "parts": 23,
+  "archive_bytes": 2058918496,
+  "archive_sha256": "afe38f947f001ce21f40c305b9721ff080776adab84bed88048854a969064d88",
+  "files": 30402,
+  "logical_bytes": 12601130830,
+  "history_bytes": 620766,
+  "history_sha256": "5b4b05b70400e91f87a0393c1ff364113d2c8880c65de8531f9c1d983d2e2de7",
+  "exported_at": "2026-10-14T10:41:33.806893+00:00"
+}
