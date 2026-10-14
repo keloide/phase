@@ -1325,6 +1325,7 @@ mod search_delivery_observer_dedup;
 mod season_points_budget_modal;
 mod seasoned_dungeoneer_initiative_room_trigger;
 mod selenia_vigilance_grant;
+mod selesnya_loft_gardens_mixed_mana_choice;
 mod self_attached_aura_token_host;
 mod self_copy_last_known_values;
 mod self_destruct_target_power;

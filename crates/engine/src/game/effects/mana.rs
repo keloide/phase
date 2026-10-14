@@ -374,7 +374,30 @@ pub fn handle_choose_mana_effect(
     // CR 608.2b: `None` means the declared recipient's chosen target is no
     // longer legal — no player adds this mana, and it is NOT redirected to the
     // controller.
-    let recipient = mana_effect_recipient(state, ability, target.as_ref());
+    //
+    // CR 106.3 + CR 109.5 (mirrors `resolve` above): a mana-echo production
+    // reads its recipient from the triggering tap event's tapper. This is
+    // behavior-neutral on every reachable input today — a prompted echo always
+    // carries its tap event (the prompt itself was built from it), and on that
+    // event tapper and declared recipient agree (subjectless echo fires only
+    // where tapper == controller; `TriggeringPlayer` echo resolves to the
+    // same tapper) — but the parity is load-bearing: `resolve` above asserts
+    // this completion re-derives its recipient, and without this arm echo
+    // would be the one production where the two structurally diverge. Falls
+    // back to the declared-recipient read when the event is absent so
+    // non-trigger echo resolutions keep their existing behavior.
+    let recipient: Option<PlayerId> = match produced {
+        ManaProduction::TriggerEventManaType => state
+            .current_trigger_event
+            .as_ref()
+            .and_then(|event| match event {
+                GameEvent::TappedForMana { player_id, .. }
+                | GameEvent::ManaAbilityProduced { player_id, .. } => Some(*player_id),
+                _ => None,
+            })
+            .or_else(|| mana_effect_recipient(state, ability, target.as_ref())),
+        _ => mana_effect_recipient(state, ability, target.as_ref()),
+    };
     let produced_mana = recipient.is_some() && !mana_types.is_empty();
     let mut deposited = false;
     if let Some(recipient) = recipient {
@@ -490,7 +513,17 @@ fn chosen_mana_types_for_prompt(
                     "Chosen color is not among the legal options".to_string(),
                 ));
             }
-            let count = resolve_mana_types_for_ability(produced, state, ability).len();
+            // CR 106.12a: a mana-echo production ("add ONE mana of any type
+            // that land produced") structurally carries no count — the variant
+            // has no count field — so one choice yields exactly one mana even
+            // when the triggering event produced several types. Every other
+            // SingleColor production multiplies the choice by its resolved
+            // count.
+            let count = if matches!(produced, ManaProduction::TriggerEventManaType) {
+                1
+            } else {
+                resolve_mana_types_for_ability(produced, state, ability).len()
+            };
             Ok(vec![color; count])
         }
         (ManaChoicePrompt::Combination { options }, ManaChoice::Combination(combo)) => {
@@ -902,17 +935,12 @@ fn resolve_mana_types_impl(
         // `TappedForMana` event, this produces no mana (CR 106.5 — undefined
         // mana type).
         //
-        // For every land the engine models, a single resolution produces mana
-        // of one uniform color (basics → one type; Nykthos → all green), so
-        // emitting one unit per *distinct* color yields exactly one mana — the
-        // CR-correct "any type that land produced" with no choice to make.
-        //
-        // If a future card requires the player to *choose* among multiple
-        // produced types in a single resolution ("any one type that land
-        // produced"), the resolver must be extended to emit a player choice.
-        // Add a separate `ManaProduction::TriggerEventManaTypeChoice` variant
-        // before reusing this branch — silently expanding the vec here would
-        // skip the choice.
+        // This branch only runs when no choice is owed: a multi-type event
+        // pauses earlier in `mana_choice_prompt` (stack path — CR 608.2d
+        // SingleColor choice, completed for exactly one mana) or is declined
+        // inline acceptance in `classify_pending_triggered_mana` (inline path
+        // — routed to the stack so the same prompt fires). Emitting one unit
+        // per *distinct* color here therefore always yields exactly one mana.
         ManaProduction::TriggerEventManaType => {
             use crate::types::events::GameEvent;
             match &state.current_trigger_event {

@@ -1,0 +1,288 @@
+//! Selesnya Loft Gardens (Plane): "Whenever chaos ensues, until end of turn,
+//! whenever you tap a land for mana, add one mana of any type that land
+//! produced." + Simic Growth Chamber ("{T}: Add {G}{U}").
+//!
+//! Structural regression for the delayed mana-echo class: a tap event that
+//! produces several types at once must offer the resolving player exactly ONE
+//! of them (CR 608.2d — the Oracle asks for "one mana"), not deposit every
+//! produced type. Before the shared choice-contract fix this test's tap
+//! deposited base {G}{U} PLUS bonus {G}{U} with no prompt; now the bonus
+//! pauses on a SingleColor choice and deposits exactly the chosen mana.
+//!
+//! The chaos event is synthesized directly (`ChaosEnsued` keyed by Selesnya's
+//! object id) rather than driven through planar-deck setup: no scenario
+//! helper places planes or rolls the planar die, and planechase plumbing is
+//! not under test. The exercised seam is the CR 311.7/901.9b plane-identity
+//! binding plus everything downstream — chaos matching, delayed installation,
+//! tap matching, choice, deposit — all through the real pipeline with verbatim
+//! Oracle text. Selesnya stays a battlefield land; its chaos trigger fires
+//! from the Battlefield member of its parsed trigger zones.
+
+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+use engine::game::triggers::process_triggers;
+use engine::types::ability::Effect;
+use engine::types::actions::GameAction;
+use engine::types::events::GameEvent;
+use engine::types::game_state::{ManaChoice, ManaChoicePrompt, WaitingFor};
+use engine::types::identifiers::ObjectId;
+use engine::types::mana::{ManaColor, ManaType};
+use engine::types::phase::Phase;
+use engine::types::player::PlayerId;
+
+const SELESNYA_ORACLE: &str = "If an effect would create one or more tokens, it creates twice that many of those tokens instead.\nIf an effect would put one or more counters on a permanent, it puts twice that many of those counters on that permanent instead.\nWhenever chaos ensues, until end of turn, whenever you tap a land for mana, add one mana of any type that land produced.";
+const CHAMBER_ORACLE: &str =
+    "This land enters tapped.\nWhen this land enters, return a land you control to its owner's hand.\n{T}: Add {G}{U}.";
+const MANA_FLARE_ORACLE: &str =
+    "Whenever a player taps a land for mana, that player adds one mana of any type that land produced.";
+
+fn count(runner: &GameRunner, p: PlayerId, color: ManaType) -> usize {
+    runner.state().players[p.0 as usize]
+        .mana_pool
+        .count_color(color)
+}
+
+/// Index of the object's first root-`Effect::Mana` activated ability (bounce
+/// lands carry an ETB trigger and an enters-tapped replacement alongside the
+/// tap ability, so position 0 cannot be assumed).
+fn mana_ability_index(runner: &GameRunner, id: ObjectId) -> usize {
+    runner.state().objects[&id]
+        .abilities
+        .iter()
+        .position(|def| matches!(*def.effect, Effect::Mana { .. }))
+        .unwrap_or_else(|| panic!("object {id:?} has no mana ability"))
+}
+
+/// Fire real chaos through the real pipeline and prove Selesnya installed
+/// exactly one until-end-of-turn delayed trigger. Shared setup for the rows
+/// below; returns the runner with the trigger live.
+fn runner_with_selesnya_live() -> (GameRunner, ObjectId, ObjectId) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let selesnya = scenario
+        .add_land_from_oracle(P0, "Selesnya Loft Gardens", SELESNYA_ORACLE)
+        .id();
+    let chamber = scenario
+        .add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE)
+        .id();
+    let forest = scenario.add_basic_land(P0, ManaColor::Green);
+    let mut runner = scenario.build();
+
+    // CR 311.7 / CR 901.9b: the chaos event is keyed by the plane whose
+    // ability fires; synthesizing it with Selesnya's id exercises the real
+    // plane-identity binding without planar-deck setup.
+    let events = vec![GameEvent::ChaosEnsued { plane_id: selesnya }];
+    process_triggers(runner.state_mut(), &events);
+    // If the chaos trigger resolved synchronously the delayed trigger is
+    // installed; otherwise it sits on the stack behind one priority pass.
+    while runner.state().delayed_triggers.is_empty() && !runner.state().stack.is_empty() {
+        runner
+            .act(GameAction::PassPriority)
+            .expect("passing priority to resolve the chaos trigger must succeed");
+    }
+    assert_eq!(
+        runner.state().delayed_triggers.len(),
+        1,
+        "chaos must install exactly one Selesnya delayed trigger"
+    );
+    (runner, chamber, forest)
+}
+
+/// CR 608.2d + CR 106.12a: tapping Simic Growth Chamber ({G}{U}) with
+/// Selesnya's delayed trigger live must pause on a Green/Blue choice — not
+/// silently deposit bonus {G}{U} — and the answer must yield exactly one
+/// bonus mana of the chosen type on top of the base {G}{U}.
+#[test]
+fn selesnya_echo_from_multitype_tap_offers_one_chosen_mana() {
+    let (mut runner, chamber, _) = runner_with_selesnya_live();
+    let idx = mana_ability_index(&runner, chamber);
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: chamber,
+            ability_index: idx,
+        })
+        .expect("tapping the chamber must succeed");
+
+    // The bonus must NOT have resolved silently: base {G}{U} is in the pool
+    // and the choice is pending. The echo trigger sits on the stack
+    // (gate-false bodies are not inline-resolvable); pass priority to
+    // resolve it into the choice.
+    assert_eq!(count(&runner, P0, ManaType::Green), 1);
+    assert_eq!(count(&runner, P0, ManaType::Blue), 1);
+    assert_eq!(
+        runner.state().stack.len(),
+        1,
+        "the Selesnya echo must be stacked, not silently resolved"
+    );
+    for _ in 0..4 {
+        if matches!(
+            &runner.state().waiting_for,
+            WaitingFor::ChooseManaColor { .. }
+        ) {
+            break;
+        }
+        runner
+            .act(GameAction::PassPriority)
+            .expect("passing priority to resolve the echo must succeed");
+    }
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseManaColor {
+            player,
+            choice: ManaChoicePrompt::SingleColor { options },
+            ..
+        } => {
+            assert_eq!(
+                *player, P0,
+                "the echo choice belongs to the tapping player (= controller here)"
+            );
+            assert_eq!(
+                options.len(),
+                2,
+                "the choice must offer exactly the two produced types; got {options:?}"
+            );
+            assert!(
+                options.contains(&ManaType::Green) && options.contains(&ManaType::Blue),
+                "the choice must offer Green and Blue; got {options:?}"
+            );
+        }
+        other => panic!("expected a SingleColor echo choice, got {other:?}"),
+    }
+
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Green),
+            count: 1,
+        })
+        .expect("answering Green must succeed");
+    // Base {G}{U} + exactly one bonus {G}: reverting the choice contract
+    // yields base {G}{U} + bonus {G}{U} (green 2, blue 2) with no prompt.
+    assert_eq!(
+        count(&runner, P0, ManaType::Green),
+        2,
+        "base {{G}} + exactly one chosen bonus {{G}}"
+    );
+    assert_eq!(
+        count(&runner, P0, ManaType::Blue),
+        1,
+        "no unchosen bonus {{U}} may be deposited"
+    );
+}
+
+/// Sibling control: a single-type tap with the same delayed trigger live
+/// resolves inline with no prompt (CR 106.5 — single option auto-picks) and
+/// deposits base + exactly one bonus. Guards the common basic-land case
+/// against the new prompt machinery.
+#[test]
+fn selesnya_echo_from_single_type_tap_has_no_prompt_and_adds_one() {
+    let (mut runner, _, forest) = runner_with_selesnya_live();
+    let idx = mana_ability_index(&runner, forest);
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: forest,
+            ability_index: idx,
+        })
+        .expect("tapping the Forest must succeed");
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "a single-type echo must not prompt; got {:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(
+        count(&runner, P0, ManaType::Green),
+        2,
+        "base {{G}} + exactly one bonus {{G}} with no prompt"
+    );
+}
+
+/// Tapper-routing sibling (Mana Flare class — explicit-recipient echo body):
+/// P1 taps P1's own chamber while Mana Flare lives. The choice must go to
+/// the TAPPER (P1, via TriggeringPlayer), not the Flare controller, and the
+/// answer must land exactly one bonus mana in P1's pool with P0 untouched.
+/// Covers the `handle_choose_mana_effect` recipient half of the contract.
+#[test]
+fn mana_flare_echo_routes_choice_and_bonus_to_tapper() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario
+        .add_enchantment_from_oracle(P0, "Mana Flare", MANA_FLARE_ORACLE)
+        .id();
+    let chamber_p0 = scenario
+        .add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE)
+        .id();
+    let chamber_p1 = scenario
+        .add_land_from_oracle(P1, "Simic Growth Chamber", CHAMBER_ORACLE)
+        .id();
+    let mut runner = scenario.build();
+    let _ = chamber_p0;
+
+    // Hand priority to P1 (active player P0 passes with an empty stack).
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P0 passing priority must succeed");
+    assert_eq!(
+        runner.state().priority_player,
+        P1,
+        "P1 must hold priority to tap its own land"
+    );
+
+    let idx = mana_ability_index(&runner, chamber_p1);
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: chamber_p1,
+            ability_index: idx,
+        })
+        .expect("P1 tapping its own chamber must succeed");
+
+    // Base {G}{U} in P1's pool, choice pending FOR P1 with both options.
+    assert_eq!(count(&runner, P1, ManaType::Green), 1);
+    assert_eq!(count(&runner, P1, ManaType::Blue), 1);
+    // The echo trigger sits on the stack (gate-false bodies are not
+    // inline-resolvable); pass priority to resolve it into the choice.
+    assert_eq!(
+        runner.state().stack.len(),
+        1,
+        "the Mana Flare echo must be stacked, not silently resolved"
+    );
+    for _ in 0..4 {
+        if matches!(
+            &runner.state().waiting_for,
+            WaitingFor::ChooseManaColor { .. }
+        ) {
+            break;
+        }
+        runner
+            .act(GameAction::PassPriority)
+            .expect("passing priority to resolve the echo must succeed");
+    }
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseManaColor {
+            player,
+            choice: ManaChoicePrompt::SingleColor { options },
+            ..
+        } => {
+            assert_eq!(
+                *player, P1,
+                "the echo choice belongs to the tapper P1, not the Flare controller P0"
+            );
+            assert_eq!(options.len(), 2);
+            assert!(options.contains(&ManaType::Green) && options.contains(&ManaType::Blue));
+        }
+        other => panic!("expected a SingleColor echo choice for P1, got {other:?}"),
+    }
+
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Blue),
+            count: 1,
+        })
+        .expect("P1 answering Blue must succeed");
+    // Reverting the recipient half misroutes the bonus to P0; reverting the
+    // count half deposits two Blue. Both flips are caught here.
+    assert_eq!(count(&runner, P1, ManaType::Green), 1, "base {{G}} only");
+    assert_eq!(
+        count(&runner, P1, ManaType::Blue),
+        2,
+        "base {{U}} + exactly one chosen bonus {{U}}"
+    );
+    assert_eq!(count(&runner, P0, ManaType::Green), 0, "P0 gains nothing");
+    assert_eq!(count(&runner, P0, ManaType::Blue), 0, "P0 gains nothing");
+}

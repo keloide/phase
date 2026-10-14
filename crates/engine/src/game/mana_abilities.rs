@@ -319,6 +319,16 @@ pub fn is_renewable_mana_ability(ability_def: &AbilityDefinition) -> bool {
 /// not widened here: the parser strict-fails an activation trigger whose
 /// untargeted body could add mana (`could_be_triggered_mana_ability_body`), so
 /// no supported trigger needs inline routing from it. No printed card uses it.
+///
+/// A mana-echo body ("add one mana of any type that land produced") resolving
+/// from a multi-type tap event additionally fails this gate (CR 608.2d): the
+/// Oracle asks for exactly ONE of the produced types, so the resolving player
+/// must choose — a choice is a resolution interaction, and a body that needs
+/// one cannot resolve stack-skipped any more than a targeted body can. The
+/// disqualified shape routes to the stack, where the shared
+/// `mana_choice_prompt` authority surfaces the SingleColor choice. A
+/// single-type (or typeless) event still qualifies: the resolver yields exactly
+/// the one produced mana with no choice to make.
 pub fn is_triggered_mana_ability(
     ability: &ResolvedAbility,
     trigger_event: Option<&GameEvent>,
@@ -346,7 +356,47 @@ pub fn is_triggered_mana_ability(
                 | GameEvent::ManaAbilityProduced { .. }
                 | GameEvent::ManaAdded { .. }
         )
-    )
+    ) && !echo_body_owes_type_choice(ability, trigger_event)
+}
+
+/// CR 608.2d + CR 106.12a: distinct mana types carried by a tap/production
+/// event, in stable order; empty for any other event shape. Single authority
+/// for the choice question shared by the inline gate above and the
+/// `mana_choice_prompt` arm below, so inline routing and stack prompting
+/// cannot drift on what counts as multi-type.
+fn echo_distinct_types(event: &GameEvent) -> Vec<ManaType> {
+    let produced = match event {
+        GameEvent::TappedForMana { produced, .. }
+        | GameEvent::ManaAbilityProduced { produced, .. } => produced,
+        _ => return Vec::new(),
+    };
+    let mut distinct: Vec<ManaType> = produced
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    distinct.sort();
+    distinct
+}
+
+/// CR 608.2d: true when `ability`'s root effect is a mana-echo production
+/// ("add one mana of any type that land produced") and the firing event
+/// carries more than one distinct type.
+fn echo_body_owes_type_choice(
+    ability: &ResolvedAbility,
+    trigger_event: Option<&GameEvent>,
+) -> bool {
+    if !matches!(
+        &ability.effect,
+        Effect::Mana {
+            produced: ManaProduction::TriggerEventManaType,
+            ..
+        }
+    ) {
+        return false;
+    }
+    trigger_event.is_some_and(|event| echo_distinct_types(event).len() > 1)
 }
 
 /// CR 605.1b + CR 605.4a: the **resolver-facing** counterpart of
@@ -1314,6 +1364,31 @@ pub(crate) fn mana_choice_prompt(
                     .len();
             if count > 0 {
                 Some(ManaChoicePrompt::AnyCombination { count, options })
+            } else {
+                None
+            }
+        }
+        // CR 608.2d + CR 106.12a: mana-echo bodies ("add one mana of any type
+        // that land produced" — Mirari's Wake, Selesnya Loft Gardens) read
+        // their type from the triggering tap event. A single resolution can
+        // produce several types at once (Simic Growth Chamber's {G}{U}), and
+        // the Oracle asks for exactly ONE of them, so the resolving player
+        // must choose when the event carries more than one distinct type.
+        // With 0 or 1 distinct types the resolver handles it without a
+        // prompt (CR 106.5: empty → no mana; single auto-picks — the common
+        // basic-land case stays prompt-free). Options come from the shared
+        // `echo_distinct_types` authority so the prompt agrees with the
+        // inline gate above on what counts as multi-type. Activation-time
+        // calls (whose effect can never be an echo production — no printed
+        // activated ability has this shape) see no tap event and stay silent.
+        ManaProduction::TriggerEventManaType => {
+            let options = state
+                .current_trigger_event
+                .as_ref()
+                .map(echo_distinct_types)
+                .unwrap_or_default();
+            if options.len() > 1 {
+                Some(ManaChoicePrompt::SingleColor { options })
             } else {
                 None
             }

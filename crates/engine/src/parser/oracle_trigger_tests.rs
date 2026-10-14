@@ -14581,6 +14581,87 @@ fn molten_tide_delayed_trigger_you_tap_mountain_for_mana() {
 }
 
 #[test]
+fn selesnya_loft_gardens_chaos_delayed_echo_is_taps_for_mana() {
+    // CR 603.7b + CR 106.12a: Selesnya Loft Gardens' chaos ability creates an
+    // until-end-of-turn delayed trigger over the shared you-tap actor ("you
+    // tap a land for mana" — same arm as Molten Tide). Its body is the
+    // mana-echo production ("add one mana of any type that land produced"),
+    // which the choice contract resolves to exactly one chosen mana at
+    // runtime; the parser pins the shape here so the runtime regression in
+    // `selesnya_loft_gardens_mixed_mana_choice.rs` cannot pass on a fallback.
+    // Reverting the you-tap arm reproduces `TriggerMode::Unknown` inside.
+    let parsed = parse_oracle_text(
+        "If an effect would create one or more tokens, it creates twice that many of those tokens instead.\nIf an effect would put one or more counters on a permanent, it puts twice that many of those counters on that permanent instead.\nWhenever chaos ensues, until end of turn, whenever you tap a land for mana, add one mana of any type that land produced.",
+        "Selesnya Loft Gardens",
+        &[],
+        &["Plane".to_string()],
+        &[],
+    );
+    let trigger = parsed
+        .triggers
+        .iter()
+        .find(|t| t.mode == TriggerMode::ChaosEnsues)
+        .expect("Selesnya must parse a ChaosEnsues trigger");
+    let delayed = trigger
+        .execute
+        .as_ref()
+        .expect("chaos trigger must carry its delayed-creation body");
+    let Effect::CreateDelayedTrigger {
+        condition: DelayedTriggerCondition::WheneverEvent { trigger: inner, .. },
+        effect,
+        ..
+    } = &*delayed.effect
+    else {
+        panic!(
+            "expected WheneverEvent delayed trigger, got {:?}",
+            delayed.effect
+        );
+    };
+    assert_eq!(inner.mode, TriggerMode::TapsForMana);
+    assert!(
+        !matches!(inner.mode, TriggerMode::Unknown(_)),
+        "inner trigger must not be Unknown (Unknown has no matcher and never fires)"
+    );
+    match &inner.valid_card {
+        Some(TargetFilter::Typed(tf)) => {
+            assert!(
+                tf.type_filters.contains(&TypeFilter::Land),
+                "valid_card must filter on Land, got {:?}",
+                tf.type_filters
+            );
+            assert_eq!(
+                tf.controller,
+                Some(ControllerRef::You),
+                "\"you tap\" imposes a You controller constraint on the tapped land"
+            );
+        }
+        other => panic!("expected Typed Land filter, got {other:?}"),
+    }
+    assert_eq!(
+        inner.valid_target,
+        Some(TargetFilter::Controller),
+        "\"you tap\" binds the tapper to the trigger source's controller"
+    );
+    assert!(
+        matches!(
+            &*effect.effect,
+            Effect::Mana {
+                produced: ManaProduction::TriggerEventManaType,
+                target: None,
+                ..
+            }
+        ),
+        "inner effect must be subjectless mana-echo production, got {:?}",
+        effect.effect
+    );
+    assert_eq!(
+        delayed.duration,
+        Some(Duration::UntilEndOfTurn),
+        "outer window is the until-end-of-turn cleanup purge (CR 603.7b)"
+    );
+}
+
+#[test]
 fn trigger_you_tap_land_for_mana_vorinclex_first_half() {
     // CR 603.2 + CR 106.12a: "you tap a land" arm scopes the source filter to
     // ControllerRef::You — the trigger fires only on lands the controller taps.
