@@ -261,9 +261,9 @@ impl fmt::Display for CostPaymentProhibition {
 /// - `Unlimited` — any number of casts per turn from this source (Conduit of Worlds,
 ///   Crucible of Worlds, Omniscience).
 /// - `OncePerTurn` — at most one cast per turn from this source, tracked by the
-///   source's `ObjectId` in the corresponding per-turn used-set. CR 400.7: zone
-///   change creates a new `ObjectId`, so the permission naturally resets when the
-///   source leaves and returns.
+///   source's `ObjectId` in the corresponding per-turn used-set. CR 400.7: the
+///   source's entry ends when it leaves the battlefield
+///   (`zones::apply_zone_exit_cleanup`), so an object that returns has its own.
 /// - `OncePerTurnPerPermanentType` — at most one cast/play per turn from this
 ///   source **for each permanent type** the consumed card has (CR 110.4 lists
 ///   the six permanent types). Tracked by the source's `ObjectId` plus the
@@ -1547,7 +1547,9 @@ pub enum StaticMode {
         who: ProhibitionScope,
     },
     /// CR 604.2 + CR 305.1: Static ability granting permission to play/cast
-    /// matching cards from the graveyards its `pool` names.
+    /// matching cards from the graveyards its `pool` names. A self-referential
+    /// permission's castable zones are its `active_zones`, which may include
+    /// `Exile`.
     GraveyardCastPermission {
         /// CR 601.2a: Per-turn cast frequency. `OncePerTurn` = "once during each of
         /// your turns" (Lurrus, Karador). `Unlimited` = no per-turn cap (Conduit).
