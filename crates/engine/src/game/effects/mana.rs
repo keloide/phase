@@ -194,17 +194,39 @@ pub fn resolve(
     // occurrence live this is byte-for-byte the baseline raw classifier call.
     let is_triggered_mana_inline =
         crate::game::mana_abilities::is_resolving_triggered_mana(state, ability);
-    let mana_choice = (!is_triggered_mana_inline)
-        .then(|| {
-            crate::game::mana_abilities::mana_choice_prompt(
-                &ability.effect,
-                state,
-                ability.source_id,
-                Some(ability),
-                Some(count_ability),
-            )
-        })
-        .flatten();
+    // CR 608.2d: a mana-echo body ("add one mana of any type that land
+    // produced") resolving from a multi-type tap event pauses for exactly one
+    // chosen type even inside immediate (triggered-mana) resolution — the
+    // fixed-point authority pauses for and resumes the choice (whitelisted
+    // below) without a stack entry, so the inline gate must not swallow it.
+    // Single-type echo yields no prompt here and falls through to the normal
+    // gate, resolving with no interaction.
+    let echo_pause = match &ability.effect {
+        Effect::Mana {
+            produced: ManaProduction::TriggerEventManaType,
+            ..
+        } => crate::game::mana_abilities::mana_choice_prompt(
+            &ability.effect,
+            state,
+            ability.source_id,
+            Some(ability),
+            Some(count_ability),
+        ),
+        _ => None,
+    };
+    let mana_choice = echo_pause.or_else(|| {
+        (!is_triggered_mana_inline)
+            .then(|| {
+                crate::game::mana_abilities::mana_choice_prompt(
+                    &ability.effect,
+                    state,
+                    ability.source_id,
+                    Some(ability),
+                    Some(count_ability),
+                )
+            })
+            .flatten()
+    });
     if let Some(choice) = mana_choice {
         // CR 106.4: the player who *chooses* the color is the effect's named
         // recipient — for "that player adds one mana of any color they choose"
@@ -335,6 +357,7 @@ pub fn resolve(
 pub fn handle_choose_mana_effect(
     state: &mut GameState,
     ability: &ResolvedAbility,
+    prompt_player: PlayerId,
     prompt: &ManaChoicePrompt,
     chosen: ManaChoice,
     events: &mut Vec<GameEvent>,
@@ -376,16 +399,14 @@ pub fn handle_choose_mana_effect(
     // controller.
     //
     // CR 106.3 + CR 109.5 (mirrors `resolve` above): a mana-echo production
-    // reads its recipient from the triggering tap event's tapper. This is
-    // behavior-neutral on every reachable input today — a prompted echo always
-    // carries its tap event (the prompt itself was built from it), and on that
-    // event tapper and declared recipient agree (subjectless echo fires only
-    // where tapper == controller; `TriggeringPlayer` echo resolves to the
-    // same tapper) — but the parity is load-bearing: `resolve` above asserts
-    // this completion re-derives its recipient, and without this arm echo
-    // would be the one production where the two structurally diverge. Falls
-    // back to the declared-recipient read when the event is absent so
-    // non-trigger echo resolutions keep their existing behavior.
+    // reads its recipient from the triggering tap event's tapper. The
+    // tapper is latched three ways so suspension cannot lose it: the live
+    // trigger event when still present, the declared-recipient read, and —
+    // as the final backstop — the prompt player carried in
+    // `WaitingFor::ChooseManaColor` (which `resolve` directed to this same
+    // recipient when the choice was offered). On every reachable input the
+    // three agree; the backstop only matters if the event was cleared while
+    // the choice was pending.
     let recipient: Option<PlayerId> = match produced {
         ManaProduction::TriggerEventManaType => state
             .current_trigger_event
@@ -395,7 +416,8 @@ pub fn handle_choose_mana_effect(
                 | GameEvent::ManaAbilityProduced { player_id, .. } => Some(*player_id),
                 _ => None,
             })
-            .or_else(|| mana_effect_recipient(state, ability, target.as_ref())),
+            .or_else(|| mana_effect_recipient(state, ability, target.as_ref()))
+            .or(Some(prompt_player)),
         _ => mana_effect_recipient(state, ability, target.as_ref()),
     };
     let produced_mana = recipient.is_some() && !mana_types.is_empty();
@@ -1397,6 +1419,7 @@ mod tests {
         handle_choose_mana_effect(
             &mut state,
             &ctx_ability,
+            PlayerId(1),
             &prompt,
             ManaChoice::SingleColor(ManaType::Blue),
             &mut events2,
@@ -2188,6 +2211,7 @@ mod tests {
         handle_choose_mana_effect(
             &mut state,
             &pending_effect,
+            PlayerId(0),
             &choice,
             ManaChoice::Combination(vec![ManaType::Red, ManaType::Green]),
             &mut events,
@@ -2223,6 +2247,7 @@ mod tests {
         let result = handle_choose_mana_effect(
             &mut state,
             &pending_effect,
+            PlayerId(0),
             &choice,
             ManaChoice::Combination(vec![ManaType::Black, ManaType::Green]),
             &mut events,

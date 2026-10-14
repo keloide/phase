@@ -321,14 +321,12 @@ pub fn is_renewable_mana_ability(ability_def: &AbilityDefinition) -> bool {
 /// no supported trigger needs inline routing from it. No printed card uses it.
 ///
 /// A mana-echo body ("add one mana of any type that land produced") resolving
-/// from a multi-type tap event additionally fails this gate (CR 608.2d): the
-/// Oracle asks for exactly ONE of the produced types, so the resolving player
-/// must choose — a choice is a resolution interaction, and a body that needs
-/// one cannot resolve stack-skipped any more than a targeted body can. The
-/// disqualified shape routes to the stack, where the shared
-/// `mana_choice_prompt` authority surfaces the SingleColor choice. A
-/// single-type (or typeless) event still qualifies: the resolver yields exactly
-/// the one produced mana with no choice to make.
+/// from a multi-type tap event still qualifies here (CR 605.1b classifies on
+/// targets, event, and mana-adding ability — a choice owed at resolution is
+/// not an exclusion): it resolves inside immediate resolution and pauses for
+/// the SingleColor choice there (CR 608.2d), resumed by the fixed-point
+/// authority without a stack entry. The `echo_distinct_types` helper below is
+/// the single authority both the pause and the prompt read.
 pub fn is_triggered_mana_ability(
     ability: &ResolvedAbility,
     trigger_event: Option<&GameEvent>,
@@ -349,6 +347,10 @@ pub fn is_triggered_mana_ability(
     // (b) CR 106.12a / CR 605.1b: triggered by a `{T}`-cost mana ability
     // resolving and producing mana, or by mana being added. See the doc comment
     // above for the deliberately-unwidened `AbilityActivated { kind: Mana }` axis.
+    // A choice owed at resolution (CR 608.2d mana-echo) does NOT fail this
+    // gate: classification keys on targets, event, and mana-adding ability,
+    // and the fixed-point authority pauses for and resumes the choice without
+    // leaving immediate resolution.
     matches!(
         trigger_event,
         Some(
@@ -356,14 +358,14 @@ pub fn is_triggered_mana_ability(
                 | GameEvent::ManaAbilityProduced { .. }
                 | GameEvent::ManaAdded { .. }
         )
-    ) && !echo_body_owes_type_choice(ability, trigger_event)
+    )
 }
 
 /// CR 608.2d + CR 106.12a: distinct mana types carried by a tap/production
 /// event, in stable order; empty for any other event shape. Single authority
-/// for the choice question shared by the inline gate above and the
-/// `mana_choice_prompt` arm below, so inline routing and stack prompting
-/// cannot drift on what counts as multi-type.
+/// for the pause question shared by `resolve` below and the fixed-point
+/// whitelist contract, so pausing and prompting cannot drift on what counts
+/// as multi-type.
 fn echo_distinct_types(event: &GameEvent) -> Vec<ManaType> {
     let produced = match event {
         GameEvent::TappedForMana { produced, .. }
@@ -382,8 +384,10 @@ fn echo_distinct_types(event: &GameEvent) -> Vec<ManaType> {
 
 /// CR 608.2d: true when `ability`'s root effect is a mana-echo production
 /// ("add one mana of any type that land produced") and the firing event
-/// carries more than one distinct type.
-fn echo_body_owes_type_choice(
+/// carries more than one distinct type. Single authority for the pause
+/// question shared by `resolve`, the Pass-1 skip, and the resolved-marker
+/// guard exemption below.
+pub(crate) fn echo_body_owes_type_choice(
     ability: &ResolvedAbility,
     trigger_event: Option<&GameEvent>,
 ) -> bool {

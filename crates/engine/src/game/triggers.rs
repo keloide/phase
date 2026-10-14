@@ -3090,6 +3090,14 @@ fn collect_matching_triggers_inner(
             // marker so manual `TapLandForMana` taps (still `FromTap`) still
             // fire, and on `is_triggered_mana_ability` so non-mana `TapsForMana`
             // triggers still fire (CR 603.3).
+            //
+            // CR 608.2d exemption: a multi-type mana-echo trigger is never
+            // skipped by this marker — Pass 1 deliberately leaves exactly that
+            // shape unresolved (it owes a SingleColor choice the bare loop
+            // cannot pause for), so skipping it here would drop the trigger
+            // instead of merely de-duplicating it. `echo_body_owes_type_choice`
+            // is the single authority both sites share, so the skip and the
+            // exemption cannot drift apart.
             if matches!(
                 (trig_def.mode.clone(), event),
                 (
@@ -3107,6 +3115,7 @@ fn collect_matching_triggers_inner(
                     }
                 )
             ) && super::mana_abilities::is_triggered_mana_ability(&ability, Some(event))
+                && !super::mana_abilities::echo_body_owes_type_choice(&ability, Some(event))
             {
                 continue;
             }
@@ -3940,6 +3949,18 @@ pub(super) fn resolve_tap_mana_triggers_inline(
             );
         }
         for (definition_ref, ability) in coupled {
+            // CR 608.2d + CR 106.12a: a mana-echo body resolving from a
+            // multi-type tap event owes the player a choice of exactly one
+            // type, and this bare loop has no pause/resume step — resolving
+            // those here would strand the prompt with no continuation (and
+            // cost-payment previews must never prompt). Leave them for the
+            // frame batch: the resolved-marker guard below exempts exactly
+            // this shape from the marker, and the fixed-point authority pauses
+            // for and resumes the choice there. Single-type echo still
+            // resolves here with no choice to make.
+            if super::mana_abilities::echo_body_owes_type_choice(&ability, Some(&tap_event)) {
+                continue;
+            }
             // Look up the color override the auto-tap planner chose for this aura's
             // triggered mana ability. Only non-None for AnyOneColor bonus triggers
             // (Fertile Ground) when called from the auto-tap path; None for manual
@@ -9966,9 +9987,13 @@ fn dispatch_pending_trigger_context_core(
 /// body may pause on (CR 605.4a).
 ///
 /// A triggered-body colour choice and every unless/nested-cost prompt are
-/// deliberately absent: the classifier proved the graph choice-free at
-/// acceptance and rejected every `unless_pay` link, so encountering one is an
-/// invariant failure rather than a wait to serialize generically.
+/// deliberately absent: the classifier proved the graph free of optional /
+/// repeat / replacement pauses at acceptance and rejected every `unless_pay`
+/// link, so encountering one is an invariant failure rather than a wait to
+/// serialize generically. (`ChooseManaColor` is the one listed exception: a
+/// mana-echo body needs no annotation in its graph to owe a type choice — the
+/// choice depends on the firing event's produced set, which only exists at
+/// resolution — so the pause is admitted here and carried by the resume.)
 fn is_accepted_triggered_mana_pause(waiting_for: &WaitingFor) -> bool {
     matches!(
         waiting_for,
@@ -9976,6 +10001,11 @@ fn is_accepted_triggered_mana_pause(waiting_for: &WaitingFor) -> bool {
             | WaitingFor::OpponentMayChoice { .. }
             | WaitingFor::RepeatDecision { .. }
             | WaitingFor::ReplacementChoice { .. }
+            // CR 608.2d: a multi-type mana-echo body pauses for its SingleColor
+            // choice inside immediate resolution (see the echo pre-check in
+            // `effects::mana::resolve`); the fixed-point authority carries and
+            // resumes it like any other whitelisted pause.
+            | WaitingFor::ChooseManaColor { .. }
     )
 }
 

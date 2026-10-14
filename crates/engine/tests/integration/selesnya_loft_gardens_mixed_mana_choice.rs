@@ -23,9 +23,9 @@ use engine::game::triggers::process_triggers;
 use engine::types::ability::Effect;
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
-use engine::types::game_state::{ManaChoice, ManaChoicePrompt, WaitingFor};
+use engine::types::game_state::{CastPaymentMode, ManaChoice, ManaChoicePrompt, WaitingFor};
 use engine::types::identifiers::ObjectId;
-use engine::types::mana::{ManaColor, ManaType};
+use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 
@@ -103,27 +103,14 @@ fn selesnya_echo_from_multitype_tap_offers_one_chosen_mana() {
         .expect("tapping the chamber must succeed");
 
     // The bonus must NOT have resolved silently: base {G}{U} is in the pool
-    // and the choice is pending. The echo trigger sits on the stack
-    // (gate-false bodies are not inline-resolvable); pass priority to
-    // resolve it into the choice.
+    // and the choice is pending. Immediate resolution (CR 605.4a) pauses on
+    // the choice with no stack entry and no priority pass.
     assert_eq!(count(&runner, P0, ManaType::Green), 1);
     assert_eq!(count(&runner, P0, ManaType::Blue), 1);
-    assert_eq!(
-        runner.state().stack.len(),
-        1,
-        "the Selesnya echo must be stacked, not silently resolved"
+    assert!(
+        runner.state().stack.is_empty(),
+        "the Selesnya echo must pause inside immediate resolution, not stack"
     );
-    for _ in 0..4 {
-        if matches!(
-            &runner.state().waiting_for,
-            WaitingFor::ChooseManaColor { .. }
-        ) {
-            break;
-        }
-        runner
-            .act(GameAction::PassPriority)
-            .expect("passing priority to resolve the echo must succeed");
-    }
     match &runner.state().waiting_for {
         WaitingFor::ChooseManaColor {
             player,
@@ -233,26 +220,13 @@ fn mana_flare_echo_routes_choice_and_bonus_to_tapper() {
         .expect("P1 tapping its own chamber must succeed");
 
     // Base {G}{U} in P1's pool, choice pending FOR P1 with both options.
+    // Immediate resolution pauses with no stack entry and no priority pass.
     assert_eq!(count(&runner, P1, ManaType::Green), 1);
     assert_eq!(count(&runner, P1, ManaType::Blue), 1);
-    // The echo trigger sits on the stack (gate-false bodies are not
-    // inline-resolvable); pass priority to resolve it into the choice.
-    assert_eq!(
-        runner.state().stack.len(),
-        1,
-        "the Mana Flare echo must be stacked, not silently resolved"
+    assert!(
+        runner.state().stack.is_empty(),
+        "the Mana Flare echo must pause inside immediate resolution, not stack"
     );
-    for _ in 0..4 {
-        if matches!(
-            &runner.state().waiting_for,
-            WaitingFor::ChooseManaColor { .. }
-        ) {
-            break;
-        }
-        runner
-            .act(GameAction::PassPriority)
-            .expect("passing priority to resolve the echo must succeed");
-    }
     match &runner.state().waiting_for {
         WaitingFor::ChooseManaColor {
             player,
@@ -285,4 +259,99 @@ fn mana_flare_echo_routes_choice_and_bonus_to_tapper() {
     );
     assert_eq!(count(&runner, P0, ManaType::Green), 0, "P0 gains nothing");
     assert_eq!(count(&runner, P0, ManaType::Blue), 0, "P0 gains nothing");
+}
+
+const MIRARI_ORACLE: &str = "Creatures you control get +1/+1.\nWhenever you tap a land for mana, add one mana of any type that land produced.";
+
+/// Cost-payment control: auto-tapping Simic Growth Chamber to help pay for a
+/// spell while Mirari's Wake lives must pause the payment on the same
+/// SingleColor choice — with no stack entry — and resume payment afterwards.
+/// CR 605.4a keeps the bonus spendable by the thing it resumes into (the
+/// automatic payment finalizer here). Reverting the choice contract deposits
+/// bonus {G}{U} with no prompt; the leftover-pool asserts below catch both
+/// that and any resumption failure (an unresumed payment never puts the spell
+/// on the stack).
+#[test]
+fn mirari_echo_choice_pauses_cost_payment_without_stack() {
+    fn floating_colorless(n: usize) -> Vec<ManaUnit> {
+        (0..n)
+            .map(|_| ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![]))
+            .collect()
+    }
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_enchantment_from_oracle(P0, "Mirari's Wake", MIRARI_ORACLE);
+    scenario.add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE);
+    // Three floating colorless plus the chamber's {G}{U} exactly cover
+    // {3}{G}{U}; the auto-tapper must take the chamber for the colored half.
+    scenario.with_mana_pool(P0, floating_colorless(3));
+    let threat_id = scenario
+        .add_creature_to_hand(P0, "Big Threat", 6, 6)
+        .with_mana_cost(ManaCost::Cost {
+            shards: vec![ManaCostShard::Green, ManaCostShard::Blue],
+            generic: 3,
+        })
+        .id();
+    let mut runner = scenario.build();
+    let threat_card = runner.state().objects[&threat_id].card_id;
+
+    runner
+        .act(GameAction::CastSpell {
+            object_id: threat_id,
+            card_id: threat_card,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("starting the cast must succeed");
+    // Mid-payment: the echo paused with no TRIGGERED entry on the stack (the
+    // one entry present is the spell being cast itself) and no priority pass.
+    assert_eq!(
+        runner.state().stack.len(),
+        1,
+        "only the spell being cast may be on the stack — the echo adds no entry"
+    );
+    assert!(
+        matches!(
+            runner.state().stack.back().map(|e| &e.kind),
+            Some(engine::types::game_state::StackEntryKind::Spell { .. })
+        ),
+        "the single stack entry must be the spell being cast"
+    );
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseManaColor {
+            player,
+            choice: ManaChoicePrompt::SingleColor { options },
+            ..
+        } => {
+            assert_eq!(*player, P0, "P0 pays, so P0 chooses");
+            assert_eq!(options.len(), 2);
+            assert!(options.contains(&ManaType::Green) && options.contains(&ManaType::Blue));
+        }
+        other => panic!("expected a SingleColor echo choice mid-payment, got {other:?}"),
+    }
+
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Green),
+            count: 1,
+        })
+        .expect("answering Green must resume payment");
+    // Payment resumed and completed: the spell is on the stack, and exactly
+    // the chosen bonus {G} is left over (3 floating + base {G}{U} + bonus {G}
+    // minus {3}{G}{U}).
+    assert_eq!(
+        runner.state().stack.len(),
+        1,
+        "the paid spell must reach the stack after the choice resumes payment"
+    );
+    assert_eq!(
+        count(&runner, P0, ManaType::Green),
+        1,
+        "exactly the chosen bonus {{G}} remains"
+    );
+    assert_eq!(
+        runner.state().players[P0.0 as usize].mana_pool.total(),
+        1,
+        "nothing else may be left floating"
+    );
 }
