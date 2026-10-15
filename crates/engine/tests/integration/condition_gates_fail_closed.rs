@@ -28,8 +28,9 @@ use engine::game::combat::AttackTarget;
 use engine::game::effects::attach::attach_to;
 use engine::game::scenario::{GameRunner, GameScenario, Outcome, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
-use engine::types::ability::Effect;
+use engine::types::ability::{Effect, TargetRef};
 use engine::types::counter::CounterType;
+use engine::types::events::GameEvent;
 use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
@@ -132,21 +133,35 @@ fn advance_to_declare_blockers(runner: &mut GameRunner) {
     );
 }
 
-/// Bolt the shielded creature; returns the damage marked on it.
-fn bolt_shielded(name: &str, oracle: &str, power: i32, toughness: i32) -> u32 {
+/// Bolt the shielded creature; returns `(outcome, shielded, bolt)`.
+fn bolt_shielded(
+    name: &str,
+    oracle: &str,
+    power: i32,
+    toughness: i32,
+) -> (Outcome, ObjectId, ObjectId) {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let shielded = scenario
         .add_creature(P0, name, power, toughness)
         .from_oracle_text(oracle)
         .id();
-    let bolt = scenario.add_bolt_to_hand(P0);
+    let bolt = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Lightning Bolt",
+            true,
+            "Lightning Bolt deals 3 damage to any target.",
+        )
+        .with_mana_cost(ManaCost::Cost {
+            shards: vec![ManaCostShard::Red],
+            generic: 0,
+        })
+        .id();
+    scenario.with_mana_pool(P0, pool(&[ManaType::Red]));
     let mut runner = scenario.build();
-    runner
-        .cast(bolt)
-        .target_object(shielded)
-        .resolve()
-        .damage_marked(shielded)
+    let outcome = runner.cast(bolt).target_object(shielded).resolve();
+    (outcome, shielded, bolt)
 }
 
 /// What attacks the shielded blocker.
@@ -225,27 +240,57 @@ fn shielded_block_outcome(
 /// scope was dropped and the shield prevented every source).
 #[test]
 fn champion_lancer_prevents_creature_damage_only() {
+    let (outcome, shielded, bolt) = bolt_shielded("Champion Lancer", CHAMPION_LANCER, 3, 3);
+    // CR 120.3e: the instant deals three damage before lethal damage is checked.
+    let damage: Vec<_> = outcome
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::DamageDealt {
+                source_id,
+                target,
+                amount,
+                is_combat,
+                ..
+            } if *target == TargetRef::Object(shielded) => Some((*source_id, *amount, *is_combat)),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        bolt_shielded("Champion Lancer", CHAMPION_LANCER, 3, 3),
-        3,
+        damage,
+        vec![(bolt, 3, false)],
         "an instant is not a creature — its damage is not prevented"
     );
-    // Positive control: a creature's combat damage is prevented.
-    assert_eq!(
-        shielded_blocks("Champion Lancer", CHAMPION_LANCER, 3, 3, Attacker::Creature),
-        0
-    );
+    outcome.assert_stack_size(0);
+    outcome.assert_zone(&[bolt], Zone::Graveyard);
+    // CR 704.5g + CR 400.7: lethal damage destroys the 3/3; its new graveyard
+    // object does not retain the damage marked on the battlefield permanent.
+    outcome.assert_zone(&[shielded], Zone::Graveyard);
+    assert_eq!(outcome.damage_marked(shielded), 0);
+
+    // CR 615.1a + CR 615.6: creature combat damage is prevented and never dealt.
+    let (outcome, shielded) =
+        shielded_block_outcome("Champion Lancer", CHAMPION_LANCER, 3, 3, Attacker::Creature);
+    outcome.assert_zone(&[shielded], Zone::Battlefield);
+    assert_eq!(outcome.damage_marked(shielded), 0);
+    assert!(outcome.events().iter().any(|event| matches!(
+        event,
+        GameEvent::DamagePrevented { target, amount: 2, .. }
+            if *target == TargetRef::Object(shielded)
+    )));
 }
 
 /// CR 615.1a: Argothian Treefolk's shield prevents only damage from artifact
 /// sources (red at the candidate: the unscoped shield prevented the Bolt).
 #[test]
 fn argothian_treefolk_prevents_artifact_source_damage_only() {
+    let (outcome, treefolk, _) = bolt_shielded("Argothian Treefolk", ARGOTHIAN_TREEFOLK, 3, 5);
     assert_eq!(
-        bolt_shielded("Argothian Treefolk", ARGOTHIAN_TREEFOLK, 3, 5),
+        outcome.damage_marked(treefolk),
         3,
         "a red instant is not an artifact source"
     );
+    outcome.assert_zone(&[treefolk], Zone::Battlefield);
     // Positive control: an artifact creature's combat damage is prevented.
     assert_eq!(
         shielded_blocks(

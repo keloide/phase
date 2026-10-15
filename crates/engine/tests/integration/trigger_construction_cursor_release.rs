@@ -19,11 +19,13 @@ use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
 use engine::types::counter::CounterType;
-use engine::types::game_state::{AutoPassRequest, CastPaymentMode, GameState, WaitingFor};
+use engine::types::events::GameEvent;
+use engine::types::game_state::{AutoPassRequest, GameState, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
+use engine::types::zones::Zone;
 
 const P2: PlayerId = PlayerId(2);
 
@@ -279,7 +281,7 @@ fn modal_no_target_completion_releases_cursors() {
     );
 }
 
-/// A4: CR 601.2d — the division is announced after the targets, so while
+/// A4: CR 603.3d + CR 601.2d — the division is announced after the targets, so while
 /// `DistributeAmong` is outstanding construction has not ended and the cursors
 /// stay live; they are released only once the division is submitted.
 #[test]
@@ -308,27 +310,19 @@ fn divided_trigger_releases_cursors_only_after_division() {
         pool.add(ManaUnit::new(ManaType::Red, ObjectId(0), false, vec![]));
     }
 
-    let card_id = runner.state().objects[&titan].card_id;
-    runner
-        .act(GameAction::CastSpell {
-            object_id: titan,
-            card_id,
-            targets: vec![],
-            payment_mode: CastPaymentMode::Auto,
-        })
-        .expect("casting Inferno Titan is legal");
+    let mut cast = runner.cast(titan).commit();
     for _ in 0..20 {
-        if !matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
+        if !matches!(cast.state().waiting_for, WaitingFor::Priority { .. }) {
             break;
         }
-        runner.pass_both_players();
+        cast.act(GameAction::PassPriority)
+            .expect("passing priority is legal");
     }
-    let WaitingFor::TriggerTargetSelection { target_slots, .. } =
-        runner.state().waiting_for.clone()
+    let WaitingFor::TriggerTargetSelection { target_slots, .. } = cast.state().waiting_for.clone()
     else {
         panic!(
             "Inferno Titan's ETB trigger pauses for targets, got {:?}",
-            runner.state().waiting_for
+            cast.state().waiting_for
         );
     };
     let chosen = vec![
@@ -342,35 +336,65 @@ fn divided_trigger_releases_cursors_only_after_division() {
             "{target:?} is offered by the engine"
         );
     }
-    runner
-        .act(GameAction::SelectTargets { targets: chosen })
+    cast.act(GameAction::SelectTargets { targets: chosen })
         .expect("three distinct offered targets are legal");
 
-    let WaitingFor::DistributeAmong { targets, .. } = runner.state().waiting_for.clone() else {
+    let WaitingFor::DistributeAmong { targets, .. } = cast.state().waiting_for.clone() else {
         panic!(
             "three targets require a division, got {:?}",
-            runner.state().waiting_for
+            cast.state().waiting_for
         );
     };
     // Preservation: construction is still in progress mid-division.
     assert!(
-        !runner.state().pending_trigger_event_batch.is_empty(),
+        !cast.state().pending_trigger_event_batch.is_empty(),
         "the carrier stays live while the division is outstanding"
     );
-    assert!(runner.state().pending_trigger_entry.is_some());
+    assert!(cast.state().pending_trigger_entry.is_some());
 
-    runner
-        .act(GameAction::DistributeAmong {
-            distribution: targets.into_iter().map(|target| (target, 1)).collect(),
-        })
-        .expect("a 1/1/1 division is legal");
+    cast.act(GameAction::DistributeAmong {
+        distribution: targets.into_iter().map(|target| (target, 1)).collect(),
+    })
+    .expect("a 1/1/1 division is legal");
 
-    assert_construction_released(runner.state());
+    assert_construction_released(cast.state());
 
-    runner.advance_until_stack_empty();
-    assert_eq!(runner.state().objects[&bear].damage_marked, 1);
-    assert_eq!(runner.state().objects[&elf].damage_marked, 1);
-    assert_eq!(runner.life(P1), 19);
+    let outcome = cast.resolve();
+    for recipient in [
+        TargetRef::Object(bear),
+        TargetRef::Object(elf),
+        TargetRef::Player(P1),
+    ] {
+        let damage: Vec<_> = outcome
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target,
+                    amount,
+                    is_combat,
+                    ..
+                } if *target == recipient => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            damage,
+            vec![(titan, 1, false)],
+            "each target takes exactly its assigned portion"
+        );
+    }
+    outcome.assert_stack_size(0);
+    // CR 120.3e: Bear survives its assigned point with one damage marked.
+    outcome.assert_zone(&[titan, bear], Zone::Battlefield);
+    assert_eq!(outcome.damage_marked(bear), 1);
+    // CR 704.5g + CR 400.7: Elf dies from its lethal share; its new graveyard
+    // object does not retain the battlefield permanent's marked damage.
+    outcome.assert_zone(&[elf], Zone::Graveyard);
+    assert_eq!(outcome.damage_marked(elf), 0);
+    // CR 120.3a: the point dealt to P1 causes one life to be lost.
+    outcome.assert_life_delta(P1, -1);
 }
 
 /// A5: once Bristly Bill's construction completes and releases its carrier,

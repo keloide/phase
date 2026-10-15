@@ -1837,7 +1837,8 @@ mod concretizer_seams {
 
     /// Drives priority, "you may" prompts and trigger ordering until the engine asks
     /// for anything else, answering a trigger target with `target`.
-    fn drive(runner: &mut GameRunner, target: Option<TargetRef>) {
+    fn drive(runner: &mut GameRunner, target: Option<TargetRef>) -> Vec<GameEvent> {
+        let mut events = Vec::new();
         for _ in 0..40 {
             let action = match &runner.state().waiting_for {
                 WaitingFor::Priority { .. } if !runner.state().stack.is_empty() => {
@@ -1854,9 +1855,9 @@ mod concretizer_seams {
                         target: target.clone(),
                     }
                 }
-                _ => return,
+                _ => return events,
             };
-            runner.act(action).unwrap();
+            events.extend(runner.act(action).unwrap().events);
         }
         panic!("drive did not settle: {:?}", runner.state().waiting_for);
     }
@@ -3229,12 +3230,38 @@ mod concretizer_seams {
         let mut runner = scenario.build();
         relayer(runner.state_mut());
         attack_with(&mut runner, attacker);
-        drive(&mut runner, None);
+        let events = drive(&mut runner, None);
         let st = runner.state();
         assert_ne!(grothama, attacker);
+        // CR 201.5a + CR 701.14a + CR 701.14d: the host fights its specific
+        // granting Grothama, each dealing its own power as noncombat damage.
+        let damage: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target,
+                    amount,
+                    is_combat,
+                    ..
+                } => Some((*source_id, target.clone(), *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            damage,
+            vec![
+                (attacker, TargetRef::Object(grothama), 3, false),
+                (grothama, TargetRef::Object(attacker), 10, false),
+            ]
+        );
+        assert!(st.stack.is_empty());
+        assert_eq!(st.objects[&grothama].zone, Zone::Battlefield);
         assert_eq!(st.objects[&grothama].damage_marked, 3);
-        assert_eq!(st.objects[&attacker].damage_marked, 10);
+        // CR 704.5g + CR 400.7: the lethally damaged attacker becomes a new
+        // graveyard object without the battlefield permanent's marked damage.
         assert_eq!(st.objects[&attacker].zone, Zone::Graveyard);
+        assert_eq!(st.objects[&attacker].damage_marked, 0);
     }
 
     /// CR 115.10a + CR 608.2c + CR 608.2d: the untargeted attach choice is made while the
