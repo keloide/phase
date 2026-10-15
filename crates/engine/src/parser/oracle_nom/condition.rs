@@ -21428,7 +21428,7 @@ mod tests {
         }
     }
 
-    /// CR 120.2b + CR 603.4: Grim Repriser's verbatim gate — "an opponent has
+    /// CR 120.2b + CR 602.5b: Grim Repriser's verbatim gate — "an opponent has
     /// been dealt noncombat damage this turn". The "has been dealt" tense plus
     /// the `noncombat` qualifier must compose to `NoncombatOnly` at threshold 1.
     #[test]
