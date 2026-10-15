@@ -355,3 +355,75 @@ fn mirari_echo_choice_pauses_cost_payment_without_stack() {
         "nothing else may be left floating"
     );
 }
+
+const MANABARBS_ORACLE: &str =
+    "Whenever a player taps a land for mana, this enchantment deals 1 damage to that player.";
+
+/// Convergence control (CR 117.5 + CR 605.4a): after the echo choice resumes
+/// a settled direct-Priority activation, ordinary deferred observers from the
+/// same tap must reach the stack before priority returns. Board: Mirari's
+/// Wake + Simic Growth Chamber + Manabarbs (non-mana ordinary observer).
+/// P0 taps the chamber, answers the echo choice, and the Manabarbs damage
+/// trigger must then sit on the stack; resolving it costs P0 1 life.
+/// Reverting the settled-priority convergence leaves the stack empty here
+/// (Manabarbs stranded until some later action).
+#[test]
+fn mirari_echo_choice_drains_ordinary_observer_before_priority() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_enchantment_from_oracle(P0, "Mirari's Wake", MIRARI_ORACLE);
+    let chamber = scenario
+        .add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE)
+        .id();
+    scenario.add_enchantment_from_oracle(P0, "Manabarbs", MANABARBS_ORACLE);
+    let mut runner = scenario.build();
+    let life_before = runner.state().players[P0.0 as usize].life;
+
+    let idx = mana_ability_index(&runner, chamber);
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: chamber,
+            ability_index: idx,
+        })
+        .expect("tapping the chamber must succeed");
+    // Base {G}{U} in the pool; echo choice pending with no triggered entry.
+    assert_eq!(count(&runner, P0, ManaType::Green), 1);
+    assert_eq!(count(&runner, P0, ManaType::Blue), 1);
+    assert!(
+        runner.state().stack.is_empty(),
+        "the echo choice must not use the stack"
+    );
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Green),
+            count: 1,
+        })
+        .expect("answering Green must succeed");
+
+    // The bonus resolved AND the ordinary observer drained: base {G}{U} +
+    // bonus {G} in the pool, Manabarbs' damage trigger on the stack.
+    assert_eq!(
+        count(&runner, P0, ManaType::Green),
+        2,
+        "base {{G}} + chosen bonus {{G}}"
+    );
+    assert_eq!(count(&runner, P0, ManaType::Blue), 1, "base {{U}} only");
+    assert_eq!(
+        runner.state().stack.len(),
+        1,
+        "Manabarbs must reach the stack before returned priority"
+    );
+
+    // Resolve it: both players pass, P0 takes 1 from its own tap.
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P0 passing must succeed");
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P1 passing must succeed");
+    assert_eq!(
+        runner.state().players[P0.0 as usize].life,
+        life_before - 1,
+        "Manabarbs deals 1 to the tapping player"
+    );
+}
