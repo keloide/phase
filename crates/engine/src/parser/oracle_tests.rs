@@ -11231,7 +11231,7 @@ fn parses_activate_only_if_condition_and_only_once_each_turn() {
     );
 }
 
-/// CR 602.5b: Grim Repriser's graveyard return — "Activate only if an opponent
+/// CR 602.5: Grim Repriser's graveyard return — "Activate only if an opponent
 /// has been dealt noncombat damage this turn" must parse to a RequiresCondition
 /// gate over `DamageDealtThisTurn { NoncombatOnly } >= 1`, with no
 /// Unimplemented clause. The bare "was dealt damage" form (Skarrgan Pit-Skulk's

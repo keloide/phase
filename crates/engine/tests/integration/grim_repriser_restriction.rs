@@ -5,7 +5,7 @@
 //! `ActivationRestriction::RequiresCondition` (`can_activate_ability_now`), not
 //! just that it parses.
 //!
-//! CR 602.5b governs the gate: the "activate only if" condition must hold for
+//! CR 602.5 governs the gate: the "activate only if" condition must hold for
 //! the activation to be legal. CR 120.2b classifies Shock's damage as noncombat
 //! (it opens the gate) and combat-step damage as combat (it must not).
 
@@ -88,7 +88,7 @@ fn add_shock(scenario: &mut GameScenario) -> ObjectId {
         .id()
 }
 
-/// CR 602.5b: with no damage dealt this turn, the activation must be refused
+/// CR 602.5: with no damage dealt this turn, the activation must be refused
 /// and the card must stay in the graveyard. {B}{R} is funded, so the refusal is
 /// attributable to the condition gate, not the cost.
 #[test]
@@ -116,7 +116,7 @@ fn grim_activation_refused_with_no_damage() {
     assert_eq!(runner.state().objects[&grim].zone, Zone::Graveyard);
 }
 
-/// CR 602.5b + CR 120.2b: after Shock deals noncombat damage to an opponent
+/// CR 602.5 + CR 120.2b: after Shock deals noncombat damage to an opponent
 /// through the real cast pipeline, the gate opens and the activation resolves,
 /// returning Grim Repriser with a finality counter.
 #[test]
@@ -169,6 +169,21 @@ fn grim_activation_refused_after_combat_damage_only() {
     // opponent in the combat damage step.
     run_combat(&mut runner, vec![attacker], vec![]);
     hand_priority(&mut runner, P0);
+    // CR 106.4: phase and step boundaries empty ordinary floating mana.
+    // Refill after combat so cost availability cannot mask a restriction bug.
+    for mana in floating(&[ManaType::Black, ManaType::Red]) {
+        runner
+            .state_mut()
+            .add_mana_to_pool(P0, mana)
+            .expect("P0 must exist for the combat-control mana refill");
+    }
+    for color in [ManaType::Black, ManaType::Red] {
+        assert_eq!(
+            runner.state().players[0].mana_pool.count_color(color),
+            1,
+            "the return cost must be funded after combat"
+        );
+    }
     assert_eq!(
         runner.life(P1),
         18,
