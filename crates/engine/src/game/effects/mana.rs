@@ -339,15 +339,9 @@ pub fn resolve(
         // CR 106.3 + CR 109.5: "add one mana of any type that land produced" —
         // the bonus mana goes to the player who tapped the land (the
         // `TappedForMana` event's `player_id`), not the trigger's controller.
-        ManaProduction::TriggerEventManaType => state
-            .current_trigger_event
-            .as_ref()
-            .and_then(|event| match event {
-                GameEvent::TappedForMana { player_id, .. }
-                | GameEvent::ManaAbilityProduced { player_id, .. } => Some(*player_id),
-                _ => None,
-            })
-            .unwrap_or(ability.controller),
+        // Read through the single `echo_recipient` authority shared with the
+        // prompt origin and the choice completion below.
+        ManaProduction::TriggerEventManaType => echo_recipient(state).unwrap_or(ability.controller),
         // CR 106.4: A subject-led mana clause routes the mana to the named
         // player ("the active player adds {C}{C} …" on a Phase trigger, "that
         // player adds one mana of any color" on Spectral Searchlight).
@@ -450,12 +444,12 @@ pub fn handle_choose_mana_effect(
     // reads its recipient from the triggering tap event's tapper through the
     // single `echo_recipient` authority — the same authority the prompt
     // origin uses — so prompt direction and deposit agree even for unscoped
-    // echo observing another player's tap. The tapper is latched three ways
+    // echo observing another player's tap. The tapper is latched two ways
     // so suspension cannot lose it: the live trigger event when still
     // present, and — as the final backstop — the prompt player carried in
     // `WaitingFor::ChooseManaColor` (which `resolve` directed to this same
     // recipient when the choice was offered). On every reachable input the
-    // three agree; the backstop only matters if the event was cleared while
+    // two agree; the backstop only matters if the event was cleared while
     // the choice was pending.
     let recipient: Option<PlayerId> = match produced {
         ManaProduction::TriggerEventManaType => echo_recipient(state).or(Some(prompt_player)),
