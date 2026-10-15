@@ -12745,12 +12745,32 @@ fn apply_non_priority_pass_action(
                             )
                         },
                     )?;
-                    if let super::triggers::TriggeredManaReadiness::Resumed { wait, .. } =
-                        super::triggers::finish_accepted_triggered_mana_action(
-                            state, &mut events, events_before,
-                        )?
-                    {
+                    if let super::triggers::TriggeredManaReadiness::Resumed {
+                        wait,
+                        settled_direct_priority_root,
+                    } = super::triggers::finish_accepted_triggered_mana_action(
+                        state, &mut events, events_before,
+                    )? {
+                        // CR 117.5 + CR 605.4a (mirrors the opponent-may arm):
+                        // this reducer arm returns its `ActionResult` directly,
+                        // so the ordinary epilogue never runs. A resumed
+                        // direct `Priority` root with no live owner must
+                        // converge here, or ordinary deferred triggers from
+                        // its own settled batch (e.g. a Manabarbs observer on
+                        // the same tap) would sit undrained when priority
+                        // returns. Every other owner keeps its queue and
+                        // returns the frame's wait unchanged.
                         let wait = *wait;
+                        let wait = if settled_direct_priority_root {
+                            engine_priority::run_post_action_pipeline_from_settled_priority(
+                                state,
+                                &mut events,
+                                events_before,
+                                &wait,
+                            )?
+                        } else {
+                            wait
+                        };
                         state.waiting_for = wait.clone();
                         return Ok(ActionResult::applied(events, wait));
                     }

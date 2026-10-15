@@ -11654,6 +11654,205 @@ mod tests {
         assert_eq!(state.players[1].mana_pool.count_color(ManaType::Red), 1);
     }
 
+    /// CR 106.4 + CR 109.5 + CR 608.2d: an UNSCOPED echo production (subjectless
+    /// body, no actor scoping — `target: None`) observing another player's
+    /// multi-type tap directs both the choice and the deposit to the TAPPER,
+    /// never the source controller. Mirrors the single-type sibling above into
+    /// the choosing shape: P0's source observes P1 tapping a {G}{U} land, P1
+    /// (not P0) is prompted, and answering Green lands exactly one Green in
+    /// P1's pool with P0 untouched. Reverting the prompt origin to the
+    /// controller default fails the prompt-player assert; reverting the
+    /// completion recipient fails the pool asserts.
+    #[test]
+    fn unscoped_echo_multitype_tap_prompts_and_pays_tapper() {
+        let mut state = GameState::new_two_player(42);
+        let land = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Opponent Dual".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&land)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Land);
+
+        let echo_source = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Unscoped Echo".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&echo_source)
+            .unwrap()
+            .trigger_definitions
+            .push(
+                crate::types::ability::TriggerDefinition::new(TriggerMode::TapsForMana)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Database,
+                        Effect::Mana {
+                            produced: ManaProduction::TriggerEventManaType,
+                            restrictions: vec![],
+                            grants: vec![],
+                            expiry: None,
+                            target: None,
+                        },
+                    ))
+                    .valid_card(TargetFilter::Typed(TypedFilter::land())),
+            );
+
+        crate::game::triggers::process_triggers(
+            &mut state,
+            &[GameEvent::TappedForMana {
+                player_id: PlayerId(1),
+                source_id: land,
+                produced: vec![ManaType::Green, ManaType::Blue],
+                tap_state: crate::types::events::ManaTapState::FromTap,
+            }],
+        );
+
+        // The choice must go to the tapper P1 with both produced options —
+        // never to the source controller P0.
+        let pending_effect = match &state.waiting_for {
+            WaitingFor::ChooseManaColor {
+                player,
+                choice: ManaChoicePrompt::SingleColor { options },
+                context: ManaChoiceContext::ResolvingEffect(pending_effect),
+            } => {
+                assert_eq!(
+                    *player,
+                    PlayerId(1),
+                    "unscoped echo choice belongs to tapper P1, not controller P0"
+                );
+                assert_eq!(options.len(), 2);
+                assert!(options.contains(&ManaType::Green) && options.contains(&ManaType::Blue));
+                (**pending_effect).clone()
+            }
+            other => panic!("expected a SingleColor echo choice for P1, got {other:?}"),
+        };
+        crate::game::effects::mana::handle_choose_mana_effect(
+            &mut state,
+            &pending_effect,
+            PlayerId(1),
+            &ManaChoicePrompt::SingleColor {
+                options: vec![ManaType::Green, ManaType::Blue],
+            },
+            ManaChoice::SingleColor(ManaType::Green),
+            &mut vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            state.players[1].mana_pool.count_color(ManaType::Green),
+            1,
+            "exactly the chosen bonus Green lands in the tapper's pool"
+        );
+        assert_eq!(
+            state.players[1].mana_pool.count_color(ManaType::Blue),
+            0,
+            "the unchosen type is not deposited"
+        );
+        assert_eq!(state.players[0].mana_pool.total(), 0, "P0 gains nothing");
+    }
+
+    /// Same unscoped contract across suspension: when the firing event is gone
+    /// by completion time, the latched prompt player — not the controller
+    /// default — receives the deposit. Reverting the backstop misroutes the
+    /// bonus to P0.
+    #[test]
+    fn unscoped_echo_completion_without_live_event_uses_prompt_player() {
+        let mut state = GameState::new_two_player(42);
+        let land = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Opponent Dual".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&land)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Land);
+
+        let echo_source = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Unscoped Echo".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&echo_source)
+            .unwrap()
+            .trigger_definitions
+            .push(
+                crate::types::ability::TriggerDefinition::new(TriggerMode::TapsForMana)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Database,
+                        Effect::Mana {
+                            produced: ManaProduction::TriggerEventManaType,
+                            restrictions: vec![],
+                            grants: vec![],
+                            expiry: None,
+                            target: None,
+                        },
+                    ))
+                    .valid_card(TargetFilter::Typed(TypedFilter::land())),
+            );
+
+        crate::game::triggers::process_triggers(
+            &mut state,
+            &[GameEvent::TappedForMana {
+                player_id: PlayerId(1),
+                source_id: land,
+                produced: vec![ManaType::Green, ManaType::Blue],
+                tap_state: crate::types::events::ManaTapState::FromTap,
+            }],
+        );
+        let pending_effect = match &state.waiting_for {
+            WaitingFor::ChooseManaColor {
+                player,
+                context: ManaChoiceContext::ResolvingEffect(pending_effect),
+                ..
+            } => {
+                assert_eq!(*player, PlayerId(1));
+                (**pending_effect).clone()
+            }
+            other => panic!("expected a SingleColor echo choice for P1, got {other:?}"),
+        };
+        // The firing event is cleared while the choice is pending (ordinary
+        // stack resolution clears trigger-event context); the latched prompt
+        // player must still receive the deposit.
+        state.current_trigger_event = None;
+        crate::game::effects::mana::handle_choose_mana_effect(
+            &mut state,
+            &pending_effect,
+            PlayerId(1),
+            &ManaChoicePrompt::SingleColor {
+                options: vec![ManaType::Green, ManaType::Blue],
+            },
+            ManaChoice::SingleColor(ManaType::Blue),
+            &mut vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            state.players[1].mana_pool.count_color(ManaType::Blue),
+            1,
+            "latched prompt player P1 receives the bonus without a live event"
+        );
+        assert_eq!(state.players[0].mana_pool.total(), 0, "P0 gains nothing");
+    }
+
     #[test]
     fn taps_for_mana_cant_untap_trigger_binds_triggering_land() {
         let mut state = GameState::new_two_player(42);

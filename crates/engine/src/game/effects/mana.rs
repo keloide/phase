@@ -144,6 +144,25 @@ fn count_scoped_ability(
 /// Shared by the immediate `resolve` path, the color-choice prompt, and the
 /// prompt-completion path so all three agree on the recipient. No quantity is
 /// inspected anywhere — the role states the answer.
+/// CR 106.4 + CR 109.5: single recipient authority for mana-echo production
+/// ("add one mana of any type that land produced"), shared by the prompt
+/// origin in `resolve` and the `handle_choose_mana_effect` completion. The
+/// recipient is the tap event's tapper — never the controller default — so
+/// an unscoped echo observing another player's tap directs the choice and
+/// the deposit to the tapping player (the sibling single-type contract:
+/// P0 source observing P1's tap credits P1, not P0). `None` when no tap
+/// event is live; echo produces no mana then anyway (CR 106.5).
+fn echo_recipient(state: &GameState) -> Option<PlayerId> {
+    state
+        .current_trigger_event
+        .as_ref()
+        .and_then(|event| match event {
+            GameEvent::TappedForMana { player_id, .. }
+            | GameEvent::ManaAbilityProduced { player_id, .. } => Some(*player_id),
+            _ => None,
+        })
+}
+
 fn mana_effect_recipient(
     state: &GameState,
     ability: &ResolvedAbility,
@@ -247,7 +266,20 @@ pub fn resolve(
         // CR 608.2b: when the declared recipient's chosen target is no longer
         // legal, no player adds this mana, so there is no color for anyone to
         // choose — the mana part of the effect simply does nothing.
-        let Some(prompt_player) = mana_effect_recipient(state, ability, mana_role.as_ref()) else {
+        //
+        // CR 106.4 + CR 109.5: a mana-echo production reads its recipient from
+        // the tap event's tapper through the single `echo_recipient` authority
+        // below — the same authority completion uses — so prompt direction and
+        // deposit agree even for unscoped echo observing another player's tap
+        // (where the controller default would misdirect the choice).
+        let prompt_recipient = match &ability.effect {
+            Effect::Mana {
+                produced: ManaProduction::TriggerEventManaType,
+                ..
+            } => echo_recipient(state),
+            _ => mana_effect_recipient(state, ability, mana_role.as_ref()),
+        };
+        let Some(prompt_player) = prompt_recipient else {
             return Ok(());
         };
         state.waiting_for = WaitingFor::ChooseManaColor {
@@ -415,25 +447,18 @@ pub fn handle_choose_mana_effect(
     // controller.
     //
     // CR 106.3 + CR 109.5 (mirrors `resolve` above): a mana-echo production
-    // reads its recipient from the triggering tap event's tapper. The
-    // tapper is latched three ways so suspension cannot lose it: the live
-    // trigger event when still present, the declared-recipient read, and —
-    // as the final backstop — the prompt player carried in
+    // reads its recipient from the triggering tap event's tapper through the
+    // single `echo_recipient` authority — the same authority the prompt
+    // origin uses — so prompt direction and deposit agree even for unscoped
+    // echo observing another player's tap. The tapper is latched three ways
+    // so suspension cannot lose it: the live trigger event when still
+    // present, and — as the final backstop — the prompt player carried in
     // `WaitingFor::ChooseManaColor` (which `resolve` directed to this same
     // recipient when the choice was offered). On every reachable input the
     // three agree; the backstop only matters if the event was cleared while
     // the choice was pending.
     let recipient: Option<PlayerId> = match produced {
-        ManaProduction::TriggerEventManaType => state
-            .current_trigger_event
-            .as_ref()
-            .and_then(|event| match event {
-                GameEvent::TappedForMana { player_id, .. }
-                | GameEvent::ManaAbilityProduced { player_id, .. } => Some(*player_id),
-                _ => None,
-            })
-            .or_else(|| mana_effect_recipient(state, ability, target.as_ref()))
-            .or(Some(prompt_player)),
+        ManaProduction::TriggerEventManaType => echo_recipient(state).or(Some(prompt_player)),
         _ => mana_effect_recipient(state, ability, target.as_ref()),
     };
     let produced_mana = recipient.is_some() && !mana_types.is_empty();
