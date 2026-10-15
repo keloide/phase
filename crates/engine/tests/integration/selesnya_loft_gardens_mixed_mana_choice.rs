@@ -20,7 +20,10 @@
 
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::triggers::process_triggers;
-use engine::types::ability::Effect;
+use engine::types::ability::{
+    AbilityDefinition, AbilityKind, Effect, ManaProduction, TargetFilter, TriggerDefinition,
+    TypedFilter,
+};
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
 use engine::types::game_state::{CastPaymentMode, ManaChoice, ManaChoicePrompt, WaitingFor};
@@ -28,6 +31,7 @@ use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
+use engine::types::triggers::TriggerMode;
 
 const SELESNYA_ORACLE: &str = "If an effect would create one or more tokens, it creates twice that many of those tokens instead.\nIf an effect would put one or more counters on a permanent, it puts twice that many of those counters on that permanent instead.\nWhenever chaos ensues, until end of turn, whenever you tap a land for mana, add one mana of any type that land produced.";
 const CHAMBER_ORACLE: &str =
@@ -425,5 +429,109 @@ fn mirari_echo_choice_drains_ordinary_observer_before_priority() {
         runner.state().players[P0.0 as usize].life,
         life_before - 1,
         "Manabarbs deals 1 to the tapping player"
+    );
+}
+
+/// Public-pipeline unscoped proof: a hand-installed UNSCOPED echo trigger
+/// (P0-controlled source, subjectless body, no actor scoping — the fixture
+/// shape from the `unscoped_echo_*` unit tests, which call the reducer
+/// directly) driven through REAL `ActivateAbility` + `ChooseManaColor`
+/// actions. P1 taps P1's own chamber; the choice must go to tapper P1 with
+/// both options; answering Blue lands exactly one Blue in P1's pool with P0
+/// untouched; completion returns to Priority with no stranded state. This
+/// covers the reducer's latched-player threading and frame completion that
+/// direct-call tests bypass. Reverting the prompt origin to the controller
+/// default flips the prompt-player assert; reverting completion flips the
+/// pool asserts.
+#[test]
+fn unscoped_echo_public_pipeline_prompts_and_pays_tapper() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let echo_source = scenario.add_creature(P0, "Echo Source", 1, 1).id();
+    let chamber_p1 = scenario
+        .add_land_from_oracle(P1, "Simic Growth Chamber", CHAMBER_ORACLE)
+        .id();
+    let mut runner = scenario.build();
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&echo_source)
+        .expect("echo source must exist")
+        .trigger_definitions
+        .push(
+            TriggerDefinition::new(TriggerMode::TapsForMana)
+                .execute(AbilityDefinition::new(
+                    AbilityKind::Database,
+                    Effect::Mana {
+                        produced: ManaProduction::TriggerEventManaType,
+                        restrictions: vec![],
+                        grants: vec![],
+                        expiry: None,
+                        target: None,
+                    },
+                ))
+                .valid_card(TargetFilter::Typed(TypedFilter::land())),
+        );
+
+    // Hand priority to P1 (active player P0 passes with an empty stack).
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P0 passing priority must succeed");
+    assert_eq!(
+        runner.state().priority_player,
+        P1,
+        "P1 must hold priority to tap its own land"
+    );
+
+    let idx = mana_ability_index(&runner, chamber_p1);
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: chamber_p1,
+            ability_index: idx,
+        })
+        .expect("P1 tapping its own chamber must succeed");
+
+    // Base {G}{U} in P1's pool; the choice pends for TAPPER P1 (not the
+    // P0 source controller) with no stack entry and no priority pass.
+    assert_eq!(count(&runner, P1, ManaType::Green), 1);
+    assert_eq!(count(&runner, P1, ManaType::Blue), 1);
+    assert!(
+        runner.state().stack.is_empty(),
+        "the echo choice must pause inside immediate resolution, not stack"
+    );
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseManaColor {
+            player,
+            choice: ManaChoicePrompt::SingleColor { options },
+            ..
+        } => {
+            assert_eq!(
+                *player, P1,
+                "unscoped echo choice belongs to tapper P1, not controller P0"
+            );
+            assert_eq!(options.len(), 2);
+            assert!(options.contains(&ManaType::Green) && options.contains(&ManaType::Blue));
+        }
+        other => panic!("expected a SingleColor echo choice for P1, got {other:?}"),
+    }
+
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Blue),
+            count: 1,
+        })
+        .expect("P1 answering Blue must succeed");
+    assert_eq!(count(&runner, P1, ManaType::Green), 1, "base {{G}} only");
+    assert_eq!(
+        count(&runner, P1, ManaType::Blue),
+        2,
+        "base {{U}} + exactly one chosen bonus {{U}}"
+    );
+    assert_eq!(count(&runner, P0, ManaType::Green), 0, "P0 gains nothing");
+    assert_eq!(count(&runner, P0, ManaType::Blue), 0, "P0 gains nothing");
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "completion returns to Priority with no stranded state, got {:?}",
+        runner.state().waiting_for
     );
 }
