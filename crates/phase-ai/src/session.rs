@@ -54,6 +54,11 @@ pub struct AiSession {
     /// `turn_number` + `active_player`, so stale entries from prior turns
     /// never match — no explicit invalidation needed.
     pub projection_cache: Arc<RwLock<HashMap<ProjectionKey, Arc<Projection>>>>,
+    /// Deadline observed at the latest `get_or_project` call entry:
+    /// `None` means no call, `Some(None)` means an unbounded argument, and
+    /// `Some(Some(remaining))` records a finite argument's remaining budget.
+    #[cfg(test)]
+    pub(crate) last_projection_deadline_remaining: Arc<RwLock<Option<Option<std::time::Duration>>>>,
     /// Reducer-certified fetch selection armed only after this session chose
     /// its corresponding root activation. The engine token contains no clone
     /// or hidden terminal state and rejects any stale prompt.
@@ -143,6 +148,8 @@ impl AiSession {
             synergy,
             memory: Arc::default(),
             projection_cache: Arc::default(),
+            #[cfg(test)]
+            last_projection_deadline_remaining: Arc::default(),
             prospective_fetch_prompt: Arc::default(),
             prospective_fetch_follow_up: Arc::default(),
             prospective_fetch_proposals: Arc::default(),
@@ -247,6 +254,15 @@ impl AiSession {
         horizon: ProjectionHorizon,
         deadline: Deadline,
     ) -> Result<Arc<Projection>, BailReason> {
+        #[cfg(test)]
+        {
+            let remaining = deadline.remaining();
+            *self
+                .last_projection_deadline_remaining
+                .write()
+                .expect("projection deadline observation lock must not be poisoned") =
+                Some(remaining);
+        }
         let key = ProjectionKey {
             state_hash: quick_state_hash(base),
             turn_number: base.turn_number,
