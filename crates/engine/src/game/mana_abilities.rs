@@ -368,7 +368,7 @@ pub fn is_triggered_mana_ability(
 /// for the pause question shared by `resolve` below and the fixed-point
 /// whitelist contract, so pausing and prompting cannot drift on what counts
 /// as multi-type.
-fn echo_distinct_types(event: &GameEvent) -> Vec<ManaType> {
+pub(crate) fn echo_distinct_types(event: &GameEvent) -> Vec<ManaType> {
     let produced = match event {
         GameEvent::TappedForMana { produced, .. }
         | GameEvent::ManaAbilityProduced { produced, .. } => produced,

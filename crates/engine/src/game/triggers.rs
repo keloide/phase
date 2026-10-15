@@ -3952,6 +3952,84 @@ pub(super) fn resolve_tap_mana_triggers_inline(
     state.pending_taps_for_mana_overrides.clear();
 }
 
+/// CR 605.4a + CR 608.2d + CR 601.2g-h: preview helper for the synchronous
+/// payment affordability probe. Returns the distinct bonus types owed by
+/// skipped multi-type mana-echo triggers in `events` (the Pass-1 `continue`
+/// shape), deduplicated across the batch. Only unrestricted echo bodies
+/// (`restrictions` empty) are reported: a restricted bonus cannot generally
+/// fund an arbitrary spell cost, so previews must not count it. Previews stay
+/// choice-free (no prompt); the live payment pauses for a real choice via the
+/// typed fixed-point continuation instead.
+pub(crate) fn mixed_echo_bonus_options_for_preview(
+    state: &mut GameState,
+    events: &[GameEvent],
+) -> Vec<crate::types::mana::ManaType> {
+    super::layers::flush_layers(state);
+    super::trigger_index::ensure_ready(state);
+    let mut options: Vec<crate::types::mana::ManaType> = Vec::new();
+    for tap_event in events.iter().filter(|ev| {
+        matches!(
+            ev,
+            GameEvent::TappedForMana { .. } | GameEvent::ManaAbilityProduced { .. }
+        )
+    }) {
+        let candidates = super::trigger_index::candidates_for_event(state, tap_event);
+        for (_, ability) in
+            inline_tap_mana_trigger_abilities(state, tap_event, candidates.iter().copied())
+        {
+            if !super::mana_abilities::echo_body_owes_type_choice(&ability, Some(tap_event)) {
+                continue;
+            }
+            // CR 106.4: only an unrestricted echo bonus is generally spendable;
+            // a restricted one (e.g. spend-only-on-X) cannot be counted
+            // optimistically for an arbitrary cost.
+            let restricted = match &ability.effect {
+                Effect::Mana { restrictions, .. } => !restrictions.is_empty(),
+                _ => true,
+            };
+            if restricted {
+                continue;
+            }
+            for mana_type in super::mana_abilities::echo_distinct_types(tap_event) {
+                if !options.contains(&mana_type) {
+                    options.push(mana_type);
+                }
+            }
+        }
+    }
+    options.sort();
+    options
+}
+
+/// CR 605.4a + CR 608.2d + CR 601.2g-h: pre-spend echo pause for synchronous
+/// auto-tap payment. Drives the typed fixed-point batch over `raw_batch`
+/// (the auto-tap tap events, already marked `FromTapTriggersResolved` with the
+/// mixed-echo exemption) with `outer_resume` as its continuation, but — unlike
+/// [`collect_mana_action_trigger_batch`] — does NOT defer ordinary contexts.
+/// Ordinary observers (Manabarbs, etc.) stay for the owner's post-payment
+/// boundary, which forms one release group over every micro-frame; deferring
+/// them here would let the later post-action scan rediscover the same
+/// `FromTapTriggersResolved` occurrences (ordinary is not marker-skipped) and
+/// double-queue. Accepted echo work runs immediately; a `ChooseManaColor`
+/// pause returns `Some` with `pending_triggered_mana_resume` stored, otherwise
+/// `None`.
+pub(crate) fn pause_for_skipped_echo_before_spend(
+    state: &mut GameState,
+    raw_batch: &[GameEvent],
+    outer_resume: crate::types::game_state::ManaTriggerFixedPointResume,
+) -> Option<WaitingFor> {
+    let events_out = &mut Vec::new();
+    let seed = collect_triggers_for_batch(state, raw_batch);
+    let collected = collect_pending_and_delayed_triggers_for_batch(
+        state,
+        seed,
+        raw_batch,
+        DelayedTriggerEventScope::Any,
+    );
+    let (accepted, _ordinary) = partition_collected_mana_frame_contexts(state, collected.contexts);
+    run_accepted_triggered_mana_fixed_point(state, accepted, outer_resume, events_out)
+}
+
 /// CR 101.4 + CR 603.3b: APNAP rank of `controller` for trigger ordering — its
 /// index in the living turn order from the active player (0 = active player,
 /// then each non-active player in turn order). This is the primary key the

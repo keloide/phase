@@ -360,6 +360,106 @@ fn mirari_echo_choice_pauses_cost_payment_without_stack() {
     );
 }
 
+/// Bonus-dependent payment discriminator (CR 605.4a + CR 601.2g-h): with only
+/// TWO floating colorless, the chamber's base {G}{U} is insufficient for
+/// {3}{G}{U} (2 + 2 = 4 < 5) — exactly one chosen echo bonus is REQUIRED.
+/// Before the pre-spend continuation fix this cast failed "Cannot pay mana
+/// cost" (the skipping inline loop omitted the bonus from affordability and
+/// the pre-spend pool). Now the live payment pauses for the real choice
+/// BEFORE spending and resumes this same payment with the bonus.
+/// Reverting the pre-spend suspension fails at `CastSpell` (no prompt);
+/// reverting the preview accounting fails castability (not offered).
+#[test]
+fn mirari_echo_bonus_required_for_payment_with_two_floating() {
+    fn floating_colorless(n: usize) -> Vec<ManaUnit> {
+        (0..n)
+            .map(|_| ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![]))
+            .collect()
+    }
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_enchantment_from_oracle(P0, "Mirari's Wake", MIRARI_ORACLE);
+    scenario.add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE);
+    // Two floating colorless + base {G}{U} = 4 mana; {3}{G}{U} needs 5.
+    // The auto-tapper must take the chamber, then pause for the echo choice;
+    // the chosen bonus funds the third generic.
+    scenario.with_mana_pool(P0, floating_colorless(2));
+    let threat_id = scenario
+        .add_creature_to_hand(P0, "Big Threat", 6, 6)
+        .with_mana_cost(ManaCost::Cost {
+            shards: vec![ManaCostShard::Green, ManaCostShard::Blue],
+            generic: 3,
+        })
+        .id();
+    let mut runner = scenario.build();
+    let threat_card = runner.state().objects[&threat_id].card_id;
+
+    runner
+        .act(GameAction::CastSpell {
+            object_id: threat_id,
+            card_id: threat_card,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("cast with bonus-dependent payment must pause for choice, not fail Cannot pay");
+    // Pre-spend pause: the spell being cast is already on the stack (601.2a),
+    // the echo adds no TRIGGERED entry, and the choice is required (no
+    // Priority, no auto-completion).
+    assert_eq!(
+        runner.state().stack.len(),
+        1,
+        "only the spell being cast may be on the stack — the echo adds no entry"
+    );
+    assert!(
+        matches!(
+            runner.state().stack.back().map(|e| &e.kind),
+            Some(engine::types::game_state::StackEntryKind::Spell { .. })
+        ),
+        "the single stack entry must be the spell being cast"
+    );
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseManaColor {
+            player,
+            choice: ManaChoicePrompt::SingleColor { options },
+            ..
+        } => {
+            assert_eq!(*player, P0, "P0 pays, so P0 chooses");
+            assert_eq!(options.len(), 2);
+            assert!(options.contains(&ManaType::Green) && options.contains(&ManaType::Blue));
+        }
+        other => panic!("expected a required SingleColor echo choice pre-spend, got {other:?}"),
+    }
+
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Green),
+            count: 1,
+        })
+        .expect("answering Green must resume payment");
+    // Payment resumed and completed: the spell is on the stack, the pool is
+    // empty (2 floating + base {G}{U} + bonus {G} minus {3}{G}{U} = 0), and
+    // the continuation is terminal Priority with no stranded carrier.
+    assert_eq!(
+        runner.state().stack.len(),
+        1,
+        "the paid spell must reach the stack after the choice resumes payment"
+    );
+    assert_eq!(
+        runner.state().players[P0.0 as usize].mana_pool.total(),
+        0,
+        "bonus-dependent payment spends everything (2C + GU + bonus G for 3GU)"
+    );
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "completion returns to Priority with no stranded choice, got {:?}",
+        runner.state().waiting_for
+    );
+    assert!(
+        runner.state().pending_cast.is_none(),
+        "the outer payment must complete (no stranded pending cast)"
+    );
+}
+
 const MANABARBS_ORACLE: &str =
     "Whenever a player taps a land for mana, this enchantment deals 1 damage to that player.";
 
