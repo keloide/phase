@@ -20,8 +20,11 @@
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::triggers::{drain_order_triggers_with_identity, process_triggers};
 use engine::game::zones::{create_object, move_to_zone};
+use engine::types::ability::EffectKind;
 use engine::types::card_type::CoreType;
 use engine::types::counter::CounterType;
+use engine::types::events::GameEvent;
+use engine::types::game_state::{GameAction, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
@@ -175,4 +178,121 @@ fn ents_fury_own_target_gets_counter_then_pump() {
         Zone::Battlefield,
         "the countered and pumped 6/6 target survives fighting a 3/3"
     );
+}
+
+/// Synthetic accepted grammar, not a printed card: the decline consequence
+/// and its own target's property are independent gates.
+/// CR 118.12 + CR 608.2h: accepting the draw defeats the decline gate even
+/// when the target qualifies; declining still requires current target power.
+#[test]
+fn synthetic_optional_decline_preserves_target_power_gate_when_cast() {
+    const ORACLE: &str = "Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter on target creature you control if its power is 4 or greater.";
+    for (power, accept, expected_counters) in
+        [(4, true, 0), (4, false, 1), (3, true, 0), (3, false, 0)]
+    {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let ally = scenario.add_creature(P0, "Chosen Ally", power, 6).id();
+        let decoy = scenario.add_creature(P0, "Unchosen Ally", 6, 6).id();
+        let spell = scenario
+            .add_spell_to_hand_from_oracle(P0, "Synthetic Decline Grammar", false, ORACLE)
+            .with_mana_cost(engine::types::mana::ManaCost::zero())
+            .id();
+        for _ in 0..4 {
+            scenario.add_card_to_library_top(P1, "Forest");
+        }
+        let mut runner = scenario.build();
+        let source = &runner.state().objects[&spell];
+        assert!(
+            source.power.is_none(),
+            "the spell cannot satisfy the power gate"
+        );
+        assert!(
+            std::iter::successors(source.abilities.first(), |def| def.sub_ability.as_deref())
+                .all(|def| def.effect.unimplemented_description().is_none()),
+            "the complete synthetic chain must parse"
+        );
+
+        let mut committed = runner.cast(spell).target_object(ally).commit();
+        // Keep the harness's cast baseline and observe the actual decision
+        // boundary before its ordinary accept/decline driver answers it.
+        for _ in 0..4 {
+            if !matches!(committed.state().waiting_for, WaitingFor::Priority { .. }) {
+                break;
+            }
+            committed
+                .act(GameAction::PassPriority)
+                .expect("pass to optional draw");
+        }
+        assert!(
+            matches!(committed.state().waiting_for,
+            WaitingFor::OptionalEffectChoice { player: P1, source_id, .. } if source_id == spell),
+            "P1 must actually receive this spell's optional draw decision: {:?}",
+            committed.state().waiting_for
+        );
+        let outcome = if accept {
+            committed.accept_optional().resolve()
+        } else {
+            committed.decline_optional().resolve()
+        };
+        outcome.assert_hand_drawn(P1, i64::from(accept));
+        outcome.assert_zone(&[spell], Zone::Graveyard);
+        assert!(outcome.state().stack.is_empty());
+        assert!(matches!(
+            outcome.final_waiting_for(),
+            WaitingFor::Priority { .. }
+        ));
+        assert_eq!(
+            outcome.state().objects[&ally]
+                .counters
+                .get(&CounterType::Plus1Plus1)
+                .copied()
+                .unwrap_or(0),
+            expected_counters,
+            "power {power}, accept {accept}: both independent gates must hold"
+        );
+        assert_eq!(
+            outcome.state().objects[&decoy]
+                .counters
+                .get(&CounterType::Plus1Plus1)
+                .copied()
+                .unwrap_or(0),
+            0,
+            "only the announced target can receive the counter"
+        );
+        assert_eq!(outcome.events().iter().filter(|event| matches!(event,
+            GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: P0 } if *object_id == ally)).count(),
+            expected_counters as usize, "the counter event must name the target and spell controller");
+        assert_eq!(outcome.events().iter().filter(|event| matches!(event,
+            GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == spell)).count(),
+            expected_counters as usize, "the counter instruction must resolve from this spell");
+        if accept {
+            assert!(outcome.events().iter().any(|event| matches!(event,
+                GameEvent::EffectResolved { kind: EffectKind::Draw, source_id, .. } if *source_id == spell)),
+                "accepted draw must resolve from the same spell");
+        }
+    }
+}
+
+/// CR 608.2c + CR 608.2h: Ent's independent pump and fight still run when its
+/// own target starts below the counter threshold.
+#[test]
+fn ents_fury_below_threshold_still_pumps_and_fights() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let ally = scenario.add_creature(P0, "Small Ally", 3, 5).id();
+    let enemy = scenario.add_creature(P1, "Fight Enemy", 2, 4).id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Ent's Fury", false, ENTS_FURY_ORACLE)
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+    let outcome = runner.cast(spell).target_objects(&[ally, enemy]).resolve();
+    assert_eq!(p1p1(&runner, ally), 0);
+    assert_eq!(outcome.state().objects[&ally].power, Some(4));
+    outcome.assert_zone(&[ally], Zone::Battlefield);
+    // CR 701.14a + CR 704.5g: the pumped ally's four damage kills the 2/4.
+    outcome.assert_zone(&[enemy, spell], Zone::Graveyard);
+    assert!(outcome.events().iter().any(|event| matches!(event,
+        GameEvent::EffectResolved { kind: EffectKind::Fight, source_id, .. } if *source_id == spell)));
 }

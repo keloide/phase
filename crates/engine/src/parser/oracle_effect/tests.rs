@@ -4,7 +4,10 @@ use super::lower::{
 };
 use super::sequence::split_clause_sequence;
 use super::*;
+use crate::game::ability_utils::build_resolved_from_def_with_targets;
 use crate::game::coverage::card_face_has_unimplemented_parts;
+use crate::game::effects::evaluate_condition;
+use crate::game::scenario::{GameScenario, P0, P1};
 use crate::game::triggers::extract_target_filter_from_effect;
 use crate::parser::oracle_ir::ast::EntersUnderSpec;
 use crate::parser::oracle_ir::diagnostic::{ClauseGap, ClauseGapKind};
@@ -61405,6 +61408,506 @@ fn ents_fury_condition_reads_own_target_power() {
     assert!(
         matches!(fight.effect.as_ref(), Effect::Fight { subject: TargetFilter::SelfRef, target: TargetFilter::Typed(filter) } if filter.controller == Some(ControllerRef::Opponent))
     );
+}
+
+fn property_gate_members(condition: &AbilityCondition) -> Vec<&AbilityCondition> {
+    match condition {
+        AbilityCondition::And { conditions } => {
+            conditions.iter().flat_map(property_gate_members).collect()
+        }
+        other => vec![other],
+    }
+}
+
+fn own_power_gate(scope: ObjectScope) -> AbilityCondition {
+    AbilityCondition::QuantityCheck {
+        lhs: QuantityExpr::Ref {
+            qty: QuantityRef::Power { scope },
+        },
+        comparator: Comparator::GE,
+        rhs: QuantityExpr::Fixed { value: 4 },
+    }
+}
+
+/// Synthetic accepted grammar, not a printed card. Each consequence dispatcher
+/// must compose with the captured property instead of replacing either gate.
+/// CR 118.12 + CR 608.2c + CR 608.2h: the outcome and current target property
+/// independently govern the same instruction.
+#[test]
+fn synthetic_property_suffix_preserves_consequence_and_scope_gates() {
+    let decline = AbilityCondition::Not {
+        condition: Box::new(AbilityCondition::effect_performed()),
+    };
+    let mandatory_decline = AbilityCondition::Not {
+        condition: Box::new(AbilityCondition::current_scope_succeeded()),
+    };
+    let scope = AbilityCondition::ScopedPlayerMatches {
+        filter: PlayerFilter::Opponent,
+    };
+    for (prefix, expected, performed_for_success, mandatory) in [
+        (
+            "For each opponent who doesn't, ",
+            vec![decline.clone()],
+            false,
+            false,
+        ),
+        (
+            "For each opponent who can't, ",
+            vec![mandatory_decline.clone()],
+            false,
+            true,
+        ),
+        (
+            "Each opponent who doesn't ",
+            vec![decline.clone()],
+            false,
+            false,
+        ),
+        (
+            "Each opponent who can't ",
+            vec![mandatory_decline, scope.clone()],
+            false,
+            true,
+        ),
+        (
+            "Each opponent who does ",
+            vec![AbilityCondition::effect_performed(), scope],
+            true,
+            false,
+        ),
+    ] {
+        let text = format!("Each opponent may draw a card. {prefix}put a +1/+1 counter on target creature you control if its power is 4 or greater.");
+        let mut context = ParseContext::default();
+        let ir = parse_effect_chain_ir(&text, AbilityKind::Spell, &mut context);
+        assert!(
+            ir.clauses.iter().all(|clause| clause
+                .parsed
+                .effect
+                .unimplemented_description()
+                .is_none()),
+            "{ir:#?}"
+        );
+        let owner = ir
+            .clauses
+            .iter()
+            .find(|clause| matches!(clause.parsed.effect, Effect::PutCounter { .. }))
+            .expect("recognized own counter instruction");
+        assert_eq!(owner.target_reads, TargetReadOrigin::OwnAnnouncement);
+        let condition = owner.condition.as_ref().expect("composed counter gate");
+        let members = property_gate_members(condition);
+        assert!(
+            members.contains(&&own_power_gate(ObjectScope::Target)),
+            "{prefix}: {condition:?}"
+        );
+        for gate in &expected {
+            assert!(
+                members.contains(&gate),
+                "{prefix} must retain {gate:?}: {condition:?}"
+            );
+        }
+        assert_eq!(
+            members.len(),
+            expected.len() + 1,
+            "no obsolete property conjunct: {condition:?}"
+        );
+        let lowered = lower_effect_chain_ir(&ir);
+        let counter = std::iter::successors(Some(&lowered), |def| def.sub_ability.as_deref())
+            .find(|def| matches!(def.effect.as_ref(), Effect::PutCounter { .. }))
+            .expect("lowered counter");
+        assert_eq!(counter.condition.as_ref(), Some(condition));
+        let mut scenario = GameScenario::new();
+        let source = scenario.add_creature(P0, "Low Source", 0, 1).id();
+        let strong = scenario.add_creature(P0, "Strong Target", 4, 5).id();
+        let weak = scenario.add_creature(P0, "Weak Target", 3, 5).id();
+        let mut runner = scenario.build();
+        for (target, performed, scoped_player, success) in [
+            (strong, performed_for_success, P1, true),
+            (weak, performed_for_success, P1, false),
+            (strong, !performed_for_success, P1, false),
+        ] {
+            let mut ability = build_resolved_from_def_with_targets(
+                counter,
+                source,
+                P0,
+                vec![TargetRef::Object(target)],
+            );
+            ability.context.optional_effect_performed = performed;
+            ability.scoped_player = Some(scoped_player);
+            ability.original_controller = Some(P0);
+            runner.state_mut().cost_payment_failed_flag = mandatory && !performed;
+            assert_eq!(
+                evaluate_condition(condition, runner.state(), &ability),
+                success,
+                "{prefix}, target {target:?}, performed {performed}"
+            );
+        }
+        if expected
+            .iter()
+            .any(|gate| matches!(gate, AbilityCondition::ScopedPlayerMatches { .. }))
+        {
+            let mut ability = build_resolved_from_def_with_targets(
+                counter,
+                source,
+                P0,
+                vec![TargetRef::Object(strong)],
+            );
+            ability.context.optional_effect_performed = performed_for_success;
+            ability.scoped_player = Some(P0);
+            ability.original_controller = Some(P0);
+            runner.state_mut().cost_payment_failed_flag = mandatory && !performed_for_success;
+            assert!(
+                !evaluate_condition(condition, runner.state(), &ability),
+                "the consequence's opponent scope must remain independent"
+            );
+        }
+    }
+}
+
+/// SHAPE only: propagate a rebound typed outer gate across an already parsed
+/// compound body. This does not claim a textual reflexive suffix reaches the
+/// recursive property dispatch. CR 603.12 + CR 608.2c: retain the existing
+/// reflexive marker and independent guard on every body instruction.
+#[test]
+fn owned_property_outer_guard_propagates_to_each_body_clause_shape() {
+    let mut context = ParseContext::default();
+    let mut ir = parse_effect_chain_ir(
+        "Put a +1/+1 counter on target creature you control, then untap that creature.",
+        AbilityKind::Spell,
+        &mut context,
+    );
+    assert_eq!(ir.clauses.len(), 2, "{ir:#?}");
+    assert_eq!(
+        ir.clauses[0].target_reads,
+        TargetReadOrigin::OwnAnnouncement
+    );
+    assert!(
+        !clause_announces_own_target(&ir.clauses[1]),
+        "inherited continuation: {ir:#?}"
+    );
+    let captured = own_power_gate(ObjectScope::CostPaidObject);
+    let scope = AbilityCondition::ScopedPlayerMatches {
+        filter: PlayerFilter::Opponent,
+    };
+    let outer = AbilityCondition::WhenYouDo.with_when_you_do_guard(AbilityCondition::And {
+        conditions: vec![captured.clone(), scope.clone()],
+    });
+    let bound = rebind_owned_property_gate(&outer, &captured).expect("one owned outer constituent");
+    for clause in &mut ir.clauses {
+        assert!(
+            clause.parsed.effect.unimplemented_description().is_none(),
+            "{clause:#?}"
+        );
+        apply_outer_condition_to_clause(&bound, clause);
+        let condition = clause
+            .condition
+            .as_ref()
+            .expect("outer guard on every body clause");
+        assert_eq!(
+            property_gate_members(condition),
+            vec![
+                &AbilityCondition::WhenYouDo,
+                &own_power_gate(ObjectScope::Target),
+                &scope,
+            ]
+        );
+    }
+    let lowered = lower_effect_chain_ir(&ir);
+    assert_eq!(lowered.condition, ir.clauses[0].condition);
+    assert_eq!(
+        lowered
+            .sub_ability
+            .as_ref()
+            .expect("untap continuation")
+            .condition,
+        ir.clauses[1].condition
+    );
+}
+
+/// Synthetic typed composition, not a fabricated printed P/T+Tainted Pact
+/// card. Only the owned constituent changes; unrelated guards keep identity.
+/// CR 608.2c + CR 608.2h: all independent gates must remain true at application.
+#[test]
+fn owned_property_rebinding_preserves_nested_scope_name_and_reflexive_guards() {
+    let captured = own_power_gate(ObjectScope::CostPaidObject);
+    let name_gate = AbilityCondition::Not {
+        condition: Box::new(AbilityCondition::TargetSharesNameWithOtherExiledThisWay {
+            target: TargetFilter::ParentTarget,
+        }),
+    };
+    let scope = AbilityCondition::ScopedPlayerMatches {
+        filter: PlayerFilter::Opponent,
+    };
+    let decline = AbilityCondition::Not {
+        condition: Box::new(AbilityCondition::effect_performed()),
+    };
+    let original = AbilityCondition::And {
+        conditions: vec![
+            AbilityCondition::WhenYouDo,
+            AbilityCondition::And {
+                conditions: vec![captured.clone(), scope.clone()],
+            },
+            name_gate.clone(),
+            decline.clone(),
+        ],
+    };
+    let expected = AbilityCondition::And {
+        conditions: vec![
+            AbilityCondition::WhenYouDo,
+            AbilityCondition::And {
+                conditions: vec![own_power_gate(ObjectScope::Target), scope.clone()],
+            },
+            name_gate.clone(),
+            decline.clone(),
+        ],
+    };
+    let bound = rebind_owned_property_gate(&original, &captured).expect("one owned constituent");
+    assert_eq!(
+        bound, expected,
+        "preserve grouping, marker and unrelated gates exactly"
+    );
+    let mut scenario = GameScenario::new();
+    let source = scenario.add_creature(P0, "Low Source", 0, 1).id();
+    let target = scenario.add_creature(P0, "Same Name", 4, 5).id();
+    let duplicate = scenario.add_creature(P1, "Same Name", 1, 1).id();
+    let other_source = scenario.add_creature(P1, "Other Authority", 0, 1).id();
+    let mut runner = scenario.build();
+    let def = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::PutCounter {
+            target: TargetFilter::Typed(TypedFilter::creature()),
+            counter_type: CounterType::Plus1Plus1,
+            count: QuantityExpr::Fixed { value: 1 },
+        },
+    );
+    let mut ability =
+        build_resolved_from_def_with_targets(&def, source, P0, vec![TargetRef::Object(target)]);
+    ability.scoped_player = Some(P1);
+    ability.original_controller = Some(P0);
+    // Marker creation/recheck belongs to the reflexive suites. Evaluate the
+    // independent ordinary guards using the production condition evaluator.
+    let ordinary = AbilityCondition::And {
+        conditions: property_gate_members(&bound)
+            .into_iter()
+            .filter(|gate| !matches!(gate, AbilityCondition::WhenYouDo))
+            .cloned()
+            .collect(),
+    };
+    crate::game::exile_links::push_tracked_by_source(runner.state_mut(), duplicate, other_source);
+    assert!(
+        evaluate_condition(&ordinary, runner.state(), &ability),
+        "a different source's same-name card cannot veto this instruction"
+    );
+    crate::game::exile_links::push_tracked_by_source(runner.state_mut(), duplicate, source);
+    assert!(
+        !evaluate_condition(&ordinary, runner.state(), &ability),
+        "this source's duplicate independently vetoes it"
+    );
+    runner.state_mut().objects.get_mut(&duplicate).unwrap().name = "Different Name".into();
+    assert!(evaluate_condition(&ordinary, runner.state(), &ability));
+    ability.context.optional_effect_performed = true;
+    assert!(!evaluate_condition(&ordinary, runner.state(), &ability));
+    ability.context.optional_effect_performed = false;
+    ability.scoped_player = Some(P0);
+    assert!(!evaluate_condition(&ordinary, runner.state(), &ability));
+    ability.scoped_player = Some(P1);
+    runner.state_mut().objects.get_mut(&target).unwrap().power = Some(3);
+    assert!(!evaluate_condition(&ordinary, runner.state(), &ability));
+    for opaque in [
+        AbilityCondition::Not {
+            condition: Box::new(captured.clone()),
+        },
+        AbilityCondition::Or {
+            conditions: vec![captured.clone(), scope.clone()],
+        },
+        scope,
+    ] {
+        assert!(
+            rebind_owned_property_gate(&opaque, &captured).is_none(),
+            "not an owned root conjunction: {opaque:?}"
+        );
+    }
+    let duplicate = AbilityCondition::And {
+        conditions: vec![
+            captured.clone(),
+            AbilityCondition::And {
+                conditions: vec![captured.clone()],
+            },
+        ],
+    };
+    assert!(
+        rebind_owned_property_gate(&duplicate, &captured).is_none(),
+        "ambiguous ownership must fail closed"
+    );
+    let toughness = AbilityCondition::QuantityCheck {
+        lhs: QuantityExpr::Ref {
+            qty: QuantityRef::Toughness {
+                scope: ObjectScope::Source,
+            },
+        },
+        comparator: Comparator::LE,
+        rhs: QuantityExpr::Fixed { value: 2 },
+    };
+    let other_gate = own_power_gate(ObjectScope::Source);
+    let composed = AbilityCondition::And {
+        conditions: vec![other_gate.clone(), toughness.clone()],
+    };
+    let bound =
+        rebind_owned_property_gate(&composed, &toughness).expect("own toughness constituent");
+    assert_eq!(
+        bound,
+        AbilityCondition::And {
+            conditions: vec![
+                other_gate,
+                AbilityCondition::QuantityCheck {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::Toughness {
+                            scope: ObjectScope::Target
+                        }
+                    },
+                    comparator: Comparator::LE,
+                    rhs: QuantityExpr::Fixed { value: 2 }
+                }
+            ]
+        }
+    );
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&target)
+        .unwrap()
+        .toughness = Some(1);
+    assert!(
+        !evaluate_condition(&bound, runner.state(), &ability),
+        "an independent Source power gate must not be rebound with the captured toughness gate"
+    );
+    runner.state_mut().objects.get_mut(&source).unwrap().power = Some(4);
+    assert!(evaluate_condition(&bound, runner.state(), &ability));
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&target)
+        .unwrap()
+        .toughness = Some(3);
+    assert!(!evaluate_condition(&bound, runner.state(), &ability));
+}
+
+/// SHAPE: synthetic ownership exclusions keep ambiguous declarations red and
+/// preserve genuine context/player references instead of guessing a target.
+#[test]
+fn synthetic_property_suffix_preserves_own_object_eligibility_boundaries() {
+    let accepted =
+        "Put a +1/+1 counter on target creature you control if its power is 4 or greater.";
+    for subject in [None, Some(TargetFilter::Controller)] {
+        let mut context = ParseContext {
+            subject,
+            parent_target_available: true,
+            ..ParseContext::default()
+        };
+        let ir = parse_effect_chain_ir(accepted, AbilityKind::Spell, &mut context);
+        assert!(matches!(
+            ir.clauses[0].parsed.effect,
+            Effect::PutCounter { .. }
+        ));
+        assert_eq!(
+            ir.clauses[0].condition,
+            Some(own_power_gate(ObjectScope::Target))
+        );
+        for text in [
+            "Up to two target creatures each get +1/+1 until end of turn if its power is 4 or greater.",
+            "Target creature gets +1/+1 until end of turn and fights target creature you don't control if its power is 4 or greater.",
+        ] {
+            let (gate, body) = strip_property_conditional(text, &context);
+            assert!(gate.is_some(), "recognized property: {text}");
+            let parsed = parse_effect_clause(&body, &mut context);
+            assert!(effect_declares_own_typed_object(&parsed.effect), "own object branch: {parsed:#?}");
+            assert!(property_owner_has_ambiguous_targets(&parsed, None), "the fixture must reach an ambiguous owner: {parsed:#?}");
+            let ir = parse_effect_chain_ir(text, AbilityKind::Spell, &mut context);
+            assert!(ir.clauses.iter().any(|clause| matches!(&clause.parsed.effect,
+                Effect::Unimplemented { name, .. } if name == "property_suffix_ambiguous_object")), "{ir:#?}");
+        }
+        for text in [
+            "Put a +1/+1 counter on that creature if its power is 4 or greater.",
+            "Target player draws a card if its power is 4 or greater.",
+        ] {
+            let (captured, _) = strip_property_conditional(text, &context);
+            let captured = captured.expect("provisional property");
+            let ir = parse_effect_chain_ir(text, AbilityKind::Spell, &mut context);
+            let clause = ir
+                .clauses
+                .first()
+                .expect("recognized context/player instruction");
+            assert!(
+                clause.parsed.effect.unimplemented_description().is_none(),
+                "{ir:#?}"
+            );
+            assert!(
+                !effect_declares_own_typed_object(&clause.parsed.effect),
+                "the fixture must not declare an own typed object: {clause:#?}"
+            );
+            assert_eq!(
+                clause.condition.as_ref(),
+                Some(&captured),
+                "context/player authority remains unchanged"
+            );
+        }
+    }
+}
+
+/// Synthetic accepted grammar: the filtered decline predicate and player scope
+/// survive the same binding authority as the optional/mandatory outcome gates.
+/// CR 608.2c + CR 608.2h: the moved-card predicate remains independent of P/T.
+#[test]
+fn synthetic_property_suffix_preserves_filtered_decline_gate() {
+    let def = parse_effect_chain("Each opponent discards a card. Each opponent who didn't discard a nonland card this way put a +1/+1 counter on target creature you control if its power is 4 or greater.", AbilityKind::Spell);
+    assert_attachment_chain_has_no_unimplemented(&def);
+    let counter = std::iter::successors(Some(&def), |ability| ability.sub_ability.as_deref())
+        .find(|ability| matches!(ability.effect.as_ref(), Effect::PutCounter { .. }))
+        .expect("recognized filtered consequence");
+    let condition = counter.condition.as_ref().expect("composed filtered gate");
+    let members = property_gate_members(condition);
+    assert_eq!(
+        members.len(),
+        3,
+        "property + scope + filtered decline: {condition:?}"
+    );
+    assert!(members.contains(&&own_power_gate(ObjectScope::Target)));
+    assert!(members.iter().any(|gate| matches!(gate, AbilityCondition::Not { condition } if matches!(condition.as_ref(), AbilityCondition::ZoneChangedThisWay { .. }))));
+    assert!(members.iter().any(|gate| matches!(
+        gate,
+        AbilityCondition::ScopedPlayerMatches {
+            filter: PlayerFilter::Opponent
+        }
+    )));
+    let mut scenario = GameScenario::new();
+    let source = scenario.add_creature(P0, "Low Source", 0, 1).id();
+    let target = scenario.add_creature(P0, "Strong Target", 4, 5).id();
+    let nonland = scenario.add_creature_to_graveyard(P1, "Nonland", 1, 1).id();
+    let land = scenario.add_land_to_graveyard(P1, "Forest").id();
+    let mut runner = scenario.build();
+    let mut ability =
+        build_resolved_from_def_with_targets(counter, source, P0, vec![TargetRef::Object(target)]);
+    ability.scoped_player = Some(P1);
+    ability.original_controller = Some(P0);
+    assert!(
+        evaluate_condition(condition, runner.state(), &ability),
+        "no matching moved card is a valid filtered decline"
+    );
+    runner.state_mut().last_zone_changed_ids = vec![land];
+    assert!(
+        evaluate_condition(condition, runner.state(), &ability),
+        "a land does not defeat the nonland decline"
+    );
+    runner.state_mut().last_zone_changed_ids = vec![nonland];
+    assert!(
+        !evaluate_condition(condition, runner.state(), &ability),
+        "a moved nonland independently defeats the consequence"
+    );
+    runner.state_mut().last_zone_changed_ids.clear();
+    ability.scoped_player = Some(P0);
+    assert!(!evaluate_condition(condition, runner.state(), &ability));
+    ability.scoped_player = Some(P1);
+    runner.state_mut().objects.get_mut(&target).unwrap().power = Some(3);
+    assert!(!evaluate_condition(condition, runner.state(), &ability));
 }
 
 /// SHAPE: CR 115.1 + CR 608.2c + CR 608.2h: the recognized property suffix
