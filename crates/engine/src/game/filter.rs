@@ -5379,10 +5379,11 @@ pub(crate) fn source_subject_matches_filter(
             // would act against a condition that is no longer true. Falls back
             // to the trigger-time snapshot when no exit record survives for the
             // incarnation.
-            let exit_lki = state
-                .lki_by_incarnation
-                .get(&source.identity.reference.object_id)
-                .and_then(|history| history.get(&source.identity.reference.incarnation));
+            let exit_lki = exit_lki_for_incarnation(
+                state,
+                source.identity.reference.object_id,
+                source.identity.reference.incarnation,
+            );
             match exit_lki {
                 Some(lki) => matches_target_filter_on_lki_snapshot(
                     state,
@@ -5401,6 +5402,64 @@ pub(crate) fn source_subject_matches_filter(
             }
         }
     }
+}
+
+/// CR 400.7 + CR 608.2h: The exit last-known information recorded for one exact
+/// object incarnation, if any survives. `lki_by_incarnation` is written as an
+/// object leaves the battlefield, exile, or the stack, and rolls at step
+/// transitions, so a missing entry means no record survives — never that a
+/// later object at the same storage id may answer in the captured
+/// incarnation's place.
+fn exit_lki_for_incarnation(
+    state: &GameState,
+    object_id: ObjectId,
+    incarnation: u64,
+) -> Option<&LKISnapshot> {
+    state
+        .lki_by_incarnation
+        .get(&object_id)
+        .and_then(|history| history.get(&incarnation))
+}
+
+/// CR 113.7a + CR 608.2h + CR 400.7: The activation-epoch sibling of
+/// [`source_subject_matches_filter`] — the live-or-exit read for a resolving
+/// stack ability that carries no trigger projection, only the source
+/// incarnation captured when its activation reached the stack
+/// (`ResolvedAbility::source_incarnation`, stamped by the stack-push boundary).
+/// Consumed by the resolution-time effect-condition gate
+/// (`AbilityCondition::SourceMatchesFilter`), so an activated "if this
+/// creature is[n't] prepared" answers from the same exact source epoch a
+/// triggered one does: while the activation is on the stack, the source can be
+/// destroyed or blinked in response, and the predicate must read the object
+/// the activation was made for — never the later object at the same storage id.
+///
+/// The LIVE object answers only while it is still the captured incarnation:
+/// every zone change bumps the incarnation (CR 400.7), so a departed or
+/// blinked source can never satisfy the live branch. Otherwise the captured
+/// incarnation's EXIT last-known information is the answer (CR 113.7a: "its
+/// last known information is used"). With no surviving exit record — a
+/// hidden-zone departure records none — the incarnation cannot be affirmed and
+/// the read fails closed. The resolution-source relatch (CR 400.7j, an object
+/// moved by the ability's own resolution) is deliberately not consulted here,
+/// mirroring the trigger authority: this is a source-fact look-back, not an
+/// effect's referent lookup.
+pub(crate) fn source_incarnation_matches_filter(
+    state: &GameState,
+    object_id: ObjectId,
+    incarnation: u64,
+    filter: &TargetFilter,
+    context: &FilterContext<'_>,
+) -> bool {
+    if state
+        .objects
+        .get(&object_id)
+        .is_some_and(|object| object.incarnation == incarnation)
+    {
+        return matches_target_filter(state, object_id, filter, context);
+    }
+    exit_lki_for_incarnation(state, object_id, incarnation).is_some_and(|lki| {
+        matches_target_filter_on_lki_snapshot(state, object_id, lki, filter, context)
+    })
 }
 
 /// CR 400.7 + CR 608.2h: Evaluate a target filter against LKI for a known
