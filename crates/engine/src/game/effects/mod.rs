@@ -20865,16 +20865,27 @@ pub(crate) fn evaluate_condition(
                     state, spell_id, filter, &context,
                 )
             }),
-        // CR 608.2c: "If this creature/permanent is a [type]" — check source object.
-        AbilityCondition::SourceMatchesFilter { filter } => {
-            // CR 107.3a + CR 601.2b: ability-context filter evaluation.
-            crate::game::filter::matches_target_filter(
+        // CR 608.2c + CR 608.2h + CR 113.7a: "If this creature/permanent is a
+        // [type]" — read the source subject through the SAME exact-source
+        // authority as the trigger intervening-if recheck. A triggered ability
+        // reads its captured incarnation — the live object only while it is
+        // still that incarnation in its expected zone, otherwise the
+        // incarnation's exit last-known information — so a designation gained
+        // before departure, or one held only by a same-id blink return, never
+        // rebinds the condition to a later object (CR 400.7). Non-triggered
+        // abilities carry no captured source epoch and keep the live read
+        // (CR 602.2: activation already required the source to be legal).
+        AbilityCondition::SourceMatchesFilter { filter } => match ability.trigger_source.as_ref() {
+            Some(source) => {
+                crate::game::filter::source_subject_matches_filter(state, source, filter)
+            }
+            None => crate::game::filter::matches_target_filter(
                 state,
                 ability.source_id,
                 filter,
                 &crate::game::filter::FilterContext::from_ability(ability),
-            )
-        }
+            ),
+        },
         // CR 615.5 + CR 120.1: "If damage from a [type] source is prevented this
         // way, …" — gate a prevention rider on the type of the PREVENTED event's
         // damage source (Comeuppance). Reads `post_replacement_event_source`,

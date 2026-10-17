@@ -810,13 +810,14 @@ impl EventObjectSnapshot {
             // (option a): snapshot goaded onto EventObjectSnapshot + ZoneChangeRecord.
             FilterProp::Goaded
             // CR 722.3a: prepared is a designation on the LIVE permanent
-            // (`GameObject::prepared`). Neither EventObjectSnapshot nor
-            // ZoneChangeRecord carries a prepared field, and the runtime
-            // fail-closes it on the zone-change-record path. Classify
-            // Unsupported so a future prepared event-subject filter fails the
-            // reach gate LOUDLY rather than silently reading an unprepared
-            // snapshot. Deferred follow-up (option a): snapshot prepared onto
-            // EventObjectSnapshot + ZoneChangeRecord.
+            // (`GameObject::prepared`). The departure ledger carries it
+            // (`LKISnapshot` / `ZoneChangeRecord::was_prepared`, read by the
+            // runtime), but the event-subject projection (`EventObjectSnapshot`)
+            // this reach gate walks does not, so an event-subject prepared
+            // filter cannot be answered from a snapshot. Classify Unsupported so
+            // a future prepared event-subject filter fails the reach gate LOUDLY
+            // rather than silently reading an unprepared projection. Deferred
+            // follow-up (option a): snapshot prepared onto EventObjectSnapshot.
             | FilterProp::Prepared
             | FilterProp::WasPlayed
             // CR 108.2 + CR 108.2b: event snapshots retain token status but not whether
@@ -2396,11 +2397,13 @@ mod tests {
         assert_eq!(classify(&goaded), Unsupported);
     }
 
-    /// CR 722.3a: prepared is a designation on the LIVE permanent, not a fact
-    /// the event snapshot / zone-change record carries — the runtime
-    /// fail-closes it. The reach-gate classifier must AGREE: a prepared
-    /// event-subject filter is `Unsupported`, so a future card that reaches it
-    /// fails the gate loudly instead of silently certifying unprepared.
+    /// CR 722.3a: prepared is a designation on the LIVE permanent. The
+    /// departure ledger now carries it (`LKISnapshot` / `ZoneChangeRecord::
+    /// was_prepared`, read by the runtime), but the event-subject projection
+    /// (`EventObjectSnapshot`) still does not. The reach-gate classifier must
+    /// AGREE: a prepared event-subject filter is `Unsupported`, so a future
+    /// card that reaches it fails the gate loudly instead of silently
+    /// certifying unprepared.
     /// Revert-probe: returning Prepared to the Supported group makes classify
     /// yield Supported, flipping this assertion.
     #[test]

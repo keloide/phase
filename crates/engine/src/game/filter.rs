@@ -5347,6 +5347,62 @@ pub fn matches_target_filter_on_departed_battlefield_lki(
     )
 }
 
+/// CR 603.4 + CR 608.2h + CR 113.7a: the single authority for a source-subject
+/// filter predicate evaluated against its captured [`TriggerSourceContext`].
+/// Shared by the trigger intervening-if recheck
+/// (`TriggerCondition::SourceMatchesFilter`) and the resolution-time
+/// effect-condition gate (`AbilityCondition::SourceMatchesFilter`) so both
+/// semantic consumers answer from the same exact source epoch.
+///
+/// The subject is read through [`TriggerSourceContext::source_read`]: the LIVE
+/// object only while it is still the captured incarnation in its expected zone
+/// — a same-id return is never a substitute (CR 400.7) — otherwise the
+/// incarnation's EXIT last-known information (`lki_by_incarnation`), falling
+/// back to the trigger-time snapshot when no exit record survives for the
+/// incarnation (step-scoped LKI has already rolled, or the departure predates
+/// capture).
+pub(crate) fn source_subject_matches_filter(
+    state: &GameState,
+    source: &TriggerSourceContext,
+    filter: &TargetFilter,
+) -> bool {
+    let context = FilterContext::from_trigger_source(source);
+    match source.source_read(state) {
+        crate::types::game_state::TriggerSourceRead::ExactLive(object) => {
+            matches_target_filter(state, object.id, filter, &context)
+        }
+        crate::types::game_state::TriggerSourceRead::Latched(_) => {
+            // Prefer the exact-incarnation EXIT snapshot over the trigger-time
+            // appearance. A designation gained after triggering but before
+            // departure (a prepared source removed before its pending ability
+            // resolves) must be visible to the resolution read, or the ability
+            // would act against a condition that is no longer true. Falls back
+            // to the trigger-time snapshot when no exit record survives for the
+            // incarnation.
+            let exit_lki = state
+                .lki_by_incarnation
+                .get(&source.identity.reference.object_id)
+                .and_then(|history| history.get(&source.identity.reference.incarnation));
+            match exit_lki {
+                Some(lki) => matches_target_filter_on_lki_snapshot(
+                    state,
+                    source.identity.reference.object_id,
+                    lki,
+                    filter,
+                    &context,
+                ),
+                None => matches_target_filter_on_lki_snapshot(
+                    state,
+                    source.identity.reference.object_id,
+                    &source.lki,
+                    filter,
+                    &context,
+                ),
+            }
+        }
+    }
+}
+
 /// CR 400.7 + CR 608.2h: Evaluate a target filter against LKI for a known
 /// incarnation. The synthesized record preserves the proven incarnation so
 /// record-side identity predicates such as `OtherThanTriggerObject` do not
