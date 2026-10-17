@@ -3303,6 +3303,10 @@ fn reveal_until_object_context_from_events(events: &[GameEvent]) -> Option<CostP
                 counters: subject.counters.clone(),
                 tapped: subject.tapped,
                 is_suspected: subject.is_suspected,
+                // The reveal subject carries no prepared designation — a
+                // revealed card's "isn't prepared" question fails closed here,
+                // as before this field existed.
+                was_prepared: false,
                 attachments: Vec::new(),
             },
             incarnation: subject.identity.incarnation,
@@ -3363,6 +3367,9 @@ fn lki_snapshot_from_zone_change_record(record: &ZoneChangeRecord) -> LKISnapsho
         tapped: false,
         // CR 701.60b: Carry suspected status from the zone-change snapshot.
         is_suspected: record.is_suspected,
+        // CR 722.3a + CR 608.2h: Carry the exit-time prepared designation so
+        // LKI look-backs built from a zone-change record answer "prepared".
+        was_prepared: record.was_prepared,
         // CR 608.2h: The zone-change record already froze the exit-time attachment set
         // (the departure sever unattaches everything the instant the host leaves,
         // CR 701.3d), so carry it through rather than dropping it on the way into the
@@ -24470,6 +24477,7 @@ mod tests {
                 counters: HashMap::new(),
                 tapped: false,
                 is_suspected: false,
+                was_prepared: false,
                 attachments: Vec::new(),
             },
         );
@@ -28046,6 +28054,7 @@ mod tests {
                 counters: Default::default(),
                 tapped: false,
                 is_suspected: false,
+                was_prepared: false,
                 attachments: Vec::new(),
             },
         );

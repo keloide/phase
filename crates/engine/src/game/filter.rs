@@ -5353,6 +5353,10 @@ fn matches_target_filter_on_lki_snapshot_with_incarnation(
         // CR 701.60b: Carry suspected status from the LKI snapshot so
         // `FilterProp::Suspected` reads the cost-paid look-back value.
         is_suspected: lki.is_suspected,
+        // CR 722.3a + CR 608.2h: Carry the exit-time prepared designation so
+        // `FilterProp::Prepared` reads last known information for a departed
+        // source's intervening-if recheck (CR 603.4).
+        was_prepared: lki.was_prepared,
     };
     matches_target_filter_on_zone_change_record(state, &record, filter, ctx)
 }
@@ -8076,6 +8080,7 @@ fn source_context_from_filter<'a>(
                     counters: HashMap::new(),
                     tapped: false,
                     is_suspected: false,
+                    was_prepared: false,
                     attachments: Vec::new(),
                 });
             (
@@ -10025,6 +10030,12 @@ fn zone_change_record_matches_property(
         // was suspected" reads the cost-paid LKI, taken before the sacrifice
         // zone-change reset the flag).
         FilterProp::Suspected => record.is_suspected,
+        // CR 722.3a + CR 608.2h: Prepared status as of the zone change,
+        // snapshotted onto the record. A departed source's "isn't prepared"
+        // intervening-if recheck (CR 603.4) reads the exit-time value —
+        // a preparation after triggering but before departure suppresses the
+        // ability at resolution.
+        FilterProp::Prepared => record.was_prepared,
         // CR 702.171b + CR 508.1m: saddled is no longer snapshotted onto
         // zone-change records — the "attacks while saddled" attack gate is a
         // declaration-time subject match folded into the trigger's `valid_card`
@@ -10048,10 +10059,6 @@ fn zone_change_record_matches_property(
         // ZoneChangeRecord first.
         | FilterProp::PrepareSpell
         | FilterProp::Renowned
-        // CR 722.3a: prepared is a live-battlefield designation cleared on zone
-        // change (`GameObject::prepared` resets); zone-change records do not
-        // snapshot it (unlike Suspected's `record.is_suspected`). Fail closed.
-        | FilterProp::Prepared
         // CR 701.15b/c: goad is not snapshotted onto the zone-change record
         // (unlike Suspected's `record.is_suspected`). Fail closed.
         | FilterProp::Goaded
@@ -10453,6 +10460,7 @@ fn source_context_from_spell_filter(context: SpellFilterContext<'_>) -> SourceCo
             counters: HashMap::new(),
             tapped: false,
             is_suspected: false,
+            was_prepared: false,
             attachments: Vec::new(),
         });
     SourceContext {
@@ -12393,6 +12401,7 @@ mod tests {
                 counters: Default::default(),
                 tapped: false,
                 is_suspected: false,
+                was_prepared: false,
                 attachments: Vec::new(),
             },
         );
@@ -18632,6 +18641,7 @@ mod tests {
             counters: Default::default(),
             tapped: false,
             is_suspected: false,
+            was_prepared: false,
             attachments: Vec::new(),
         };
         let filter =
@@ -18680,6 +18690,7 @@ mod tests {
             counters: Default::default(),
             tapped: false,
             is_suspected: false,
+            was_prepared: false,
             attachments: Vec::new(),
         };
         let entrant = ObjectId(700);
@@ -18818,6 +18829,7 @@ mod tests {
             counters: Default::default(),
             tapped: false,
             is_suspected: false,
+            was_prepared: false,
             attachments: Vec::new(),
         };
         let filter =
@@ -18964,6 +18976,7 @@ mod tests {
             counters: Default::default(),
             tapped,
             is_suspected: false,
+            was_prepared: false,
             attachments: Vec::new(),
         };
 
@@ -19853,6 +19866,7 @@ mod tests {
             turn_zone_change_index: 0,
             recorded_turn_number: 0,
             is_suspected: false,
+            was_prepared: false,
         };
         let goblin_filter = make_subtype_filter("Goblin");
         let plains_filter = make_subtype_filter("Plains");
@@ -19946,6 +19960,7 @@ mod tests {
             counters: HashMap::new(),
             tapped: false,
             is_suspected: false,
+            was_prepared: false,
             attachments: Vec::new(),
         };
         let land_lki = LKISnapshot {
@@ -19967,6 +19982,7 @@ mod tests {
             counters: HashMap::new(),
             tapped: false,
             is_suspected: false,
+            was_prepared: false,
             attachments: Vec::new(),
         };
 
@@ -20083,6 +20099,7 @@ mod tests {
             counters: HashMap::new(),
             tapped: false,
             is_suspected: false,
+            was_prepared: false,
             attachments: Vec::new(),
         };
         let filter = TargetFilter::Typed(
@@ -20226,6 +20243,7 @@ mod tests {
                 chosen_attributes: vec![],
                 tapped: false,
                 is_suspected: false,
+                was_prepared: false,
                 attachments: Vec::new(),
             },
         );
@@ -20297,6 +20315,7 @@ mod tests {
                 chosen_attributes: vec![],
                 tapped: false,
                 is_suspected: false,
+                was_prepared: false,
                 attachments: Vec::new(),
             },
         );

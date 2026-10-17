@@ -38358,7 +38358,8 @@ fn woodwork_prodigy_unprepared_gate_hoists_intervening_if() {
         matches!(
             execute.effect.as_ref(),
             Effect::BecomePrepared {
-                target: TargetFilter::SelfRef
+                target: TargetFilter::SelfRef,
+                scope: EffectScope::Single,
             }
         ),
         "residual 'it becomes prepared' must prepare the source, got {:?}",

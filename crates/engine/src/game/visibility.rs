@@ -4524,6 +4524,7 @@ fn redact_lki_snapshot(snapshot: &mut crate::types::game_state::LKISnapshot) {
         counters,
         tapped: _,
         is_suspected: _,
+        was_prepared: _,
         attachments,
     } = snapshot;
     *name = HIDDEN_CARD_NAME.to_string();

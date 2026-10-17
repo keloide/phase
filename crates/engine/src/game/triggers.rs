@@ -15424,13 +15424,36 @@ fn evaluate_trigger_condition_with_source(
                     matches_target_filter(state, object.id, filter, &context)
                 }
                 crate::types::game_state::TriggerSourceRead::Latched(_) => {
-                    super::filter::matches_target_filter_on_lki_snapshot(
-                        state,
-                        source.identity.reference.object_id,
-                        &source.lki,
-                        filter,
-                        &context,
-                    )
+                    // CR 603.4 + CR 608.2h + CR 113.7a: prefer the
+                    // exact-incarnation EXIT snapshot over the trigger-time
+                    // appearance. A designation gained after triggering but
+                    // before departure (a prepared Woodwork Prodigy removed
+                    // before its upkeep trigger resolves) must be visible to
+                    // the resolution recheck, or the ability would dispatch
+                    // against a condition that is no longer true. Falls back
+                    // to the trigger-time snapshot when no exit record
+                    // survives for the incarnation (step-scoped LKI has
+                    // already rolled, or the departure predates capture).
+                    let exit_lki = state
+                        .lki_by_incarnation
+                        .get(&source.identity.reference.object_id)
+                        .and_then(|history| history.get(&source.identity.reference.incarnation));
+                    match exit_lki {
+                        Some(lki) => super::filter::matches_target_filter_on_lki_snapshot(
+                            state,
+                            source.identity.reference.object_id,
+                            lki,
+                            filter,
+                            &context,
+                        ),
+                        None => super::filter::matches_target_filter_on_lki_snapshot(
+                            state,
+                            source.identity.reference.object_id,
+                            &source.lki,
+                            filter,
+                            &context,
+                        ),
+                    }
                 }
             }
         }),
@@ -23417,6 +23440,7 @@ pub mod tests {
                 counters,
                 tapped: false,
                 is_suspected: false,
+                was_prepared: false,
                 attachments: Vec::new(),
             },
         );

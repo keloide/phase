@@ -71,10 +71,9 @@ fn setup_twins() -> (GameRunner, ObjectId, ObjectId, ObjectId, ObjectId) {
     let cloudshift = scenario
         .add_spell_to_hand_from_oracle(P0, "Cloudshift", true, CLOUDSHIFT_ORACLE)
         .id();
-    // CR 704.5a-adjacent decking guard: `advance_to_next_upkeep_with_trigger`
+    // CR 704.5b decking guard: `advance_to_next_upkeep_with_trigger`
     // below walks natural draw steps to the next upkeep. Empty libraries
-    // would deck a player mid-advance and end the game as `GameOver`
-    // (observed as `unexpected waiting state ... GameOver` at line 419).
+    // would deck a player mid-advance and end the game as `GameOver`.
     // Pad both libraries so the advance survives to the next upkeep.
     for index in 0..20 {
         scenario.add_card_to_library_top(P0, &format!("Woodwork Library P0 {index}"));
@@ -338,6 +337,77 @@ fn woodwork_prodigy_trigger_does_not_prepare_departed_source() {
             |event| matches!(event, GameEvent::BecamePrepared { object_id } if *object_id == unprepared)
         ),
         "a departed source must not gain the prepared designation"
+    );
+    // Paired control for the prepared-before-departure regression below: the
+    // unprepared-at-exit ability DOES dispatch (harmlessly — the SelfRef
+    // incarnation authority yields no target), so an absence there means the
+    // CR 603.4 recheck removed the ability, not that dispatch is silent.
+    assert!(
+        outcome.events().iter().any(|event| {
+            matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: EffectKind::BecomePrepared,
+                    source_id,
+                    ..
+                } if *source_id == unprepared
+            )
+        }),
+        "the unprepared-at-exit ability must still dispatch its resolution"
+    );
+}
+
+/// CR 603.4 + CR 608.2h + CR 113.7a + CR 722.3a: a preparation after
+/// triggering but before departure must be visible to the resolution recheck
+/// through the exact-incarnation exit snapshot — not the trigger-time
+/// appearance. The recheck removes the ability without dispatching, so the
+/// load-bearing assertion is the absence of `EffectResolved{BecomePrepared}`:
+/// `BecamePrepared` absence alone would also hold if the effect merely
+/// no-opped on a missing target.
+#[test]
+fn woodwork_prodigy_prepared_before_departure_is_not_redispatched() {
+    let (mut runner, unprepared, _, doom_blade, _) = setup_twins();
+    runner.advance_to_upkeep();
+    assert_eq!(
+        stack_entries_for(&runner, unprepared),
+        1,
+        "the unprepared twin's upkeep trigger must be on the stack"
+    );
+
+    // Production preparation after triggering but before departure.
+    {
+        let mut events = Vec::new();
+        engine::game::effects::prepare::prepare_object(runner.state_mut(), unprepared, &mut events);
+    }
+    assert!(
+        is_prepared(&runner, unprepared),
+        "the firing twin must be prepared before it departs"
+    );
+
+    let outcome = runner.cast(doom_blade).target_object(unprepared).resolve();
+    outcome.assert_zone(&[unprepared], Zone::Graveyard);
+    assert!(
+        runner.state().stack.is_empty(),
+        "the upkeep trigger must fully resolve"
+    );
+    assert!(
+        !outcome.events().iter().any(|event| {
+            matches!(
+                event,
+                GameEvent::EffectResolved {
+                    kind: EffectKind::BecomePrepared,
+                    source_id,
+                    ..
+                } if *source_id == unprepared
+            )
+        }),
+        "the exit snapshot shows prepared, so the recheck must remove the ability without dispatch"
+    );
+    assert!(
+        !outcome.events().iter().any(
+            |event| matches!(event, GameEvent::BecamePrepared { object_id } if *object_id == unprepared)
+        ),
+        "a prepared-then-departed source must not gain a second prepared designation"
     );
 }
 
