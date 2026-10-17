@@ -79,6 +79,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // v141 adds `ExileLinkKind::CastCost` (CR 607.2q cast-cost exile links) to GameState.
 // v142 adds `LinkedExileSnapshot.incarnation` (CR 400.7) to GameState's linked-exile snapshots.
 // v143 retypes GameState's modal no-repeat history keys to `ObjectIncarnationRef` (CR 400.7).
+// v146 adds `ConfirmedPeriod.counted_by` (CR 732.2a counted loop offers) and `ConfirmedPeriod.performance` to GameState.
 // v134 adds `GameEvent::AbilityActivated.stack_entry` (the activation's stack object).
 // Keep the measured base so a future merge cannot collapse independent wire
 // changes onto one number.
@@ -161,9 +162,13 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 // +71: v142 adds `LinkedExileSnapshot.incarnation` to GameState's linked-exile snapshots.
 // +72: v143 retypes `GameState.modal_modes_chosen_this_{turn,game}` keys to `ObjectIncarnationRef`.
 // +63: v134 adds `GameEvent::AbilityActivated.stack_entry` (the activation's stack object).
-// +73: v144 adds `FilterProp::Prepared` (CR 722.3a), the prepared-designation
+// +73: v144 adds one-time boon tags (CreateBoon, NoteNumber, HasBoon,
+// ChooseTokenHost) and retypes the perpetual P/T edit to QuantityExpr.
+// +74: v145 adds ParentTargetMissingReason::SearchLibrary on parked ResolvedAbility continuations.
+// +75: v146 adds `ConfirmedPeriod.counted_by` and `.performance` to loop offers in GameState.
+// +76: v147 adds `FilterProp::Prepared` (CR 722.3a), the prepared-designation
 //      leaf for source-context trigger conditions in `GameState`.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 73;
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 76;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
@@ -259,8 +264,11 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 // +70: wire 124 moves with full-game v142 for `LinkedExileSnapshot.incarnation`.
 // +71: wire 125 moves with full-game v143 for incarnation-keyed modal history.
 // +62: wire 116 moves with full-game v134 for `AbilityActivated.stack_entry`.
-// +72: wire 126 moves with full-game v144 for the FilterProp Prepared tag.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 72;
+// +72: wire 126 moves with full-game v144 for one-time boons.
+// +73: wire 127 moves with full-game v145 for the SearchLibrary missing-referent tag.
+// +74: wire 128 moves with full-game v146 for `ConfirmedPeriod.counted_by` and `.performance`.
+// +75: wire 129 moves with full-game v147 for the FilterProp Prepared tag.
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 75;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse

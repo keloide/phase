@@ -34,6 +34,8 @@ import { loadActiveQuickDraft } from "../services/quickDraftPersistence";
 import type { DraftMatchResult } from "../services/quickDraftPersistence";
 import { useResolvedGridRows, useResolvedSplitGridRows } from "../hooks/useResolvedGridRows.ts";
 import { useIsMobile } from "../hooks/useIsMobile.ts";
+import { useLocalizedCardContent } from "../hooks/useLocalizedCardContent.ts";
+import { CardTextReference } from "../components/card/CardTextReference.tsx";
 import { useGameViewportLock } from "../hooks/useGameViewportLock.ts";
 import { FlexEditOverlay } from "../components/flexlayout/FlexEditOverlay.tsx";
 import { DraggableWidget } from "../components/flexlayout/DraggableWidget.tsx";
@@ -161,6 +163,9 @@ import { MANA_PAYMENT_WAITING_FOR_TYPES } from "../game/waitingForRegistry.ts";
 import { useGameDispatch } from "../hooks/useGameDispatch.ts";
 import { useInspectHoverProps } from "../hooks/useInspectHoverProps.ts";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts.ts";
+import { usePriorityAttentionController } from "../hooks/usePriorityAttention.ts";
+import { usePriorityChime } from "../hooks/usePriorityChime.ts";
+import { usePriorityTabTitle } from "../hooks/usePriorityTabTitle.ts";
 import { clearPromptOverlayState } from "../game/sessionCleanup.ts";
 import { clearGame, hasRemoteHumans, loadActiveGame, useGameStore } from "../stores/gameStore.ts";
 import { useUiStore } from "../stores/uiStore.ts";
@@ -1199,6 +1204,11 @@ function GamePageContent({
   }, [isOnlineMode, gameId, handleConcede, navigate]);
 
   useKeyboardShortcuts();
+
+  // Priority-attention cues: one controller writes the store; each cue reads it.
+  usePriorityAttentionController();
+  usePriorityChime();
+  usePriorityTabTitle();
 
   // Toggle debug layout bounds with Ctrl+Shift+D
   useEffect(() => {
@@ -3325,6 +3335,7 @@ function AbilityChoiceModal() {
   const obj = useGameStore((s) =>
     pending ? s.gameState?.objects[pending.objectId] : undefined,
   );
+  const localized = useLocalizedCardContent(obj?.name ?? null);
   const objects = useGameStore((s) => s.gameState?.objects);
   const webSlingingCosts = useGameStore(
     (s) => s.gameState?.derived?.web_slinging_costs,
@@ -3380,7 +3391,9 @@ function AbilityChoiceModal() {
 
   return (
     <ChoiceModal
-      title={obj.name}
+      title={localized?.name || obj.name}
+      scrollable
+      footer={<CardTextReference text={localized?.oracle_text} />}
       subtitle={subtitle}
       previewCardName={obj.name}
       previewCardTypes={obj.card_types}

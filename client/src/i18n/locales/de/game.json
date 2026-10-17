@@ -808,7 +808,16 @@
     "defendingPlayerTrample": "Verteidigender Spieler (Trampelschaden)",
     "pwControllerTrample": "PW-Beherrscher (Trampelschaden über PW)"
   },
+  "cardTextReference": {
+    "title": "Printed card text (reference)",
+    "hint": "Full printed card text. It may differ from current Oracle text or this ability.",
+    "originalAbility": "Original ability text"
+  },
   "stack": {
+    "activatedAbility": "Activated ability",
+    "activatedAbilityNumber": "Activated ability {{number}}",
+    "triggeredAbility": "Triggered ability",
+    "readAbility": "Read ability and printed card text",
     "title": "Stapel",
     "collapsePanel": "Stapelleiste einklappen",
     "expandPanel": "Stapelleiste ausklappen",
@@ -863,6 +872,7 @@
     "chooseCreatureToEquip": "Wähle eine Kreatur zum Ausrüsten",
     "chooseCreatureTokenToPopulate": "Wähle einen Kreaturspielstein zum Populieren",
     "chooseReturnAsAuraTarget": "Wähle eine bleibende Karte zum Verzaubern",
+    "chooseTokenHost": "Wähle, woran der Spielstein angelegt wird",
     "tapUntappedCreatures_one": "Tappe {{count}} ungetappte Kreatur",
     "tapUntappedCreatures_other": "Tappe {{count}} ungetappte Kreaturen",
     "chooseTargetOf": "Wähle Ziel {{current}} von {{total}}",
@@ -2624,8 +2634,8 @@
     "close": "KI-Entscheidungsfenster schließen"
   },
   "status": {
-    "yourPriority": "Your priority",
-    "yourPriorityReason": "Your priority — {{reason}}",
+    "yourPriority": "Du hast Priorität",
+    "yourPriorityReason": "Du hast Priorität — {{reason}}",
     "waitingFor": "Waiting for <player>{{player}}</player>",
     "waitingForReason": "Waiting for <player>{{player}}</player> — {{reason}}",
     "reason": {

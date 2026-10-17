@@ -2165,10 +2165,17 @@ export interface TriggerContextDisplay {
   player?: PlayerId;
 }
 
+/** Typed form of `StackEntryDisplay.kind_label` for ability entries, so the
+ * display layer localizes the label without parsing the English text. */
+export type StackAbilityKindView =
+  | { type: "Activated"; data: { number?: number | null } }
+  | { type: "Triggered" };
+
 export interface StackEntryDisplay {
   source_name: string;
   token_image_ref?: TokenImageRef | null;
   kind_label: string;
+  ability_kind?: StackAbilityKindView;
   ability_description?: string;
   selected_mode_labels?: string[];
   is_pending?: boolean;
@@ -2562,6 +2569,7 @@ export type WaitingFor =
   | { type: "CopyTargetChoice"; data: { player: PlayerId; source_id: ObjectId; valid_targets: ObjectId[]; max_mana_value?: number | null; purpose?: { type: "BecomeCopy" | "PersistChosenAttribute" | "CopyTokenSource" } } }
   | { type: "ExploreChoice"; data: { player: PlayerId; source_id: ObjectId; choosable: ObjectId[]; remaining: ObjectId[]; pending_effect: unknown } }
   | { type: "ReturnAsAuraTarget"; data: { player: PlayerId; source_id: ObjectId; returned_id: ObjectId; legal_targets: TargetRef[]; pending_effect: unknown } }
+  | { type: "ChooseTokenHost"; data: { player: PlayerId; source_id: ObjectId; legal_targets: TargetRef[]; pending_ability: unknown } }
   | { type: "EquipTarget"; data: { player: PlayerId; equipment_id: ObjectId; valid_targets: ObjectId[] } }
   | { type: "CrewVehicle"; data: { player: PlayerId; vehicle_id: ObjectId; crew_power: number; eligible_creatures: ObjectId[]; contributions?: number[] } }
   | { type: "StationTarget"; data: { player: PlayerId; spacecraft_id: ObjectId; eligible_creatures: ObjectId[] } }
@@ -3776,7 +3784,10 @@ export interface BoardDelta {
 /** Mirrors `engine::analysis::loop_check::LoopCertificate`. */
 export interface LoopCertificate {
   unbounded: ResourceAxis[];
-  win_kind: WinKind;
+  /** Absent when the certificate determines no outcome. */
+  win_kind?: WinKind;
+  /** The count whose take `win_kind` is the outcome of; absent for the loop as a whole. */
+  win_kind_at?: number;
   mandatory: boolean;
   residual_board_delta: BoardDelta;
 }
@@ -3882,7 +3893,8 @@ export interface ShortcutProposal {
   predicted_winner: PlayerId | null;
   count: IterationCount;
   unbounded: ResourceAxis[];
-  win_kind: WinKind;
+  win_kind?: WinKind;
+  win_kind_at?: number;
   shortened_by?: PlayerId;
   road: OfferRoad;
 }
@@ -4249,6 +4261,10 @@ export type ExileLinkKind =
 export type LookGrant = "SourceController" | { Player: { player: PlayerId } };
 
 export interface GameState {
+  /** CR 500.1 + CR 500.8: how many times each step has begun this turn, counting
+   *  the second combat damage step (CR 510.4) and repeated cleanup steps. Mirrors
+   *  engine `steps_started_this_turn`; omitted from the wire while empty. */
+  steps_started_this_turn?: Partial<Record<Phase, number>>;
   turn_number: number;
   active_player: PlayerId;
   phase: Phase;

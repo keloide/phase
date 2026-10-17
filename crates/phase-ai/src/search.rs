@@ -1711,6 +1711,14 @@ pub fn fallback_action(
         // Ring-bearer with no creatures: skip (empty ChooseTarget).
         WaitingFor::ChooseRingBearer { .. } => Some(GameAction::ChooseTarget { target: None }),
 
+        // Boon token-host choice (Dunbarrow Revivalist): a mandatory
+        // resolution-time pick among stamped entrants. Mid-resolution, so
+        // there is no cast to cancel: answer the first engine-issued
+        // ChooseTarget (the prompt only opens with 2+ legal hosts).
+        WaitingFor::ChooseTokenHost { .. } => {
+            issued(|action| matches!(action, GameAction::ChooseTarget { target: Some(_) }))
+        }
+
         // Distribute with empty targets: empty distribution.
         WaitingFor::DistributeAmong { .. } => Some(GameAction::DistributeAmong {
             distribution: Vec::new(),
@@ -6717,7 +6725,8 @@ mod tests {
             predicted_winner: Some(PlayerId(1)),
             certificate: engine::analysis::loop_check::LoopCertificate {
                 unbounded: vec![],
-                win_kind: engine::analysis::loop_check::WinKind::LethalDamage,
+                win_kind: Some(engine::analysis::loop_check::WinKind::LethalDamage),
+                win_kind_at: None,
                 mandatory: false,
                 residual_board_delta: engine::analysis::resource::BoardDelta::default(),
                 per_cycle: None,

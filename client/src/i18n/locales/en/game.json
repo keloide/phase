@@ -841,7 +841,16 @@
     "defendingPlayerTrample": "Defending Player (Trample)",
     "pwControllerTrample": "PW Controller (Trample Over PW)"
   },
+  "cardTextReference": {
+    "title": "Printed card text (reference)",
+    "hint": "Full printed card text. It may differ from current Oracle text or this ability.",
+    "originalAbility": "Original ability text"
+  },
   "stack": {
+    "activatedAbility": "Activated ability",
+    "activatedAbilityNumber": "Activated ability {{number}}",
+    "triggeredAbility": "Triggered ability",
+    "readAbility": "Read ability and printed card text",
     "title": "Stack",
     "collapsePanel": "Collapse stack panel",
     "expandPanel": "Expand stack panel",
@@ -898,6 +907,7 @@
     "chooseCreatureToEquip": "Choose a creature to equip",
     "chooseCreatureTokenToPopulate": "Choose a creature token to populate",
     "chooseReturnAsAuraTarget": "Choose a permanent to enchant",
+    "chooseTokenHost": "Choose a host for the token",
     "tapUntappedCreatures_one": "Tap {{count}} untapped creature",
     "tapUntappedCreatures_other": "Tap {{count}} untapped creatures",
     "sacrificeExact_one": "Sacrifice {{count}} permanent",

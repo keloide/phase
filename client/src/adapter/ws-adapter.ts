@@ -211,10 +211,25 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
- * 144 — FilterProp gains Prepared (CR 722.3a), serialized in the trigger
- *      conditions (and ability/filter definitions) of GameState. A v143 peer
+ * 147 — FilterProp gains Prepared (CR 722.3a), serialized in the trigger
+ *      conditions (and ability/filter definitions) of GameState. A v146 peer
  *      cannot deserialize the new tagged variant. P2P moves in lockstep to
- *      wire 126.
+ *      wire 129.
+ * 146 — ConfirmedPeriod gains counted_by (CR 732.2a: a loop offer counted by
+ *      replaying its period, with the seats that left in each repetition, a
+ *      per_cycle scope stating one repetition, and an optional win_kind with
+ *      the count it is decided at) and performance, carried in
+ *      WaitingFor::LoopShortcut — see PROTOCOL_VERSION's own `/// 146` entry in
+ *      crates/lobby-broker/src/protocol.rs. Wire 128 moves with it.
+ * 145 — ParentTargetMissingReason gains SearchLibrary (CR 701.23b), serialized
+ *      on ResolvedAbility.parent_target_missing_reason; a v144 peer cannot
+ *      parse the tag. P2P moves in lockstep (wire 127); lobby messages unchanged.
+ * 144 — One-time boons (#7495): new Effect.CreateBoon / Effect.NoteNumber tags,
+ *       HasBoon conditions, and WaitingFor.ChooseTokenHost; the perpetual P/T
+ *       edit retypes power_delta/toughness_delta to required QuantityExpr
+ *       power/toughness. A v143 peer cannot parse the new shapes; the
+ *       exact-match handshake refuses the pairing. P2P moves in lockstep
+ *       (wire 126).
  * 143 — GameState.modal_modes_chosen_this_turn / _this_game retype from
  *      (ObjectId, usize) to (ObjectIncarnationRef, usize) (CR 400.7), so a
  *      non-empty entry [50, 1] is now [{object_id: 50, incarnation: 0}, 1] —
@@ -878,7 +893,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 144;
+export const PROTOCOL_VERSION = 147;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

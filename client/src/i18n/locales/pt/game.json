@@ -808,7 +808,16 @@
     "defendingPlayerTrample": "Jogador Defensor (Atropelar)",
     "pwControllerTrample": "Controlador do PW (Atropelar Sobre PW)"
   },
+  "cardTextReference": {
+    "title": "Printed card text (reference)",
+    "hint": "Full printed card text. It may differ from current Oracle text or this ability.",
+    "originalAbility": "Original ability text"
+  },
   "stack": {
+    "activatedAbility": "Activated ability",
+    "activatedAbilityNumber": "Activated ability {{number}}",
+    "triggeredAbility": "Triggered ability",
+    "readAbility": "Read ability and printed card text",
     "title": "Pilha",
     "collapsePanel": "Recolher o painel da pilha",
     "expandPanel": "Expandir o painel da pilha",
@@ -863,6 +872,7 @@
     "chooseCreatureToEquip": "Escolha uma criatura para equipar",
     "chooseCreatureTokenToPopulate": "Escolha uma ficha de criatura para popular",
     "chooseReturnAsAuraTarget": "Escolha um permanente para encantar",
+    "chooseTokenHost": "Escolha um hospedeiro para a ficha",
     "tapUntappedCreatures_one": "Vire {{count}} criatura desvirada",
     "tapUntappedCreatures_other": "Vire {{count}} criaturas desviradas",
     "chooseTargetOf": "Escolha o alvo {{current}} de {{total}}",
@@ -2624,8 +2634,8 @@
     "close": "Fechar sobreposição da decisão da IA"
   },
   "status": {
-    "yourPriority": "Your priority",
-    "yourPriorityReason": "Your priority — {{reason}}",
+    "yourPriority": "Sua prioridade",
+    "yourPriorityReason": "Sua prioridade — {{reason}}",
     "waitingFor": "Waiting for <player>{{player}}</player>",
     "waitingForReason": "Waiting for <player>{{player}}</player> — {{reason}}",
     "reason": {
