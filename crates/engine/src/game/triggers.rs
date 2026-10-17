@@ -3953,81 +3953,106 @@ pub(super) fn resolve_tap_mana_triggers_inline(
 }
 
 /// CR 605.4a + CR 608.2d + CR 601.2g-h: preview helper for the synchronous
-/// payment affordability probe. Returns the distinct bonus types owed by
-/// skipped multi-type mana-echo triggers in `events` (the Pass-1 `continue`
-/// shape), deduplicated across the batch. Only unrestricted echo bodies
+/// payment affordability probe. Returns one entry per owed echo firing in
+/// `events` (the Pass-1 `continue` shape), each entry the distinct bonus types
+/// that firing may choose among. Collection runs through the same
+/// normal-plus-delayed authority the live settlement uses, so delayed-generator
+/// echoes (Selesnya Loft Gardens) and multiple same-event firings (two Mirari's
+/// Wakes on one tap) are each reported — a unioned single-type list cannot
+/// distinguish one bonus from two. Only unrestricted echo bodies
 /// (`restrictions` empty) are reported: a restricted bonus cannot generally
-/// fund an arbitrary spell cost, so previews must not count it. Previews stay
-/// choice-free (no prompt); the live payment pauses for a real choice via the
-/// typed fixed-point continuation instead.
-pub(crate) fn mixed_echo_bonus_options_for_preview(
+/// fund an arbitrary cost, so previews must not count it. Runs on disposable
+/// preview state only; previews stay choice-free (no prompt) while the live
+/// payment pauses for a real choice via the typed fixed-point continuation.
+pub(crate) fn mixed_echo_bonus_firings_for_preview(
     state: &mut GameState,
     events: &[GameEvent],
-) -> Vec<crate::types::mana::ManaType> {
+) -> Vec<Vec<crate::types::mana::ManaType>> {
     super::layers::flush_layers(state);
     super::trigger_index::ensure_ready(state);
-    let mut options: Vec<crate::types::mana::ManaType> = Vec::new();
-    for tap_event in events.iter().filter(|ev| {
-        matches!(
-            ev,
-            GameEvent::TappedForMana { .. } | GameEvent::ManaAbilityProduced { .. }
-        )
-    }) {
-        let candidates = super::trigger_index::candidates_for_event(state, tap_event);
-        for (_, ability) in
-            inline_tap_mana_trigger_abilities(state, tap_event, candidates.iter().copied())
-        {
-            if !super::mana_abilities::echo_body_owes_type_choice(&ability, Some(tap_event)) {
-                continue;
-            }
-            // CR 106.4: only an unrestricted echo bonus is generally spendable;
-            // a restricted one (e.g. spend-only-on-X) cannot be counted
-            // optimistically for an arbitrary cost.
-            let restricted = match &ability.effect {
-                Effect::Mana { restrictions, .. } => !restrictions.is_empty(),
-                _ => true,
-            };
-            if restricted {
-                continue;
-            }
-            for mana_type in super::mana_abilities::echo_distinct_types(tap_event) {
-                if !options.contains(&mana_type) {
-                    options.push(mana_type);
-                }
-            }
-        }
-    }
-    options.sort();
-    options
-}
-
-/// CR 605.4a + CR 608.2d + CR 601.2g-h: pre-spend echo pause for synchronous
-/// auto-tap payment. Drives the typed fixed-point batch over `raw_batch`
-/// (the auto-tap tap events, already marked `FromTapTriggersResolved` with the
-/// mixed-echo exemption) with `outer_resume` as its continuation, but — unlike
-/// [`collect_mana_action_trigger_batch`] — does NOT defer ordinary contexts.
-/// Ordinary observers (Manabarbs, etc.) stay for the owner's post-payment
-/// boundary, which forms one release group over every micro-frame; deferring
-/// them here would let the later post-action scan rediscover the same
-/// `FromTapTriggersResolved` occurrences (ordinary is not marker-skipped) and
-/// double-queue. Accepted echo work runs immediately; a `ChooseManaColor`
-/// pause returns `Some` with `pending_triggered_mana_resume` stored, otherwise
-/// `None`.
-pub(crate) fn pause_for_skipped_echo_before_spend(
-    state: &mut GameState,
-    raw_batch: &[GameEvent],
-    outer_resume: crate::types::game_state::ManaTriggerFixedPointResume,
-) -> Option<WaitingFor> {
-    let events_out = &mut Vec::new();
-    let seed = collect_triggers_for_batch(state, raw_batch);
+    let seed = collect_triggers_for_batch(state, events);
     let collected = collect_pending_and_delayed_triggers_for_batch(
         state,
         seed,
-        raw_batch,
+        events,
         DelayedTriggerEventScope::Any,
     );
     let (accepted, _ordinary) = partition_collected_mana_frame_contexts(state, collected.contexts);
-    run_accepted_triggered_mana_fixed_point(state, accepted, outer_resume, events_out)
+    let mut firings: Vec<Vec<crate::types::mana::ManaType>> = Vec::new();
+    for view in accepted {
+        // CR 603.7c: the firing event carries the produced set the echo reads.
+        let trigger_event = view
+            .context
+            .pending
+            .trigger_event
+            .as_ref()
+            .or_else(|| view.context.trigger_events.first());
+        let Some(trigger_event) = trigger_event else {
+            continue;
+        };
+        if !super::mana_abilities::echo_body_owes_type_choice(
+            &view.context.pending.ability,
+            Some(trigger_event),
+        ) {
+            continue;
+        }
+        // CR 106.4: only an unrestricted echo bonus is generally spendable;
+        // a restricted one (e.g. spend-only-on-X) cannot be counted
+        // optimistically for an arbitrary cost.
+        let restricted = match &view.context.pending.ability.effect {
+            Effect::Mana { restrictions, .. } => !restrictions.is_empty(),
+            _ => true,
+        };
+        if restricted {
+            continue;
+        }
+        let mut options = super::mana_abilities::echo_distinct_types(trigger_event);
+        options.sort();
+        options.dedup();
+        if !options.is_empty() {
+            firings.push(options);
+        }
+    }
+    firings
+}
+
+/// CR 605.4a + CR 608.2d + CR 601.2g-h + CR 603.3: pre-spend echo settlement
+/// for synchronous auto-tap payment. Runs the typed fixed-point batch over the
+/// auto-tap events (`events[events_before..]`, already marked
+/// `FromTapTriggersResolved` with the mixed-echo exemption) with `outer_resume`
+/// as its continuation, then claims every exact live occurrence this payment
+/// owns — mirroring `collect_completed_mana_frame_events`. Ordinary observers
+/// are deferred (queued, preserved), never discarded: collection records
+/// constrained admissions (once-per-turn ledgers) at match time, so dropping an
+/// admitted context would strand it while a later scan rejects it as already
+/// fired. The exact-occurrence claim stops the post-action scan rediscovering
+/// the same occurrences. Accepted echo work runs immediately; a
+/// `ChooseManaColor` pause returns `Some` with `pending_triggered_mana_resume`
+/// stored, otherwise `None`.
+pub(crate) fn settle_skipped_echo_before_spend(
+    state: &mut GameState,
+    events: &[GameEvent],
+    events_before: usize,
+    outer_resume: crate::types::game_state::ManaTriggerFixedPointResume,
+) -> Option<WaitingFor> {
+    let raw_batch: Vec<GameEvent> = events[events_before..].to_vec();
+    let pause = collect_mana_action_trigger_batch(state, &raw_batch, outer_resume);
+    // Only after the combined collection result is durably owned: claim every
+    // exact live occurrence this payment is responsible for, by full-action
+    // index, so the post-action pipeline cannot collect them a second time.
+    let occurrences = (events_before..events.len())
+        .map(|index| ConsumedTriggerEventOccurrence {
+            event: events[index].clone(),
+            occurrence: trigger_event_occurrence(events, index),
+            scope: ConsumedTriggerEventScope::AllCollectors,
+        })
+        .collect();
+    resolve_and_apply_trigger_collection(
+        state,
+        ResolvedTriggerCollection::ConsumeBeforePriority { occurrences },
+    )
+    .expect("pre-spend echo settlement consumed-before-priority journal cause must be live");
+    pause
 }
 
 /// CR 101.4 + CR 603.3b: APNAP rank of `controller` for trigger ordering — its

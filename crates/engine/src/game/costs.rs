@@ -897,9 +897,12 @@ fn pay_ability_cost_inner(
                 {
                     // CR 118.12 + CR 605.3b + CR 616.1: The mana ability
                     // cursor, rather than the unless-payment handler, owns
-                    // the replacement choice and exact resume state.
+                    // the replacement choice and exact resume state. A
+                    // pre-spend echo choice (CR 605.4a) suspends through the
+                    // same typed continuation channel.
                     if mana_ability_cost_payment_is_paused(state)
                         || state.pending_deferred_life_cost_resume.is_some()
+                        || state.pending_triggered_mana_resume.is_some()
                     {
                         return Ok(PaymentOutcome::Paused {
                             remaining_cost: None,
@@ -949,9 +952,11 @@ fn pay_ability_cost_inner(
                 {
                     // CR 118.12 + CR 605.3b + CR 616.1: See the concrete
                     // mana-cost arm above; the replacement-aware cursor owns
-                    // this pause as well.
+                    // this pause as well, and a pre-spend echo choice
+                    // (CR 605.4a) suspends through the same channel.
                     if mana_ability_cost_payment_is_paused(state)
                         || state.pending_deferred_life_cost_resume.is_some()
+                        || state.pending_triggered_mana_resume.is_some()
                     {
                         return Ok(PaymentOutcome::Paused {
                             remaining_cost: None,

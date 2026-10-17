@@ -460,6 +460,200 @@ fn mirari_echo_bonus_required_for_payment_with_two_floating() {
     );
 }
 
+/// CR 605.4a + CR 608.2d: two echo firings on one tap owe two bonuses. Two
+/// Mirari's Wakes plus Simic Growth Chamber ({G}{U}), empty pool, casting
+/// {2}{G}{U}: base {G}{U} plus one chosen bonus per Wake. A unioned
+/// single-type preview rejects this (one virtual mana cannot cover it);
+/// per-firing accounting admits it, and the live payment pauses twice in
+/// sequence — answering once must leave the second choice pending, not
+/// complete the payment.
+#[test]
+fn two_wake_echoes_fund_cost_requiring_two_bonuses() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_enchantment_from_oracle(P0, "Mirari's Wake", MIRARI_ORACLE);
+    scenario.add_enchantment_from_oracle(P0, "Mirari's Wake", MIRARI_ORACLE);
+    scenario.add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE);
+    let cost = ManaCost::Cost {
+        shards: vec![ManaCostShard::Green, ManaCostShard::Blue],
+        generic: 2,
+    };
+    let threat_id = scenario
+        .add_creature_to_hand(P0, "Big Threat", 6, 6)
+        .with_mana_cost(cost.clone())
+        .id();
+    let mut runner = scenario.build();
+    let threat_card = runner.state().objects[&threat_id].card_id;
+
+    // Preview must count one bonus per firing: base {G}{U} + two bonuses funds
+    // {2}{G}{U} from an empty pool.
+    assert!(
+        engine::game::casting::can_pay_cost_after_auto_tap(runner.state(), P0, threat_id, &cost),
+        "two echo bonuses plus base {{G}}{{U}} must fund {{2}}{{G}}{{U}}"
+    );
+
+    runner
+        .act(GameAction::CastSpell {
+            object_id: threat_id,
+            card_id: threat_card,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("first echo firing must pause for choice, not fail Cannot pay");
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseManaColor {
+            player,
+            choice: ManaChoicePrompt::SingleColor { options },
+            ..
+        } => {
+            assert_eq!(*player, P0, "P0 pays, so P0 chooses");
+            assert_eq!(options.len(), 2);
+            assert!(options.contains(&ManaType::Green) && options.contains(&ManaType::Blue));
+        }
+        other => panic!("expected the first SingleColor echo choice, got {other:?}"),
+    }
+
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Green),
+            count: 1,
+        })
+        .expect("answering Green must reach the second firing, not complete payment");
+    // The second Wake's firing pauses again: still choosing, no Priority yet.
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseManaColor {
+            player,
+            choice: ManaChoicePrompt::SingleColor { options },
+            ..
+        } => {
+            assert_eq!(*player, P0, "P0 still chooses");
+            assert_eq!(options.len(), 2);
+        }
+        other => panic!("expected the second SingleColor echo choice, got {other:?}"),
+    }
+
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Blue),
+            count: 1,
+        })
+        .expect("answering Blue must resume payment");
+    // Base {G}{U} + bonus {G} + bonus {U} minus {2}{G}{U}: nothing left.
+    assert_eq!(
+        runner.state().stack.len(),
+        1,
+        "the paid spell must reach the stack after both choices resume payment"
+    );
+    assert_eq!(
+        runner.state().players[P0.0 as usize].mana_pool.total(),
+        0,
+        "two bonuses plus base must exactly fund {{2}}{{G}}{{U}}"
+    );
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "completion returns to Priority, got {:?}",
+        runner.state().waiting_for
+    );
+}
+
+/// CR 605.4a + CR 608.2d: the Selesnya delayed-generator echo funds a
+/// bonus-dependent payment the same way a printed echo does. Chaos live plus
+/// Simic Growth Chamber ({G}{U}), two floating colorless, casting {3}{G}{U}:
+/// the preview must count the delayed firing (a battlefield-only scan sees no
+/// bonus at all), and the live payment pauses pre-spend for the real choice.
+#[test]
+fn selesnya_delayed_echo_funds_bonus_dependent_payment() {
+    fn floating_colorless(n: usize) -> Vec<ManaUnit> {
+        (0..n)
+            .map(|_| ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![]))
+            .collect()
+    }
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let selesnya = scenario
+        .add_land_from_oracle(P0, "Selesnya Loft Gardens", SELESNYA_ORACLE)
+        .id();
+    scenario.add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE);
+    // Two floating colorless + base {G}{U} = 4 mana; {3}{G}{U} needs 5, so the
+    // delayed echo's one chosen bonus is required.
+    scenario.with_mana_pool(P0, floating_colorless(2));
+    let cost = ManaCost::Cost {
+        shards: vec![ManaCostShard::Green, ManaCostShard::Blue],
+        generic: 3,
+    };
+    let threat_id = scenario
+        .add_creature_to_hand(P0, "Big Threat", 6, 6)
+        .with_mana_cost(cost.clone())
+        .id();
+    let mut runner = scenario.build();
+
+    // CR 311.7 / CR 901.9b: synthesize chaos keyed by Selesnya's id, as in
+    // `runner_with_selesnya_live`.
+    let events = vec![GameEvent::ChaosEnsued { plane_id: selesnya }];
+    process_triggers(runner.state_mut(), &events);
+    while runner.state().delayed_triggers.is_empty() && !runner.state().stack.is_empty() {
+        runner
+            .act(GameAction::PassPriority)
+            .expect("passing priority to resolve the chaos trigger must succeed");
+    }
+    assert_eq!(
+        runner.state().delayed_triggers.len(),
+        1,
+        "chaos must install exactly one Selesnya delayed trigger"
+    );
+
+    // Preview must count the delayed firing: without it the cast looks
+    // unpayable (2 floating + base {G}{U} cannot cover {3}{G}{U}).
+    assert!(
+        engine::game::casting::can_pay_cost_after_auto_tap(runner.state(), P0, threat_id, &cost),
+        "the delayed echo bonus plus base {{G}}{{U}} must fund {{3}}{{G}}{{U}}"
+    );
+
+    let threat_card = runner.state().objects[&threat_id].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: threat_id,
+            card_id: threat_card,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("delayed-echo payment must pause for choice, not fail Cannot pay");
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseManaColor {
+            player,
+            choice: ManaChoicePrompt::SingleColor { options },
+            ..
+        } => {
+            assert_eq!(*player, P0, "P0 pays, so P0 chooses");
+            assert_eq!(options.len(), 2);
+            assert!(options.contains(&ManaType::Green) && options.contains(&ManaType::Blue));
+        }
+        other => panic!("expected a SingleColor echo choice pre-spend, got {other:?}"),
+    }
+
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Blue),
+            count: 1,
+        })
+        .expect("answering Blue must resume payment");
+    assert_eq!(
+        runner.state().stack.len(),
+        1,
+        "the paid spell must reach the stack after the choice resumes payment"
+    );
+    assert_eq!(
+        runner.state().players[P0.0 as usize].mana_pool.total(),
+        0,
+        "bonus-dependent payment spends everything (2C + GU + bonus U for 3GU)"
+    );
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "completion returns to Priority, got {:?}",
+        runner.state().waiting_for
+    );
+}
+
 const MANABARBS_ORACLE: &str =
     "Whenever a player taps a land for mana, this enchantment deals 1 damage to that player.";
 

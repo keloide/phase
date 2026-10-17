@@ -20872,27 +20872,57 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
     if payable_from_state(simulated) {
         return true;
     }
-    // CR 608.2d: a skipped multi-type mana-echo owes exactly one chosen bonus
-    // that the bare inline loop cannot deposit. Previews must never prompt, so
-    // account for one legal bonus optimistically: if any single produced type
-    // added to the pool makes the cost payable, the spell is castable (the live
-    // payment will pause for the real choice before spending).
-    for bonus_type in super::triggers::mixed_echo_bonus_options_for_preview(simulated, &tap_events)
-    {
+    // CR 608.2d: each skipped multi-type mana-echo firing owes exactly one
+    // chosen bonus that the bare inline loop cannot deposit. Previews must
+    // never prompt, so account for one legal bonus per firing optimistically:
+    // if any one-choice-per-firing assignment added to the pool makes the cost
+    // payable, the spell is castable (the live payment will pause for the real
+    // choices before spending). Firings include delayed generators and multiple
+    // same-event observers, which a unioned single-type list cannot represent.
+    let firings = super::triggers::mixed_echo_bonus_firings_for_preview(simulated, &tap_events);
+    if firings.is_empty() {
+        return false;
+    }
+    // Depth-first over assignments with early exit; realistic boards hold a
+    // handful of firings, so the full product stays tiny.
+    let mut assignment: Vec<crate::types::mana::ManaType> = Vec::with_capacity(firings.len());
+    let mut stack: Vec<usize> = vec![0; firings.len()];
+    loop {
+        assignment.clear();
+        assignment.extend(
+            firings
+                .iter()
+                .zip(stack.iter())
+                .map(|(options, index)| options[*index]),
+        );
         let mut virtual_state = simulated.clone();
         if let Some(player_data) = virtual_state.players.iter_mut().find(|p| p.id == player) {
-            player_data.mana_pool.add(crate::types::mana::ManaUnit::new(
-                bonus_type,
-                crate::types::identifiers::ObjectId(0),
-                false,
-                Vec::new(),
-            ));
+            for bonus_type in &assignment {
+                player_data.mana_pool.add(crate::types::mana::ManaUnit::new(
+                    *bonus_type,
+                    crate::types::identifiers::ObjectId(0),
+                    false,
+                    Vec::new(),
+                ));
+            }
         }
         if payable_from_state(&virtual_state) {
             return true;
         }
+        // Mixed-radix increment; exhaustion means no assignment funds the cost.
+        let mut position = 0;
+        loop {
+            stack[position] += 1;
+            if stack[position] < firings[position].len() {
+                break;
+            }
+            stack[position] = 0;
+            position += 1;
+            if position == firings.len() {
+                return false;
+            }
+        }
     }
-    false
 }
 
 /// CR 702.51a: Convoke functions on the spell being cast.
@@ -22975,12 +23005,21 @@ pub(super) fn pay_effect_mana_cost_with_resume(
         PaymentContext::Effect,
         resume,
         events,
-    )? {
-        ManaCostPayment::Paid(()) => Ok(()),
-        ManaCostPayment::Paused {
+    ) {
+        Err(_) if state.pending_triggered_mana_resume.is_some() => {
+            // CR 605.4a + CR 608.2d: a pre-spend echo choice suspends through
+            // the same continuation channel as a replacement pause; the typed
+            // root resumes this exact payment once answered.
+            Err(EngineError::InvalidAction(
+                "Mana payment is awaiting a mana choice".to_string(),
+            ))
+        }
+        Err(error) => Err(error),
+        Ok(ManaCostPayment::Paid(())) => Ok(()),
+        Ok(ManaCostPayment::Paused {
             remaining_life_payments,
             ..
-        } => {
+        }) => {
             let Some(resume) = resume.cloned() else {
                 return Err(EngineError::InvalidAction(
                     "Deferred life payment has no outer resolution root".to_string(),
@@ -23083,6 +23122,11 @@ pub(crate) fn pay_special_action_mana_cost_with_resume(
         Err(_) if mana_ability_cost_payment_is_paused(state) => {
             Ok(SpecialActionManaPayment::Paused)
         }
+        // CR 605.4a + CR 608.2d: a pre-spend echo choice suspends the same way:
+        // the typed continuation resumes this exact payment once answered.
+        Err(_) if state.pending_triggered_mana_resume.is_some() => {
+            Ok(SpecialActionManaPayment::Paused)
+        }
         Err(error) => Err(error),
     }
 }
@@ -23141,6 +23185,37 @@ fn pay_non_cast_mana_cost(
     // CR 605.4a: Resolve coupled `TapsForMana` triggered mana abilities inline
     // so their bonus mana is in the pool before the affordability check.
     super::triggers::resolve_tap_mana_triggers_inline(state, events, events_before);
+
+    // CR 605.4a + CR 608.2d + CR 116.2: same pre-spend echo settlement as the
+    // spell/ability core above, threaded through this payment's own
+    // continuation root (companion, effect, or special action). Without it the
+    // preview admits a bonus-dependent payment the live path then fails before
+    // offering the choice. Nested mana sub-costs (`resume=None`) bypass this
+    // gate by construction; their ultimate mana-ability root settlement owns
+    // the pause instead.
+    if let Some(outer_payment) = resume {
+        let outer_resume = crate::types::game_state::ManaTriggerFixedPointResume::Root {
+            player,
+            resume: Box::new(outer_payment.clone()),
+        };
+        if super::triggers::settle_skipped_echo_before_spend(
+            state,
+            events,
+            events_before,
+            outer_resume,
+        )
+        .is_some()
+        {
+            return Err(EngineError::InvalidAction(
+                "Mana payment is awaiting a mana choice".to_string(),
+            ));
+        }
+        if mana_ability_cost_payment_is_paused(state) {
+            return Err(EngineError::InvalidAction(
+                "Mana payment is awaiting a replacement choice".to_string(),
+            ));
+        }
+    }
 
     let permissions = {
         let mana_spend_permission =
@@ -23286,20 +23361,27 @@ fn auto_tap_and_pay_cost_excluding(
 
     // CR 605.4a + CR 608.2d + CR 601.2g-h: a skipped multi-type mana-echo owes
     // exactly one chosen bonus BEFORE the spend. The bare inline loop cannot
-    // pause, so drive the typed fixed-point batch here with the exact outer
-    // payment as its continuation. If it pauses for `ChooseManaColor`, suspend
-    // this payment: the finalizer restores `pending_cast` and returns the
-    // prompt, and answering resumes this same payment with the bonus in the
-    // pool. Previews (no outer `resume`) stay choice-free via the virtual
-    // accounting in `can_pay_mana_cost_after_auto_tap_with_context_and_cache`.
+    // pause, so settle through the typed fixed-point continuation with the
+    // exact outer payment as its root. Ordinary observers are deferred (never
+    // discarded) and the owned occurrences claimed, so constrained admissions
+    // survive and the post-action scan cannot double-collect. If settlement
+    // pauses for `ChooseManaColor`, suspend this payment: the finalizer
+    // restores `pending_cast` and returns the prompt, and answering resumes
+    // this same payment with the bonus in the pool. Previews (no outer
+    // `resume`) stay choice-free via the virtual accounting in
+    // `can_pay_mana_cost_after_auto_tap_with_context_and_cache`.
     if let Some(outer_payment) = resume {
-        let raw_batch = events[events_before..].to_vec();
         let outer_resume = crate::types::game_state::ManaTriggerFixedPointResume::Root {
             player,
             resume: Box::new(outer_payment.clone()),
         };
-        if super::triggers::pause_for_skipped_echo_before_spend(state, &raw_batch, outer_resume)
-            .is_some()
+        if super::triggers::settle_skipped_echo_before_spend(
+            state,
+            events,
+            events_before,
+            outer_resume,
+        )
+        .is_some()
         {
             return Err(EngineError::InvalidAction(
                 "Mana payment is awaiting a mana choice".to_string(),
