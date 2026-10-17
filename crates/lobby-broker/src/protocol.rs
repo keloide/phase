@@ -60,10 +60,17 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 147 — `FilterProp` gains `Prepared` (CR 722.3a), serialized in the trigger
-///      conditions (and ability/filter definitions) of `GameState`. A v146 peer
+/// 148 — `FilterProp` gains `Prepared` (CR 722.3a), serialized in the trigger
+///      conditions (and ability/filter definitions) of `GameState`. A v147 peer
 ///      cannot deserialize the new tagged variant. Full-game peers and P2P move
-///      in lockstep (wire 129); no lobby carrier names it.
+///      in lockstep (wire 130); no lobby carrier names it.
+/// 147 — Online physical contests (Eye to Eye, Mouth to Mouth). `WaitingFor::
+///      PhysicalContest` (serialized `ContestState` inside `GameState`),
+///      `Effect::PhysicalContest`, `GameEvent::PhysicalContestStarted` /
+///      `PhysicalContestResolved`, `ClientMessage::ContestClick` and
+///      `ServerMessage::ContestProgress`. A v146 peer cannot parse the new
+///      `WaitingFor`/`Effect`/`GameEvent` tags or either message. Full-game
+///      peers and P2P move in lockstep; no lobby carrier names it (wire 129).
 /// 146 — `ConfirmedPeriod` gains `performance` and `counted_by` (`CountedBy::Replay { departures }`, CR
 ///      732.2a: the offer's count is the repetitions the counting replay performed,
 ///      with the seats that left in each) and `PredictedDeparture` serializes inside
@@ -1106,7 +1113,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 147;
+pub const PROTOCOL_VERSION: u32 = 148;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -2363,12 +2370,12 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 147);
+        assert_eq!(PROTOCOL_VERSION, 148);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact
         // Full-session identity across draft match attachment and follow-ups.
-        assert_eq!(MIN_SUPPORTED_PROTOCOL, 146);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL, 147);
     }
 
     #[test]
