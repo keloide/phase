@@ -20792,6 +20792,14 @@ fn can_pay_mana_cost_after_auto_tap_with_context(
 struct AutoTapProbeOptions<'a> {
     source_cache: Option<&'a casting_costs::AutoTapSourceCache>,
     explicit_tap_payment_mode: Option<ConvokeMode>,
+    /// CR 605.3b + CR 616.1 + CR 605.4a: capabilities of the live payment this
+    /// preview stands in for. Defaults to `Resumable` — spell casts, ability
+    /// activations, and resumable special actions all carry a typed root and
+    /// suspend for the choice. The planar die roll previews a rootless live
+    /// payment and passes `Unresumable` so the preview cannot promise a payment
+    /// the live path then fails; rootless flows with no affordability probe
+    /// (Room unlock) are unaffected.
+    paused: PausedManaPayment,
 }
 
 fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
@@ -20817,10 +20825,11 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
 
     // CR 601.2g + CR 605.3b + CR 616.1: A costed mana source may stop the
     // preview at a replacement choice. That is an in-progress, payable mana
-    // payment, not evidence that the source is unavailable. The live flow
-    // serializes the cursor and resumes it after the choice.
+    // payment when the live flow serializes the cursor and resumes it after
+    // the choice; a rootless live payment cannot suspend, so for it the pause
+    // means the payment cannot complete.
     if mana_ability_cost_payment_is_paused(simulated) {
-        return true;
+        return matches!(options.paused, PausedManaPayment::Resumable);
     }
 
     // CR 605.4a: A `TapsForMana` triggered mana ability (Leyline of Abundance /
@@ -20872,6 +20881,14 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
     if payable_from_state(simulated) {
         return true;
     }
+    // CR 605.4a + CR 608.2d: the owed echo bonus only reaches the pool when
+    // the live payment can suspend for its choice. A rootless live payment
+    // (planar die roll, Room unlock) cannot, so its preview must stay at the
+    // real pool — counting the bonus would offer an action the live payment
+    // then fails.
+    if !matches!(options.paused, PausedManaPayment::Resumable) {
+        return false;
+    }
     // CR 608.2d: each skipped multi-type mana-echo firing owes exactly one
     // chosen bonus that the bare inline loop cannot deposit. Previews must
     // never prompt, so account for one legal bonus per firing optimistically:
@@ -20883,6 +20900,17 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
     if firings.is_empty() {
         return false;
     }
+    // One scratch clone for the whole search — every assignment rebuilds the
+    // payer's pool from its post-inline baseline (the deterministic
+    // single-type `TapsForMana` bonuses above are already in it), so no state
+    // is cloned per assignment and nothing outside the pool carries over
+    // between assignments.
+    let mut virtual_state = simulated.clone();
+    let baseline_pool = virtual_state
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .map(|p| p.mana_pool.clone());
     // Depth-first over assignments with early exit; realistic boards hold a
     // handful of firings, so the full product stays tiny.
     let mut assignment: Vec<crate::types::mana::ManaType> = Vec::with_capacity(firings.len());
@@ -20895,8 +20923,13 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
                 .zip(stack.iter())
                 .map(|(options, index)| options[*index]),
         );
-        let mut virtual_state = simulated.clone();
-        if let Some(player_data) = virtual_state.players.iter_mut().find(|p| p.id == player) {
+        if let Some((player_data, baseline_pool)) = virtual_state
+            .players
+            .iter_mut()
+            .find(|p| p.id == player)
+            .zip(baseline_pool.as_ref())
+        {
+            player_data.mana_pool = baseline_pool.clone();
             for bonus_type in &assignment {
                 player_data.mana_pool.add(crate::types::mana::ManaUnit::new(
                     *bonus_type,
@@ -21420,6 +21453,8 @@ pub fn can_pay_cost_after_auto_tap_with_probe(
         AutoTapProbeOptions {
             source_cache,
             explicit_tap_payment_mode: None,
+            // Casts suspend through `pending_cast`; the live payment resumes.
+            paused: PausedManaPayment::Resumable,
         },
     )
 }
@@ -21451,6 +21486,8 @@ pub(crate) fn can_pay_pending_cast_after_auto_tap_in_scratch(
         AutoTapProbeOptions {
             source_cache: None,
             explicit_tap_payment_mode: None,
+            // The pending cast owns a typed continuation for the choice.
+            paused: PausedManaPayment::Resumable,
         },
     )
 }
@@ -21569,6 +21606,8 @@ fn feasibly_payable_with_tap_payment_mode_in_context(
         AutoTapProbeOptions {
             source_cache: None,
             explicit_tap_payment_mode: Some(tap_payment_mode),
+            // Spell-context feasibility: casts suspend and resume.
+            paused: PausedManaPayment::Resumable,
         },
     ) {
         return true;
@@ -22301,19 +22340,25 @@ pub fn can_pay_ability_mana_cost_after_auto_tap_excluding(
     )
 }
 
-/// CR 605.3b + CR 616.1: how an affordability probe treats an auto-tapped mana
-/// ability whose own cost pauses for a replacement choice mid-payment.
+/// CR 605.3b + CR 616.1 + CR 605.4a + CR 608.2d: how an affordability probe
+/// treats a live payment that pauses mid-payment for a choice — either a
+/// replacement choice on an auto-tapped mana ability's own cost or a pre-spend
+/// choice-owing mana echo.
 ///
 /// Whether that pause is "still payable" depends on the live payment the probe
 /// previews, not on the mana: a payment made with a resumable root surfaces the
-/// choice and continues, while one made without a root cannot suspend at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PausedManaPayment {
+/// choice and continues, while one made without a root cannot suspend at all —
+/// neither for the replacement choice nor for the echo, whose chosen bonus then
+/// never reaches the pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum PausedManaPayment {
     /// The live payment carries a resumable root and will surface the choice.
+    #[default]
     Resumable,
     /// The live payment cannot suspend (`pay_unless_cost`, which combat taxes
-    /// and resolution-time "pay {X}" amounts pay through), so a pause means the
-    /// payment cannot complete.
+    /// and resolution-time "pay {X}" amounts pay through, and the rootless
+    /// special-action compat entries used by the planar die roll and Room
+    /// unlock), so a pause means the payment cannot complete.
     Unresumable,
 }
 
@@ -23131,21 +23176,36 @@ pub(crate) fn pay_special_action_mana_cost_with_resume(
     }
 }
 
+/// CR 116.2 + CR 106.6: Whether a special action's mana cost is payable after
+/// auto-tapping sources, for a live payment with the capabilities of `paused`.
+/// Continuation-carrying flows (companion, turning a morph face up, ending a
+/// continuous effect) pay through [`pay_special_action_mana_cost_with_resume`]
+/// and pass `PausedManaPayment::Resumable`; the rootless planar die roll pays
+/// through [`pay_special_action_mana_cost`], which cannot suspend, and passes
+/// `PausedManaPayment::Unresumable` so the preview stays conservative. Room
+/// unlock is rootless in the same way, but it has no affordability probe to
+/// parameterize.
 pub(crate) fn can_pay_special_action_mana_cost_after_auto_tap(
     state: &GameState,
     player: PlayerId,
     source_id: Option<ObjectId>,
     cost: &crate::types::mana::ManaCost,
     action: crate::types::mana::SpecialAction,
+    paused: PausedManaPayment,
 ) -> bool {
     let ctx = PaymentContext::SpecialAction(action);
-    can_pay_mana_cost_after_auto_tap_with_context(
-        state.clone(),
+    let mut simulated = state.clone();
+    can_pay_mana_cost_after_auto_tap_with_context_and_cache(
+        &mut simulated,
         player,
         source_id,
         cost,
         Some(&ctx),
         &HashSet::new(),
+        AutoTapProbeOptions {
+            paused,
+            ..Default::default()
+        },
     )
 }
 

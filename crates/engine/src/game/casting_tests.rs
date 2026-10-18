@@ -61027,3 +61027,78 @@ fn quantity_vs_each_opponent_skips_a_player_who_left_the_game() {
         "P2 left the game, so only P1's one card is compared"
     );
 }
+
+/// CR 116.2i + CR 605.4a + CR 608.2d: the rootless planar die roll pays
+/// through `pay_special_action_mana_cost`, which carries no continuation and
+/// cannot suspend for a pre-spend choice-owing mana echo. Its affordability
+/// probe must therefore stay at the real pool: `Unresumable` declines the
+/// bonus-dependent cost that the `Resumable` preview (companion / turn face up
+/// / end continuous effect) admits, and the rootless live payment fails at
+/// affordability exactly where the conservative probe declined.
+#[test]
+fn special_action_probe_is_conservative_without_a_resumable_root() {
+    use crate::game::scenario::{GameScenario, P0};
+    fn floating_colorless(n: usize) -> Vec<ManaUnit> {
+        (0..n)
+            .map(|_| ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![]))
+            .collect()
+    }
+    const MIRARI_ORACLE: &str =
+        "Whenever a player taps a land for mana, that player adds one mana of any type that land produced.";
+    const CHAMBER_ORACLE: &str = "This land enters tapped.\nWhen this land enters, return a land you control to its owner's hand.\n{T}: Add {G}{U}.";
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_enchantment_from_oracle(P0, "Mirari's Wake", MIRARI_ORACLE);
+    scenario.add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE);
+    // Two floating colorless plus the chamber's base {G}{U} is 4 mana; the
+    // cost needs 5, so only the owed echo bonus can fund it.
+    scenario.with_mana_pool(P0, floating_colorless(2));
+    let mut runner = scenario.build();
+    let cost = ManaCost::Cost {
+        shards: vec![ManaCostShard::Green, ManaCostShard::Blue],
+        generic: 3,
+    };
+
+    assert!(
+        can_pay_special_action_mana_cost_after_auto_tap(
+            runner.state(),
+            P0,
+            None,
+            &cost,
+            crate::types::mana::SpecialAction::RollPlanarDie,
+            PausedManaPayment::Resumable,
+        ),
+        "a continuation-carrying live payment suspends for the echo choice, so its preview counts the bonus"
+    );
+    assert!(
+        !can_pay_special_action_mana_cost_after_auto_tap(
+            runner.state(),
+            P0,
+            None,
+            &cost,
+            crate::types::mana::SpecialAction::RollPlanarDie,
+            PausedManaPayment::Unresumable,
+        ),
+        "a rootless live payment cannot deposit the bonus; its preview must stay at the real pool"
+    );
+
+    let mut events = Vec::new();
+    let live = pay_special_action_mana_cost(
+        runner.state_mut(),
+        P0,
+        None,
+        &cost,
+        crate::types::mana::SpecialAction::RollPlanarDie,
+        &mut events,
+    );
+    match &live {
+        Err(EngineError::ActionNotAllowed(reason)) => assert_eq!(
+            reason, "Cannot pay mana cost",
+            "the rootless live payment must fail at affordability exactly where the \
+             conservative probe declined"
+        ),
+        other => {
+            panic!("expected the rootless payment to fail at affordability, got {other:?}")
+        }
+    }
+}

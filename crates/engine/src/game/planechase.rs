@@ -396,12 +396,17 @@ pub fn can_roll_planar_die(state: &GameState, player: PlayerId) -> bool {
     if cost.is_without_paying_mana() {
         return true;
     }
+    // CR 116.2i + CR 605.4a + CR 608.2d: `take_paid_planar_die_action` pays
+    // through the rootless compat entry, which cannot suspend for a replacement
+    // cursor or a pre-spend echo choice — such a roll then fails "Cannot pay
+    // mana cost". The probe must not offer what the live path cannot complete.
     crate::game::casting::can_pay_special_action_mana_cost_after_auto_tap(
         state,
         player,
         None,
         &cost,
         crate::types::mana::SpecialAction::RollPlanarDie,
+        crate::game::casting::PausedManaPayment::Unresumable,
     )
 }
 
