@@ -197,9 +197,7 @@ fn nested_sub_cost_echo_choice_precedes_catacombs_production() {
         })
         .expect("nested sub-cost tap must pause for echo choice");
     match &runner.state().waiting_for {
-        WaitingFor::ChooseManaColor {
-            player, choice: _, ..
-        } => {
+        WaitingFor::ChooseManaColor { player, .. } => {
             assert_eq!(*player, P0, "P0 activates, so P0 chooses");
         }
         other => panic!("expected a SingleColor echo choice, got {other:?}"),
