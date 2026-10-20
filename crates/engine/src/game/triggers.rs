@@ -10391,18 +10391,42 @@ pub(crate) fn collect_activation_event_at_boundary(
 fn collect_undispatched_emission_batch(
     state: &mut GameState,
     emitted: &[GameEvent],
+    exclude: &[GameEvent],
 ) -> Option<CollectedTriggerContextBatch> {
+    // CR 605.4a: an occurrence's own trigger event is its cause, never an
+    // emission of its body. A resumed action can replay the parked frame's
+    // trigger event through its frame-local buffer; filtering those exact
+    // occurrence events keeps child discovery from re-collecting the parent
+    // as its own child.
+    let emitted: Vec<GameEvent> = emitted
+        .iter()
+        .filter(|event| !exclude.contains(event))
+        .cloned()
+        .collect();
     if emitted.is_empty() {
         return None;
     }
-    let seed = collect_triggers_for_batch(state, emitted);
+    let seed = collect_triggers_for_batch(state, &emitted);
     let batch = collect_pending_and_delayed_triggers_for_batch(
         state,
         seed,
-        emitted,
+        &emitted,
         DelayedTriggerEventScope::Any,
     );
     (!batch.contexts.is_empty()).then_some(batch)
+}
+
+/// CR 605.4a: every event that caused this occurrence. Child discovery must
+/// exclude them because a paused or resumed body can replay its own cause
+/// through the frame-local event buffer.
+fn occurrence_cause_events(context: &PendingTriggerContext) -> Vec<GameEvent> {
+    context
+        .pending
+        .trigger_event
+        .iter()
+        .chain(context.trigger_events.iter())
+        .cloned()
+        .collect()
 }
 
 /// CR 605.4a fixed point: resolve each accepted occurrence under its own node,
@@ -10434,7 +10458,8 @@ fn run_accepted_triggered_mana_fixed_point(
                 "a paused occurrence's marker must restore before its emission batch is collected"
             );
             let emitted: Vec<GameEvent> = events_out[emitted_start..].to_vec();
-            let collected_batches = collect_undispatched_emission_batch(state, &emitted)
+            let exclude = occurrence_cause_events(&context_for_resume);
+            let collected_batches = collect_undispatched_emission_batch(state, &emitted, &exclude)
                 .into_iter()
                 .collect();
             state.pending_triggered_mana_resume =
@@ -10456,7 +10481,12 @@ fn run_accepted_triggered_mana_fixed_point(
             "a completed occurrence's marker must restore before child discovery"
         );
         if events_out.len() > emitted_start {
-            let emitted: Vec<GameEvent> = events_out[emitted_start..].to_vec();
+            let exclude = occurrence_cause_events(&context_for_resume);
+            let emitted: Vec<GameEvent> = events_out[emitted_start..]
+                .iter()
+                .filter(|event| !exclude.contains(event))
+                .cloned()
+                .collect();
             let seed = collect_triggers_for_batch(state, &emitted);
             let child = collect_pending_and_delayed_triggers_for_batch(
                 state,
@@ -10561,7 +10591,12 @@ pub(crate) fn finish_accepted_triggered_mana_action(
         "readiness must run outside the resumed occurrence's own scope"
     );
     let emitted: Vec<GameEvent> = events[event_start.min(events.len())..].to_vec();
-    let batch = collect_undispatched_emission_batch(state, &emitted);
+    let exclude = state
+        .pending_triggered_mana_resume
+        .as_ref()
+        .map(|carrier| occurrence_cause_events(&carrier.current))
+        .unwrap_or_default();
+    let batch = collect_undispatched_emission_batch(state, &emitted, &exclude);
     claim_resumed_triggered_mana_events(state, events, event_start);
     let carrier = state
         .pending_triggered_mana_resume
@@ -10623,8 +10658,7 @@ pub(crate) fn finish_accepted_triggered_mana_action(
     let direct_priority_root = matches!(
         outer_resume,
         crate::types::game_state::ManaTriggerFixedPointResume::Root { ref resume, .. }
-            if matches!(**resume, crate::types::game_state::ManaAbilityResume::Priority)
-                || resume.is_top_level_special_action()
+            if resume.reaches_direct_priority_root()
     );
     let Some(wait) = super::mana_abilities::resume_settled_mana_frame(state, outer_resume, events)?
     else {
@@ -10639,10 +10673,7 @@ pub(crate) fn finish_accepted_triggered_mana_action(
             state.pending_cost_move_resume.as_ref(),
             Some(
                 crate::types::game_state::PendingCostMoveResume::ManaAbilityPayment { pending, .. }
-            ) if matches!(
-                pending.resume,
-                crate::types::game_state::ManaAbilityResume::Priority
-            ) || pending.resume.is_top_level_special_action()
+            ) if pending.resume.reaches_direct_priority_root()
         );
         super::engine::resume_pending_continuation_if_priority(state, events)?;
         let wait = state.waiting_for.clone();

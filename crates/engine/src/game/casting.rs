@@ -20889,7 +20889,14 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
     if !matches!(options.paused, PausedManaPayment::Resumable) {
         return false;
     }
-    echo_bonus_preview_can_pay(simulated, player, cost, &tap_events, &payable_from_state)
+    echo_bonus_preview_can_pay(
+        simulated,
+        player,
+        cost,
+        &tap_events,
+        permissions,
+        &payable_from_state,
+    )
 }
 
 /// CR 605.4a + CR 608.2d + CR 106.12a: account for one chosen bonus per
@@ -20907,6 +20914,7 @@ fn echo_bonus_preview_can_pay(
     player: PlayerId,
     cost: &crate::types::mana::ManaCost,
     tap_events: &[GameEvent],
+    permissions: crate::types::mana::CostPermissionContext,
     payable: &impl Fn(&GameState) -> bool,
 ) -> bool {
     let firings = super::triggers::mixed_echo_bonus_firings_for_preview(simulated, tap_events);
@@ -20923,7 +20931,7 @@ fn echo_bonus_preview_can_pay(
     };
     // CR 605.4a: reject before searching when even making every owed bonus the
     // exact type the cost wants could not cover its minimum demand.
-    if echo_bonus_upper_bound_is_short(cost, &baseline_pool, firings.len()) {
+    if echo_bonus_upper_bound_is_short(cost, &baseline_pool, firings.len(), permissions) {
         return false;
     }
     // One scratch clone for the whole search — every candidate rebuilds the
@@ -20970,9 +20978,17 @@ fn echo_bonus_upper_bound_is_short(
     cost: &crate::types::mana::ManaCost,
     baseline_pool: &crate::types::mana::ManaPool,
     firings: usize,
+    permissions: crate::types::mana::CostPermissionContext,
 ) -> bool {
     use crate::types::mana::{ManaCost, ManaCostShard};
 
+    // CR 107.4f + CR 118.3b: a K'rrik-style grant can pay a colored shard
+    // with 2 life instead of mana, so the mana-only upper bound is not a
+    // necessary condition when that permission and budget exist. Let the
+    // exact search decide rather than risk a false negative.
+    if permissions.max_life >= 2 && !permissions.life_colors.is_empty() {
+        return false;
+    }
     let ManaCost::Cost { shards, generic } = cost else {
         return false;
     };
@@ -22532,7 +22548,14 @@ pub(super) fn can_pay_effect_mana_cost_after_auto_tap(
         return true;
     }
     matches!(paused, PausedManaPayment::Resumable)
-        && echo_bonus_preview_can_pay(&mut simulated, player, cost, &tap_events, &payable)
+        && echo_bonus_preview_can_pay(
+            &mut simulated,
+            player,
+            cost,
+            &tap_events,
+            permissions,
+            &payable,
+        )
 }
 
 // Target/mode selection handlers are in casting_targets module.

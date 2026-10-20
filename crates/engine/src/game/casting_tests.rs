@@ -61102,3 +61102,34 @@ fn rootless_special_action_probe_stays_at_the_real_pool() {
         }
     }
 }
+
+#[test]
+fn echo_upper_bound_defers_to_life_payment_permissions() {
+    // CR 107.4f + CR 118.3b: a K'rrik-style grant pays a colored shard with
+    // 2 life instead of mana. The mana-only upper bound is not a necessary
+    // condition when that permission and budget exist, so it must defer to
+    // the exact echo search rather than reject a legal payment.
+    let cost = ManaCost::Cost {
+        shards: vec![ManaCostShard::Black],
+        generic: 0,
+    };
+    let pool = crate::types::mana::ManaPool::default();
+    let life_permission = crate::types::mana::CostPermissionContext {
+        max_life: 2,
+        life_colors: std::iter::once(ManaColor::Black).collect(),
+        ..Default::default()
+    };
+    assert!(
+        !super::echo_bonus_upper_bound_is_short(&cost, &pool, 0, life_permission),
+        "a life-payable {{B}} must not be rejected by the mana-only bound"
+    );
+    assert!(
+        super::echo_bonus_upper_bound_is_short(
+            &cost,
+            &pool,
+            0,
+            crate::types::mana::CostPermissionContext::default()
+        ),
+        "without a life-payment permission the same empty pool is still short"
+    );
+}

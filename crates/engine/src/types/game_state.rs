@@ -9313,6 +9313,21 @@ impl ManaAbilityResume {
         }
     }
 
+    /// CR 117.3c + CR 117.5: Whether this resume chain terminates at a root
+    /// that returns priority directly — `Priority` itself or a CR 116.2
+    /// special action. A nested `ManaAbilityManaPayment` carries the enclosing
+    /// activation's root, so a parent settling through one is still a direct
+    /// priority root and must run settled-Priority convergence.
+    pub fn reaches_direct_priority_root(&self) -> bool {
+        match self {
+            ManaAbilityResume::Priority => true,
+            ManaAbilityResume::ManaAbilityManaPayment {
+                pending_mana_ability,
+            } => pending_mana_ability.resume.reaches_direct_priority_root(),
+            resume => resume.is_top_level_special_action(),
+        }
+    }
+
     /// CR 601.2h + CR 602.2b + CR 116.2: Whether the outer payment root this
     /// resumes is a cast, activation or special action (no priority until it
     /// completes) rather than a resolution. Exhaustive so a new root has to be

@@ -289,7 +289,7 @@ fn resolution_pay_cost_bonus_dependent_payment_pauses_for_echo() {
     }
     assert_single_color_echo_choice(&runner, &[ManaType::Green, ManaType::Blue]);
 
-    runner
+    let resumed = runner
         .act(GameAction::ChooseManaColor {
             choice: ManaChoice::SingleColor(ManaType::Blue),
             count: 1,
@@ -299,6 +299,20 @@ fn resolution_pay_cost_bonus_dependent_payment_pauses_for_echo() {
         runner.state().players[P0.0 as usize].mana_pool.total(),
         0,
         "one colorless plus base {{G}}{{U}} plus one bonus exactly funds {{4}}"
+    );
+    assert!(
+        !runner.state().cost_payment_failed_flag,
+        "the resumed effect-cost payment must complete, not fall through to the failure flag"
+    );
+    assert!(
+        resumed.events.iter().any(|event| matches!(
+            event,
+            GameEvent::EffectResolved {
+                kind: engine::types::ability::EffectKind::Discover,
+                ..
+            }
+        )),
+        "the paid {{4}} must resolve the discover 4 rider, not only settle the echo"
     );
     assert_eq!(
         runner.state().objects[&conservator].zone,
