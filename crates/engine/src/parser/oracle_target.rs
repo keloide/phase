@@ -23888,17 +23888,84 @@ mod color_or_type_union {
         }
         let (article, rest) =
             parse_type_phrase_folding("black or green creature or an artifact creature");
-        assert_eq!(rest, "");
-        assert!(
-            matches_target_filter(runner.state(), own_artifact, &article, &context),
-            "article-led artifact stays independent of left colors"
-        );
+        assert_eq!(rest, " or an artifact creature");
+        for id in [borrowed, stolen] {
+            assert!(matches_target_filter(
+                runner.state(),
+                id,
+                &article,
+                &context
+            ));
+        }
+        assert!(!matches_target_filter(
+            runner.state(),
+            own_artifact,
+            &article,
+            &context
+        ));
         assert!(!matches_target_filter(
             runner.state(),
             red,
             &article,
             &context
         ));
+        let (article_cards, rest) =
+            parse_type_phrase_folding("black or green creature card or an artifact creature card");
+        assert_eq!(rest, "");
+        let mut cards = GameScenario::new();
+        let black_card = cards
+            .add_creature_to_hand(P0, "Black Card", 2, 2)
+            .with_color(vec![ManaColor::Black])
+            .id();
+        let green_card = cards
+            .add_creature_to_hand(P0, "Green Card", 2, 2)
+            .with_color(vec![ManaColor::Green])
+            .id();
+        let artifact_card = cards
+            .add_creature_to_hand(P0, "Artifact Card", 2, 2)
+            .as_artifact_creature()
+            .id();
+        let red_card = cards
+            .add_creature_to_hand(P0, "Red Card", 2, 2)
+            .with_color(vec![ManaColor::Red])
+            .id();
+        let black_noncreature_card = cards
+            .add_creature_to_hand(P0, "Black Noncreature", 0, 0)
+            .as_enchantment()
+            .with_color(vec![ManaColor::Black])
+            .id();
+        let green_noncreature_card = cards
+            .add_creature_to_hand(P0, "Green Noncreature", 0, 0)
+            .as_enchantment()
+            .with_color(vec![ManaColor::Green])
+            .id();
+        let artifact_noncreature_card = cards
+            .add_creature_to_hand(P0, "Artifact Noncreature", 0, 0)
+            .as_enchantment()
+            .as_artifact()
+            .id();
+        let cards = cards.build();
+        for id in [black_card, green_card, artifact_card] {
+            assert!(matches_target_filter(
+                cards.state(),
+                id,
+                &article_cards,
+                &context
+            ));
+        }
+        for id in [
+            red_card,
+            black_noncreature_card,
+            green_noncreature_card,
+            artifact_noncreature_card,
+        ] {
+            assert!(!matches_target_filter(
+                cards.state(),
+                id,
+                &article_cards,
+                &context
+            ));
+        }
         let (without_noun, rest) = parse_type_phrase_folding("black or green or artifact");
         assert_eq!(rest, "");
         assert_eq!(

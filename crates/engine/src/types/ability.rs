@@ -27789,6 +27789,9 @@ pub struct ReturnResultReadSpec {
 pub struct AbilityDefinition {
     pub kind: AbilityKind,
     pub effect: Box<Effect>,
+    /// CR 608.2c + CR 109.5: The instruction's grammatical actor, independently
+    /// of an enclosing player's scope and of the instruction's recipient.
+    pub instruction_actor: Option<ControllerRef>,
     /// Group announced by this clause, including its mutually exclusive cost branch.
     pub declares_chosen_group: Option<ChosenGroupId>,
     /// Exact announced group consumed by this clause.
@@ -27974,6 +27977,8 @@ struct AbilityDefinitionRepr<'a> {
     kind: &'a AbilityKind,
     effect: &'a Effect,
     #[serde(skip_serializing_if = "Option::is_none")]
+    instruction_actor: &'a Option<ControllerRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     declares_chosen_group: &'a Option<ChosenGroupId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reads_chosen_group: &'a Option<ChosenGroupId>,
@@ -28066,6 +28071,7 @@ impl Serialize for AbilityDefinition {
         let AbilityDefinition {
             kind,
             effect,
+            instruction_actor,
             declares_chosen_group,
             reads_chosen_group,
             declares_return_result,
@@ -28117,6 +28123,7 @@ impl Serialize for AbilityDefinition {
             kind,
             // `effect` is `&Box<Effect>` from the destructure; deref to `&Effect`.
             effect,
+            instruction_actor,
             declares_chosen_group,
             reads_chosen_group,
             declares_return_result,
@@ -28199,6 +28206,8 @@ impl Serialize for AbilityDefinition {
 struct AbilityDefinitionDe {
     kind: AbilityKind,
     effect: Box<Effect>,
+    #[serde(default)]
+    instruction_actor: Option<ControllerRef>,
     #[serde(default)]
     declares_chosen_group: Option<ChosenGroupId>,
     #[serde(default)]
@@ -28314,6 +28323,7 @@ impl<'de> Deserialize<'de> for AbilityDefinition {
             reads_chosen_group: de.reads_chosen_group,
             declares_return_result: de.declares_return_result,
             reads_return_result: de.reads_return_result,
+            instruction_actor: de.instruction_actor,
             cost: de.cost,
             sub_ability: de.sub_ability,
             else_ability: de.else_ability,
@@ -28611,6 +28621,7 @@ impl AbilityDefinition {
         Self {
             kind,
             effect: Box::new(effect),
+            instruction_actor: None,
             declares_chosen_group: None,
             reads_chosen_group: None,
             declares_return_result: None,
@@ -35201,6 +35212,10 @@ impl AttachTargetBindings {
 #[serde(remote = "Self")]
 pub struct ResolvedAbility {
     pub effect: Effect,
+    /// CR 608.2c + CR 109.5: Unconsumed instruction-local actor. Admission
+    /// latches the concrete player in `controller` before this node acts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_actor: Option<ControllerRef>,
     pub targets: Vec<TargetRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declares_chosen_group: Option<ChosenGroupId>,
@@ -35716,6 +35731,7 @@ impl PartialEq for ResolvedAbility {
     fn eq(&self, other: &Self) -> bool {
         let Self {
             effect: a_effect,
+            instruction_actor: a_instruction_actor,
             targets: a_targets,
             declares_chosen_group: a_declares_chosen_group,
             reads_chosen_group: a_reads_chosen_group,
@@ -35790,6 +35806,7 @@ impl PartialEq for ResolvedAbility {
         } = self;
         let Self {
             effect: b_effect,
+            instruction_actor: b_instruction_actor,
             targets: b_targets,
             declares_chosen_group: b_declares_chosen_group,
             reads_chosen_group: b_reads_chosen_group,
@@ -35864,6 +35881,7 @@ impl PartialEq for ResolvedAbility {
         } = other;
 
         a_effect == b_effect
+            && a_instruction_actor == b_instruction_actor
             && a_targets == b_targets
             && a_declares_chosen_group == b_declares_chosen_group
             && a_reads_chosen_group == b_reads_chosen_group
@@ -36241,6 +36259,7 @@ impl ResolvedAbility {
         Self {
             effect,
             targets,
+            instruction_actor: None,
             declares_chosen_group: None,
             reads_chosen_group: None,
             declares_return_result: None,
@@ -37904,6 +37923,30 @@ where
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+pub(crate) fn instruction_actor_test_refs() -> [ControllerRef; 16] {
+    [
+        ControllerRef::You,
+        ControllerRef::ScopedPlayer,
+        ControllerRef::Opponent,
+        ControllerRef::TargetPlayer,
+        ControllerRef::TargetOpponent,
+        ControllerRef::DeclaredPlayer {
+            group: ChosenGroupId(1),
+        },
+        ControllerRef::ParentTargetController,
+        ControllerRef::ParentTargetOwner,
+        ControllerRef::EventTargetController,
+        ControllerRef::DefendingPlayer,
+        ControllerRef::ChosenPlayer { index: 0 },
+        ControllerRef::SourceChosenPlayer,
+        ControllerRef::TriggeringPlayer,
+        ControllerRef::EnchantedPlayer,
+        ControllerRef::ActivePlayer,
+        ControllerRef::SpecificPlayer { id: PlayerId(1) },
+    ]
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::events::GameEvent;
@@ -37911,6 +37954,66 @@ mod tests {
     use crate::types::mana::ZoneSpendPolarity;
     use crate::types::zones::Zone;
     use syn::__private::ToTokens;
+
+    #[test]
+    fn instruction_actor_serde_defaults_omits_and_preserves_nested_authorities() {
+        let old = AbilityDefinition::new(AbilityKind::Spell, Effect::NoOp);
+        let old_json = serde_json::to_value(&old).unwrap();
+        assert!(old_json.get("instruction_actor").is_none());
+        let loaded: AbilityDefinition = serde_json::from_value(old_json).unwrap();
+        assert_eq!(loaded.instruction_actor, None);
+        assert_eq!(
+            serde_json::to_value(&loaded)
+                .unwrap()
+                .get("instruction_actor"),
+            None
+        );
+        let mut present = old.clone();
+        present.instruction_actor = Some(ControllerRef::You);
+        let mut child = old.clone();
+        child.instruction_actor = Some(ControllerRef::ScopedPlayer);
+        present.sub_ability = Some(Box::new(child));
+        let mut otherwise = old.clone();
+        otherwise.instruction_actor = Some(ControllerRef::ChosenPlayer { index: 1 });
+        present.else_ability = Some(Box::new(otherwise));
+        assert_ne!(present, old);
+        let roundtrip: AbilityDefinition =
+            serde_json::from_value(serde_json::to_value(&present).unwrap()).unwrap();
+        assert_eq!(roundtrip, present);
+        assert_eq!(
+            roundtrip.sub_ability.as_ref().unwrap().instruction_actor,
+            Some(ControllerRef::ScopedPlayer)
+        );
+        assert_eq!(
+            roundtrip.else_ability.as_ref().unwrap().instruction_actor,
+            Some(ControllerRef::ChosenPlayer { index: 1 })
+        );
+
+        let legacy = ResolvedAbility::new(Effect::NoOp, vec![], ObjectId(1), PlayerId(0));
+        let json = serde_json::to_value(&legacy).unwrap();
+        assert!(json.get("instruction_actor").is_none());
+        let loaded: ResolvedAbility = serde_json::from_value(json).unwrap();
+        assert_eq!(loaded, legacy);
+        let mut resolved =
+            crate::game::ability_utils::build_resolved_from_def(&present, ObjectId(1), PlayerId(0));
+        let state = GameState::new_two_player(42);
+        assert_eq!(
+            crate::game::ability_utils::bind_instruction_actor(&state, &mut resolved),
+            Some(PlayerId(0))
+        );
+        assert_eq!(resolved.instruction_actor, None);
+        assert_eq!(resolved.original_controller, Some(PlayerId(0)));
+        assert_eq!(
+            resolved.sub_ability.as_ref().unwrap().instruction_actor,
+            Some(ControllerRef::ScopedPlayer)
+        );
+        let restored: ResolvedAbility =
+            serde_json::from_value(serde_json::to_value(&resolved).unwrap()).unwrap();
+        assert_eq!(restored, resolved);
+        let mut different = restored.clone();
+        different.sub_ability.as_mut().unwrap().instruction_actor = Some(ControllerRef::You);
+        assert_ne!(restored, different);
+    }
 
     #[test]
     fn names_one_player_is_the_declared_and_bound_player_only() {

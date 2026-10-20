@@ -297,3 +297,286 @@ fn ents_fury_below_threshold_still_pumps_and_fights() {
     assert!(outcome.events().iter().any(|event| matches!(event,
         GameEvent::EffectResolved { kind: EffectKind::Fight, source_id, .. } if *source_id == spell)));
 }
+
+#[test]
+fn synthetic_decline_actor_survives_a_real_saved_optional_prompt() {
+    const ORACLE: &str = "Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter on target creature you control if its power is 4 or greater.";
+    for (power, accept, counters) in [(4, true, 0), (4, false, 1), (3, true, 0), (3, false, 0)] {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let ally = scenario.add_creature(P0, "Saved Target", power, 6).id();
+        let decoy = scenario.add_creature(P0, "Saved Decoy", 8, 8).id();
+        let spell = scenario
+            .add_spell_to_hand_from_oracle(P0, "Synthetic Saved Decline", false, ORACLE)
+            .with_mana_cost(engine::types::mana::ManaCost::zero())
+            .id();
+        for _ in 0..4 {
+            scenario.add_card_to_library_top(P1, "Forest");
+        }
+        let mut runner = scenario.build();
+        let mut committed = runner.cast(spell).target_object(ally).commit();
+        for _ in 0..4 {
+            if !matches!(committed.state().waiting_for, WaitingFor::Priority { .. }) {
+                break;
+            }
+            committed.act(GameAction::PassPriority).unwrap();
+        }
+        assert!(matches!(committed.state().waiting_for,
+            WaitingFor::OptionalEffectChoice { player: P1, source_id, .. } if source_id == spell));
+        let frame = committed
+            .state()
+            .active_optional_effect_frame()
+            .expect("real optional frame");
+        assert_eq!(frame.ability.original_controller, Some(P0));
+        assert_eq!(frame.ability.scoped_player, Some(P1));
+        let saved = serde_json::to_vec(committed.state()).unwrap();
+        drop(committed);
+        let mut runner = GameRunner::from_state(serde_json::from_slice(&saved).unwrap());
+        let hand_before = hand_size(&runner, P1);
+        let result = runner
+            .act(GameAction::DecideOptionalEffect { accept })
+            .expect("restore resumes the real owned decision");
+        assert_eq!(hand_size(&runner, P1), hand_before + usize::from(accept));
+        assert_eq!(p1p1(&runner, ally), counters);
+        assert_eq!(p1p1(&runner, decoy), 0);
+        assert_eq!(result.events.iter().filter(|event| matches!(event,
+            GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: P0 }
+                if *object_id == ally)).count(), counters as usize);
+        assert_eq!(result.events.iter().filter(|event| matches!(event,
+            GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == spell)).count(), counters as usize);
+        if accept {
+            assert!(result.events.iter().any(|event| matches!(event,
+            GameEvent::EffectResolved { kind: EffectKind::Draw, source_id, .. } if *source_id == spell)));
+        }
+        assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+        assert!(runner.state().stack.is_empty());
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::Priority { .. }
+        ));
+    }
+}
+
+/// Synthetic admitted list body: both intrinsic counter placements keep the
+/// controller imperative actor through the real declined optional instruction.
+#[test]
+fn synthetic_decline_compound_counter_children_keep_their_actor() {
+    const ORACLE: &str = "Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter and a lifelink counter on target creature you control.";
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let ally = scenario.add_creature(P0, "Compound Target", 4, 6).id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Synthetic Compound Actor", false, ORACLE)
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    scenario.add_card_to_library_top(P1, "Forest");
+    let mut runner = scenario.build();
+    assert!(
+        std::iter::successors(runner.state().objects[&spell].abilities.first(), |d| d
+            .sub_ability
+            .as_deref())
+        .all(|d| d.effect.unimplemented_description().is_none()),
+        "the full synthetic list must be admitted"
+    );
+    let outcome = runner
+        .cast(spell)
+        .target_object(ally)
+        .decline_optional()
+        .resolve();
+    assert_eq!(p1p1(&runner, ally), 1);
+    assert_eq!(
+        outcome
+            .events()
+            .iter()
+            .filter(|event| matches!(event,
+        GameEvent::CounterAdded { object_id, count: 1, actor: P0, .. } if *object_id == ally))
+            .count(),
+        2
+    );
+    assert_eq!(outcome.events().iter().filter(|event| matches!(event,
+        GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == spell)).count(), 2);
+    outcome.assert_hand_drawn(P1, 0);
+    outcome.assert_zone(&[spell], Zone::Graveyard);
+    assert!(outcome.state().stack.is_empty());
+}
+
+#[test]
+fn synthetic_decline_owned_body_preserves_a_later_explicit_player_actor() {
+    const ORACLE: &str = "Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter and a lifelink counter on target creature you control, then that player puts a +1/+1 counter on a creature they control.";
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let ally = scenario
+        .add_creature(P0, "Printed Controller Target", 3, 6)
+        .id();
+    let other = scenario.add_creature(P1, "Scoped Actor Target", 3, 6).id();
+    let decoy = scenario.add_creature(P1, "Scoped Actor Decoy", 3, 6).id();
+    scenario.add_card_to_library_top(P1, "Forest");
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Synthetic Distinct Subjects", false, ORACLE)
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+    assert!(
+        std::iter::successors(runner.state().objects[&spell].abilities.first(), |d| d
+            .sub_ability
+            .as_deref())
+        .all(|d| d.effect.unimplemented_description().is_none()),
+        "both printed subjects must parse"
+    );
+    let outcome = runner
+        .cast(spell)
+        .target_object(ally)
+        .decline_optional()
+        .resolve();
+    let mut events = outcome.events().to_vec();
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::ChooseFromZoneChoice { player: P1, cards, .. }
+        if cards.contains(&other) && cards.contains(&decoy))
+    );
+    events.extend(
+        runner
+            .act(GameAction::SelectCards { cards: vec![other] })
+            .unwrap()
+            .events,
+    );
+    assert_eq!(p1p1(&runner, ally), 1);
+    assert_eq!(p1p1(&runner, other), 1);
+    assert_eq!(p1p1(&runner, decoy), 0);
+    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::CounterAdded { object_id, count: 1, actor: P0, .. } if *object_id == ally)).count(), 2);
+    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: P1 } if *object_id == other)).count(), 1);
+    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == spell)).count(), 3);
+    assert!(runner.state().stack.is_empty());
+    assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+}
+
+#[test]
+fn synthetic_decline_remaining_seat_and_independent_tail_keep_distinct_authorities() {
+    const ORACLE: &str = "Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter on target creature you control if its power is 4 or greater. You gain 1 life.";
+    let p2 = engine::types::player::PlayerId(2);
+    let mut scenario = GameScenario::new_n_player(3, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let ally = scenario
+        .add_creature(P0, "Remaining Seat Target", 4, 6)
+        .id();
+    for player in [P1, p2] {
+        for _ in 0..3 {
+            scenario.add_card_to_library_top(player, "Forest");
+        }
+    }
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Synthetic Remaining Actor", false, ORACLE)
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+    let mut committed = runner.cast(spell).target_object(ally).commit();
+    for _ in 0..6 {
+        if !matches!(committed.state().waiting_for, WaitingFor::Priority { .. }) {
+            break;
+        }
+        committed.act(GameAction::PassPriority).unwrap();
+    }
+    assert!(
+        matches!(committed.state().waiting_for, WaitingFor::OptionalEffectChoice { player: P1, source_id, .. } if source_id == spell)
+    );
+    let first = committed
+        .act(GameAction::DecideOptionalEffect { accept: true })
+        .unwrap();
+    assert!(
+        matches!(committed.state().waiting_for, WaitingFor::OptionalEffectChoice { player, source_id, .. } if player == p2 && source_id == spell)
+    );
+    let frame = committed.state().active_optional_effect_frame().unwrap();
+    assert_eq!(frame.ability.original_controller, Some(P0));
+    assert_eq!(frame.ability.scoped_player, Some(p2));
+    let saved = serde_json::to_vec(committed.state()).unwrap();
+    drop(committed);
+    let mut runner = GameRunner::from_state(serde_json::from_slice(&saved).unwrap());
+    let second = runner
+        .act(GameAction::DecideOptionalEffect { accept: false })
+        .unwrap();
+    let events: Vec<_> = first.events.into_iter().chain(second.events).collect();
+    assert_eq!(hand_size(&runner, P1), 1);
+    assert_eq!(hand_size(&runner, p2), 0);
+    assert_eq!(p1p1(&runner, ally), 1);
+    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: P0 } if *object_id == ally)).count(), 1);
+    assert_eq!(runner.life(P0), 21);
+    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)).count(), 1);
+    assert!(runner.state().stack.is_empty());
+    assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+}
+
+#[test]
+fn synthetic_decline_printed_controller_survives_source_exit_or_control_change() {
+    const ABILITY: &str = "{T}: Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter on target creature you control if its power is 4 or greater.";
+    for change_control in [false, true] {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let ally = scenario.add_creature(P0, "Captured Target", 4, 6).id();
+        let source = scenario
+            .add_creature_from_oracle(P0, "Synthetic Captured Actor", 0, 3, ABILITY)
+            .id();
+        scenario.add_card_to_library_top(P1, "Forest");
+        let response = if change_control {
+            let mut def = engine::types::ability::AbilityDefinition::new(
+                engine::types::ability::AbilityKind::Spell,
+                engine::types::ability::Effect::GainControl {
+                    target: engine::types::ability::TargetFilter::Typed(
+                        engine::types::ability::TypedFilter::creature(),
+                    ),
+                },
+            );
+            def.instruction_actor =
+                Some(engine::types::ability::ControllerRef::SpecificPlayer { id: P1 });
+            scenario
+                .add_spell_to_hand(P0, "Synthetic Transfer Response", true)
+                .with_ability_definition(def)
+                .with_mana_cost(engine::types::mana::ManaCost::zero())
+                .id()
+        } else {
+            scenario
+                .add_spell_to_hand_from_oracle(
+                    P0,
+                    "Unsummon",
+                    true,
+                    "Return target creature to its owner's hand.",
+                )
+                .with_mana_cost(engine::types::mana::ManaCost::zero())
+                .id()
+        };
+        let mut runner = scenario.build();
+        runner
+            .act(GameAction::ActivateAbility {
+                source_id: source,
+                ability_index: 0,
+            })
+            .unwrap();
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::TargetSelection { .. }
+        ));
+        runner
+            .act(GameAction::ChooseTarget {
+                target: Some(engine::types::ability::TargetRef::Object(ally)),
+            })
+            .unwrap();
+        assert!(
+            !runner.state().stack.is_empty(),
+            "the P0 ability was queued before the response"
+        );
+        runner.cast(response).target_object(source).resolve();
+        if change_control {
+            assert_eq!(runner.state().objects[&source].controller, P1);
+        } else {
+            assert_eq!(runner.state().objects[&source].zone, Zone::Hand);
+        }
+        assert!(
+            matches!(runner.state().waiting_for, WaitingFor::OptionalEffectChoice { player: P1, source_id, .. } if source_id == source)
+        );
+        let result = runner
+            .act(GameAction::DecideOptionalEffect { accept: false })
+            .unwrap();
+        assert_eq!(p1p1(&runner, ally), 1);
+        assert!(result.events.iter().any(|event| matches!(event, GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: P0 } if *object_id == ally)));
+        assert!(result.events.iter().any(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == source)));
+        assert!(runner.state().stack.is_empty());
+    }
+}

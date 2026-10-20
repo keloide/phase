@@ -156,6 +156,7 @@ pub fn build_resolved_from_def_with_targets(
     let mut resolved =
         ResolvedAbility::new(*def.effect.clone(), targets, source_id, controller).kind(def.kind);
     resolved.declares_chosen_group = def.declares_chosen_group;
+    resolved.instruction_actor = def.instruction_actor.clone();
     resolved.reads_chosen_group = def.reads_chosen_group;
     resolved.target_reads = def.target_reads;
     resolved.declares_return_result = def.declares_return_result;
@@ -288,6 +289,7 @@ pub(crate) fn apply_instead_swap(
 ) -> ResolvedAbility {
     let mut overridden = parent.clone();
     overridden.effect = sub.effect.clone();
+    overridden.instruction_actor = sub.instruction_actor.clone();
     overridden.declares_chosen_group = sub.declares_chosen_group;
     overridden.reads_chosen_group = sub.reads_chosen_group;
     overridden.declares_return_result = sub.declares_return_result;
@@ -339,6 +341,30 @@ pub(crate) fn apply_instead_swap(
         overridden.mirror_targets_from(sub);
     }
     overridden
+}
+
+/// CR 608.2c + CR 109.5: Bind this instruction's actor once, using the printed
+/// controller snapshot for "you" and the existing live reference resolver.
+/// Children remain unstarted and retain their own actor metadata.
+pub(crate) fn bind_instruction_actor(
+    state: &GameState,
+    ability: &mut ResolvedAbility,
+) -> Option<PlayerId> {
+    let Some(actor) = ability.instruction_actor.as_ref() else {
+        return Some(ability.controller);
+    };
+    let printed_controller = ability.original_controller.unwrap_or(ability.controller);
+    let actor = super::filter::controller_ref_player(
+        state,
+        ability.source_id,
+        Some(printed_controller),
+        Some(ability),
+        actor,
+    )?;
+    ability.original_controller = Some(printed_controller);
+    ability.controller = actor;
+    ability.instruction_actor = None;
+    Some(actor)
 }
 
 /// CR 700.2: For modal spells/abilities, build a chained resolved ability from the

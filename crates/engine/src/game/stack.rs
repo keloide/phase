@@ -4327,6 +4327,7 @@ fn self_counter_run_key<'a>(
 
 fn self_counter_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
     let ResolvedAbility {
+        instruction_actor,
         effect,
         targets,
         declares_chosen_group,
@@ -4411,6 +4412,7 @@ fn self_counter_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
     );
 
     self_counter
+        && instruction_actor.is_none()
         && targets.is_empty()
         && declares_chosen_group.is_none()
         && reads_chosen_group.is_none()
@@ -4576,6 +4578,7 @@ fn fixed_controller_gain_life_run_key<'a>(
 
 fn fixed_controller_gain_life_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
     let ResolvedAbility {
+        instruction_actor,
         effect,
         targets,
         declares_chosen_group,
@@ -4659,6 +4662,7 @@ fn fixed_controller_gain_life_ability_is_batch_candidate(ability: &ResolvedAbili
     );
 
     fixed_controller_gain_life
+        && instruction_actor.is_none()
         && targets.is_empty()
         && declares_chosen_group.is_none()
         && reads_chosen_group.is_none()
@@ -4805,6 +4809,7 @@ fn fixed_opponent_effect_run_key<'a>(
 
 fn fixed_opponent_effect_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
     let ResolvedAbility {
+        instruction_actor,
         effect,
         targets,
         declares_chosen_group,
@@ -4892,6 +4897,7 @@ fn fixed_opponent_effect_ability_is_batch_candidate(ability: &ResolvedAbility) -
     );
 
     fixed_opponent_effect
+        && instruction_actor.is_none()
         && targets.is_empty()
         && declares_chosen_group.is_none()
         && reads_chosen_group.is_none()
@@ -5144,6 +5150,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
 ) -> bool {
     let ResolvedAbility {
         effect: a_effect,
+        instruction_actor: a_instruction_actor,
         targets: a_targets,
         declares_chosen_group: a_declares_chosen_group,
         reads_chosen_group: a_reads_chosen_group,
@@ -5230,6 +5237,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
     } = a;
     let ResolvedAbility {
         effect: b_effect,
+        instruction_actor: b_instruction_actor,
         targets: b_targets,
         declares_chosen_group: b_declares_chosen_group,
         reads_chosen_group: b_reads_chosen_group,
@@ -5316,6 +5324,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
     } = b;
 
     a_effect == b_effect
+        && a_instruction_actor == b_instruction_actor
         && a_targets == b_targets
         && a_declares_chosen_group == b_declares_chosen_group
         && a_reads_chosen_group == b_reads_chosen_group
@@ -6290,6 +6299,86 @@ mod tests {
             &a,
             &same_shape_different_provenance
         ));
+    }
+
+    #[test]
+    fn instruction_actor_refuses_inert_batches_and_participates_in_recursive_identity() {
+        let counter = ResolvedAbility::new(
+            Effect::PutCounter {
+                counter_type: CounterType::Plus1Plus1,
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::SelfRef,
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        );
+        let gain = ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 2 },
+                player: TargetFilter::Controller,
+            },
+            vec![],
+            ObjectId(2),
+            PlayerId(0),
+        );
+        let mut loss = ResolvedAbility::new(
+            Effect::LoseLife {
+                amount: QuantityExpr::Fixed { value: 2 },
+                target: None,
+            },
+            vec![],
+            ObjectId(3),
+            PlayerId(0),
+        );
+        loss.player_scope = Some(crate::types::ability::PlayerFilter::Opponent);
+        assert!(self_counter_ability_is_batch_candidate(&counter));
+        assert!(fixed_controller_gain_life_ability_is_batch_candidate(&gain));
+        assert!(fixed_opponent_effect_ability_is_batch_candidate(&loss));
+        for actor in crate::types::ability::instruction_actor_test_refs() {
+            let mut a = counter.clone();
+            a.instruction_actor = Some(actor.clone());
+            assert!(!self_counter_ability_is_batch_candidate(&a), "{actor:?}");
+            let mut a = gain.clone();
+            a.instruction_actor = Some(actor.clone());
+            assert!(
+                !fixed_controller_gain_life_ability_is_batch_candidate(&a),
+                "{actor:?}"
+            );
+            let mut a = loss.clone();
+            a.instruction_actor = Some(actor.clone());
+            assert!(
+                !fixed_opponent_effect_ability_is_batch_candidate(&a),
+                "{actor:?}"
+            );
+            for branch in 0..3 {
+                let mut left = gain.clone();
+                let mut right = left.clone();
+                let mut child = gain.clone();
+                child.instruction_actor = Some(actor.clone());
+                match branch {
+                    0 => right.instruction_actor = Some(actor.clone()),
+                    1 => {
+                        left.sub_ability = Some(Box::new(gain.clone()));
+                        right.sub_ability = Some(Box::new(child));
+                    }
+                    2 => {
+                        left.else_ability = Some(Box::new(gain.clone()));
+                        right.else_ability = Some(Box::new(child));
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(!inert_trigger_abilities_eq_ignoring_provenance(
+                    &left, &right
+                ));
+                let mut same = right.clone();
+                same.source_id = ObjectId(999);
+                same.ability_index = Some(9);
+                assert!(inert_trigger_abilities_eq_ignoring_provenance(
+                    &right, &same
+                ));
+            }
+        }
     }
 
     #[test]
@@ -9974,6 +10063,124 @@ mod tests {
                 crate::game::perf_counters::snapshot().stack_batched_entries,
                 2
             );
+        }
+
+        #[test]
+        fn instruction_actor_ordinary_trigger_resolution_falls_back_from_each_inert_batch_family() {
+            for family in 0..4 {
+                for marked in [false, true] {
+                    crate::game::perf_counters::reset();
+                    let mut state = setup();
+                    let source = add_self_counter_source(&mut state, "Synthetic Actor Trigger");
+                    for player in [PlayerId(0), PlayerId(1)] {
+                        for index in 0..4 {
+                            create_object(
+                                &mut state,
+                                CardId(80_000 + u64::from(player.0) * 10 + index),
+                                player,
+                                "Mill card".into(),
+                                Zone::Library,
+                            );
+                        }
+                    }
+                    for _ in 0..2 {
+                        let event = life_event(PlayerId(0), 1);
+                        match family {
+                            0 => push_self_counter_trigger(&mut state, source, event),
+                            1 => push_fixed_controller_gain_life_trigger(&mut state, source, event),
+                            2 => push_fixed_opponent_lose_life_trigger(
+                                &mut state, source, event, None, None,
+                            ),
+                            3 => push_fixed_opponent_mill_trigger(&mut state, source, event),
+                            _ => unreachable!(),
+                        }
+                        if marked {
+                            let StackEntryKind::TriggeredAbility { ability, .. } =
+                                &mut state.stack.back_mut().unwrap().kind
+                            else {
+                                unreachable!()
+                            };
+                            ability.instruction_actor =
+                                Some(crate::types::ability::ControllerRef::SpecificPlayer {
+                                    id: PlayerId(1),
+                                });
+                        }
+                    }
+                    let life_before = [state.players[0].life, state.players[1].life];
+                    assert_eq!(state.stack.len(), 2);
+                    let mut events = crate::game::engine::apply(
+                        &mut state,
+                        PlayerId(0),
+                        crate::types::actions::GameAction::SetAutoPass {
+                            mode: crate::types::game_state::AutoPassRequest::UntilStackEmpty,
+                        },
+                    )
+                    .expect("the real Resolve All action admits the trigger stack")
+                    .events;
+                    for _ in 0..8 {
+                        if state.stack.is_empty() {
+                            break;
+                        }
+                        let crate::types::game_state::WaitingFor::Priority { player } =
+                            state.waiting_for
+                        else {
+                            panic!("the ordinary actor-bearing trigger needs only priority passes");
+                        };
+                        let submitter = authorized_submitter_for_player(&state, player);
+                        events.extend(
+                            crate::game::engine::apply(
+                                &mut state,
+                                submitter,
+                                crate::types::actions::GameAction::PassPriority,
+                            )
+                            .expect("the actual priority holder may pass")
+                            .events,
+                        );
+                    }
+                    assert_eq!(
+                        crate::game::perf_counters::snapshot().stack_batched_entries,
+                        if marked { 0 } else { 2 },
+                        "family {family}: actor-bearing entries use normal single-entry resolution"
+                    );
+                    assert!(state.stack.is_empty());
+                    assert_eq!(
+                        events
+                            .iter()
+                            .filter(|event| matches!(event, GameEvent::StackResolved { .. }))
+                            .count(),
+                        2
+                    );
+                    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { source_id, .. } if *source_id == source)).count(), 2);
+                    match family {
+                        0 => {
+                            assert_eq!(
+                                state.objects[&source]
+                                    .counters
+                                    .get(&CounterType::Plus1Plus1),
+                                Some(&2)
+                            );
+                            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::CounterAdded { actor, object_id, counter_type: CounterType::Plus1Plus1, count: 1 } if *actor == PlayerId(u8::from(marked)) && *object_id == source)).count(), 2);
+                        }
+                        1 => {
+                            let recipient = usize::from(marked);
+                            assert_eq!(state.players[recipient].life, life_before[recipient] + 2);
+                            assert_eq!(
+                                state.players[1 - recipient].life,
+                                life_before[1 - recipient]
+                            );
+                        }
+                        2 => {
+                            assert_eq!(state.players[1].life, life_before[1] - 4);
+                            assert_eq!(state.players[0].life, life_before[0]);
+                        }
+                        3 => {
+                            assert_eq!(state.players[1].graveyard.len(), 2);
+                            assert!(state.players[0].graveyard.is_empty());
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
         }
 
         #[test]

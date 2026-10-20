@@ -211,6 +211,8 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 145 — Instruction-local actors and admitted sacrifice slot/actor cursors
+ *       travel in GameState. P2P moves in lockstep (wire 127).
  * 144 — One-time boons (#7495): new Effect.CreateBoon / Effect.NoteNumber tags,
  *       HasBoon conditions, and WaitingFor.ChooseTokenHost; the perpetual P/T
  *       edit retypes power_delta/toughness_delta to required QuantityExpr
@@ -880,7 +882,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 144;
+export const PROTOCOL_VERSION = 145;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.
