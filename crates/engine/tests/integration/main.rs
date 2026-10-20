@@ -1290,6 +1290,7 @@ mod power_fist_combat_damage_regression;
 mod power_leak_dynamic_prevention;
 mod power_up_keyword;
 mod pr7_trigger_ordering;
+mod pre_spend_echo_resume;
 mod preacher_of_the_schism_life_gates;
 mod precast_copy_shortcut;
 mod predators_hour_quoted_duration;

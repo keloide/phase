@@ -58,9 +58,10 @@ pub(crate) fn run_post_action_pipeline_from(
 /// The one caller family is a handler that returns its `ActionResult` directly,
 /// bypassing the reducer's ordinary epilogue, after a sidecar-owned accepted
 /// triggered-mana occurrence resumed a **direct `ManaAbilityResume::Priority`
-/// root** with no live cast/resolution/payment owner left. Its `settled_priority`
-/// is that root's own exact reconstructed wait, and it is exhaustively validated
-/// here rather than trusted.
+/// root or a top-level special action** (CR 116.2) with no live
+/// cast/resolution/payment owner left. Its `settled_priority` is that root's own
+/// exact reconstructed wait, and it is exhaustively validated here rather than
+/// trusted.
 ///
 /// It differs from the ordinary wrappers in exactly three ways: the drain policy
 /// permits a passive announced spell to remain on the stack (the batch below it

@@ -764,6 +764,7 @@ fn classify_deferred_life_root(
             }
             ManaAbilityResume::Priority
             | ManaAbilityResume::CompanionToHand { .. }
+            | ManaAbilityResume::PlanarDieRoll { .. }
             | ManaAbilityResume::EndContinuousEffect { .. }
             | ManaAbilityResume::TurnFaceUp { .. }
             | ManaAbilityResume::UnlessPayment { .. }
@@ -865,6 +866,7 @@ fn record_root_from_resume(
         // pending cast (CR 116.1 — a special action does not use the stack).
         ManaAbilityResume::Priority
         | ManaAbilityResume::CompanionToHand { .. }
+        | ManaAbilityResume::PlanarDieRoll { .. }
         | ManaAbilityResume::EndContinuousEffect { .. }
         | ManaAbilityResume::TurnFaceUp { .. }
         | ManaAbilityResume::UnlessPayment { .. }

@@ -2794,6 +2794,31 @@ fn pause_mana_ability_cost_payment(
     pause_pre_delivery_mana_cost_replacement_choice(state, pre_delivery_choice_player);
 }
 
+/// CR 605.4a + CR 608.2d + CR 605.3b: A nested mana sub-cost's auto-taps owed
+/// a pre-spend echo choice. The enclosing activation's snapshot (`parent`)
+/// still has that Mana component unpaid, so park it exactly as a replacement
+/// pause would — but with only the events from before the sub-cost attempt,
+/// because the echo settlement already claimed the attempt's own range. The
+/// next priority boundary resumes the same component with the bonus in the
+/// pool.
+fn pause_mana_ability_cost_payment_for_echo_choice(
+    state: &mut GameState,
+    mut pending: PendingManaAbility,
+    mut cursor: ManaAbilityCostCursor,
+    unscanned_events: &[GameEvent],
+) {
+    promote_cost_move_resume_chain(&mut pending, cursor.parent.as_deref_mut());
+    suspend_mana_ability_parent_chain(cursor.parent.as_deref_mut());
+    cursor.current_action_deferred_start = cursor.deferred_cost_events.len();
+    cursor
+        .deferred_cost_events
+        .extend_from_slice(unscanned_events);
+    state.pending_cost_move_resume = Some(PendingCostMoveResume::ManaAbilityPayment {
+        pending: Box::new(pending),
+        cursor,
+    });
+}
+
 fn mana_ability_cursor_after_current_component(
     cursor: &ManaAbilityCostCursor,
 ) -> ManaAbilityCostCursor {
@@ -3326,6 +3351,7 @@ fn pay_mana_ability_cost_component(
                 .get(cursor.next_counter_choice)
                 .copied();
             let prior_waiting_for = state.waiting_for.clone();
+            let component_event_start = events.len();
             let component_progress = match pay_mana_ability_cost_with_choices(
                 state,
                 pending.source_id,
@@ -3350,6 +3376,21 @@ fn pay_mana_ability_cost_component(
                 // into a failed parent mana payment.
                 Err(_) if super::casting::mana_ability_cost_payment_is_paused(state) => {
                     return Ok(ManaAbilityPaymentProgress::Paused)
+                }
+                // CR 605.4a + CR 608.2d: The sub-cost's own auto-taps owed a
+                // pre-spend echo choice. The settlement already claimed every
+                // event this attempt produced, so only the earlier still-unscanned
+                // prefix travels with the parked cursor; its next component is
+                // still this unpaid Mana cost, which the next priority boundary
+                // retries with the bonus in the pool.
+                Err(_) if state.pending_triggered_mana_resume.is_some() => {
+                    pause_mana_ability_cost_payment_for_echo_choice(
+                        state,
+                        *parent.pending,
+                        *parent.cursor,
+                        &events[cost_event_start..component_event_start],
+                    );
+                    return Ok(ManaAbilityPaymentProgress::Paused);
                 }
                 Err(error) => return Err(error),
             };
@@ -3906,6 +3947,12 @@ fn resume_mana_ability_root_payment(
         ManaAbilityResume::CompanionToHand { player, cost } => {
             super::companion::resume_companion_to_hand_payment(state, player, cost, events)
         }
+        // CR 116.2i + CR 605.3b: the announced cost is locked; finish the roll
+        // exactly once after its payment completes, including through a further
+        // echo choice or a deferred life payment.
+        ManaAbilityResume::PlanarDieRoll { player, cost } => {
+            super::planechase::resume_paid_planar_die_roll(state, player, cost, events)
+        }
         // CR 116.2b + CR 605.3b: NOT compiler-forced either — the `resume =>`
         // catch-all below would route a paused turn-face-up payment into
         // `resume_waiting_for`, which `unreachable!()`s for this family.
@@ -4065,6 +4112,12 @@ pub(crate) fn finish_mana_root_after_deferred_life_payment(
                 state, player, group, events,
             ),
         ),
+        // CR 116.2i + CR 118.3b: the deferred life component finished, so the
+        // paid roll commits once with its locked cost.
+        ManaAbilityResume::PlanarDieRoll { player, .. } => {
+            super::planechase::finish_paid_planar_die_roll(state, player, events);
+            Ok(WaitingFor::Priority { player })
+        }
         ManaAbilityResume::ManaAbilityManaPayment {
             pending_mana_ability,
         } => continue_mana_ability_activation(state, *pending_mana_ability, events),
@@ -5752,10 +5805,11 @@ pub(crate) fn resume_waiting_for(
         | ManaAbilityResume::PhyrexianCastPayment { .. }
         | ManaAbilityResume::FinalizePendingManaPayment { .. }
         | ManaAbilityResume::CompanionToHand { .. }
-        // CR 116.2c + CR 116.2b: like `CompanionToHand`, the pay-to-end and
-        // turn-face-up special actions are resumed by
-        // `resume_mana_ability_root`'s named arms, never here.
+        // CR 116.2c + CR 116.2i + CR 116.2b: like `CompanionToHand`, the
+        // pay-to-end, planar-die, and turn-face-up special actions are resumed
+        // by `resume_mana_ability_root`'s named arms, never here.
         | ManaAbilityResume::EndContinuousEffect { .. }
+        | ManaAbilityResume::PlanarDieRoll { .. }
         | ManaAbilityResume::TurnFaceUp { .. } => {
             unreachable!("effect-cost resume is handled by resume_mana_ability_root")
         }

@@ -61028,15 +61028,15 @@ fn quantity_vs_each_opponent_skips_a_player_who_left_the_game() {
     );
 }
 
-/// CR 116.2i + CR 605.4a + CR 608.2d: the rootless planar die roll pays
-/// through `pay_special_action_mana_cost`, which carries no continuation and
-/// cannot suspend for a pre-spend choice-owing mana echo. Its affordability
+/// CR 116.2m + CR 605.4a + CR 608.2d: a rootless special action (Room unlock)
+/// pays through `pay_special_action_mana_cost`, which carries no continuation
+/// and cannot suspend for a pre-spend choice-owing mana echo. Its affordability
 /// probe must therefore stay at the real pool: `Unresumable` declines the
-/// bonus-dependent cost that the `Resumable` preview (companion / turn face up
-/// / end continuous effect) admits, and the rootless live payment fails at
-/// affordability exactly where the conservative probe declined.
+/// bonus-dependent cost that the `Resumable` preview (companion / planar die /
+/// turn face up / end continuous effect) admits, and the rootless live payment
+/// fails at affordability exactly where the conservative probe declined.
 #[test]
-fn special_action_probe_is_conservative_without_a_resumable_root() {
+fn rootless_special_action_probe_stays_at_the_real_pool() {
     use crate::game::scenario::{GameScenario, P0};
     fn floating_colorless(n: usize) -> Vec<ManaUnit> {
         (0..n)
@@ -61065,7 +61065,7 @@ fn special_action_probe_is_conservative_without_a_resumable_root() {
             P0,
             None,
             &cost,
-            crate::types::mana::SpecialAction::RollPlanarDie,
+            crate::types::mana::SpecialAction::UnlockDoor,
             PausedManaPayment::Resumable,
         ),
         "a continuation-carrying live payment suspends for the echo choice, so its preview counts the bonus"
@@ -61076,7 +61076,7 @@ fn special_action_probe_is_conservative_without_a_resumable_root() {
             P0,
             None,
             &cost,
-            crate::types::mana::SpecialAction::RollPlanarDie,
+            crate::types::mana::SpecialAction::UnlockDoor,
             PausedManaPayment::Unresumable,
         ),
         "a rootless live payment cannot deposit the bonus; its preview must stay at the real pool"
@@ -61088,7 +61088,7 @@ fn special_action_probe_is_conservative_without_a_resumable_root() {
         P0,
         None,
         &cost,
-        crate::types::mana::SpecialAction::RollPlanarDie,
+        crate::types::mana::SpecialAction::UnlockDoor,
         &mut events,
     );
     match &live {

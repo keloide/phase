@@ -20794,11 +20794,11 @@ struct AutoTapProbeOptions<'a> {
     explicit_tap_payment_mode: Option<ConvokeMode>,
     /// CR 605.3b + CR 616.1 + CR 605.4a: capabilities of the live payment this
     /// preview stands in for. Defaults to `Resumable` — spell casts, ability
-    /// activations, and resumable special actions all carry a typed root and
-    /// suspend for the choice. The planar die roll previews a rootless live
-    /// payment and passes `Unresumable` so the preview cannot promise a payment
-    /// the live path then fails; rootless flows with no affordability probe
-    /// (Room unlock) are unaffected.
+    /// activations, and resumable special actions (companion, planar die roll,
+    /// turn face up, end continuous effect) all carry a typed root and suspend
+    /// for the choice. `pay_unless_cost` paths preview `Unresumable` so the
+    /// preview cannot promise a payment the live path then fails; rootless
+    /// flows with no affordability probe (Room unlock) are unaffected.
     paused: PausedManaPayment,
 }
 
@@ -20883,78 +20883,177 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
     }
     // CR 605.4a + CR 608.2d: the owed echo bonus only reaches the pool when
     // the live payment can suspend for its choice. A rootless live payment
-    // (planar die roll, Room unlock) cannot, so its preview must stay at the
+    // (`pay_unless_cost`, Room unlock) cannot, so its preview must stay at the
     // real pool — counting the bonus would offer an action the live payment
     // then fails.
     if !matches!(options.paused, PausedManaPayment::Resumable) {
         return false;
     }
-    // CR 608.2d: each skipped multi-type mana-echo firing owes exactly one
-    // chosen bonus that the bare inline loop cannot deposit. Previews must
-    // never prompt, so account for one legal bonus per firing optimistically:
-    // if any one-choice-per-firing assignment added to the pool makes the cost
-    // payable, the spell is castable (the live payment will pause for the real
-    // choices before spending). Firings include delayed generators and multiple
-    // same-event observers, which a unioned single-type list cannot represent.
-    let firings = super::triggers::mixed_echo_bonus_firings_for_preview(simulated, &tap_events);
+    echo_bonus_preview_can_pay(simulated, player, cost, &tap_events, &payable_from_state)
+}
+
+/// CR 605.4a + CR 608.2d + CR 106.12a: account for one chosen bonus per
+/// skipped multi-type mana-echo firing when previewing a payment whose live
+/// path can suspend for the choice. Previews never prompt, so every firing
+/// contributes one optimistically chosen type; the live payment pauses for the
+/// real choices before spending.
+///
+/// The search is over multisets of bonus types, not ordered assignments: each
+/// firing contributes exactly one unit, so payability depends only on the
+/// aggregate count vector. Deduplicating the reachable vectors at every firing
+/// keeps `k` identical two-type firings to `k + 1` states instead of `2^k`.
+fn echo_bonus_preview_can_pay(
+    simulated: &mut GameState,
+    player: PlayerId,
+    cost: &crate::types::mana::ManaCost,
+    tap_events: &[GameEvent],
+    payable: &impl Fn(&GameState) -> bool,
+) -> bool {
+    let firings = super::triggers::mixed_echo_bonus_firings_for_preview(simulated, tap_events);
     if firings.is_empty() {
         return false;
     }
-    // One scratch clone for the whole search — every assignment rebuilds the
-    // payer's pool from its post-inline baseline (the deterministic
-    // single-type `TapsForMana` bonuses above are already in it), so no state
-    // is cloned per assignment and nothing outside the pool carries over
-    // between assignments.
-    let mut virtual_state = simulated.clone();
-    let baseline_pool = virtual_state
+    let Some(baseline_pool) = simulated
         .players
         .iter()
         .find(|p| p.id == player)
-        .map(|p| p.mana_pool.clone());
-    // Depth-first over assignments with early exit; realistic boards hold a
-    // handful of firings, so the full product stays tiny.
-    let mut assignment: Vec<crate::types::mana::ManaType> = Vec::with_capacity(firings.len());
-    let mut stack: Vec<usize> = vec![0; firings.len()];
-    loop {
-        assignment.clear();
-        assignment.extend(
-            firings
-                .iter()
-                .zip(stack.iter())
-                .map(|(options, index)| options[*index]),
-        );
-        if let Some((player_data, baseline_pool)) = virtual_state
-            .players
-            .iter_mut()
-            .find(|p| p.id == player)
-            .zip(baseline_pool.as_ref())
-        {
-            player_data.mana_pool = baseline_pool.clone();
-            for bonus_type in &assignment {
+        .map(|p| p.mana_pool.clone())
+    else {
+        return false;
+    };
+    // CR 605.4a: reject before searching when even making every owed bonus the
+    // exact type the cost wants could not cover its minimum demand.
+    if echo_bonus_upper_bound_is_short(cost, &baseline_pool, firings.len()) {
+        return false;
+    }
+    // One scratch clone for the whole search — every candidate rebuilds the
+    // payer's pool from its post-inline baseline (the deterministic single-type
+    // `TapsForMana` bonuses above are already in it), so nothing outside the
+    // pool carries over between candidates.
+    let mut virtual_state = simulated.clone();
+    let mut reachable: HashSet<[u16; 6]> = HashSet::from([[0; 6]]);
+    for options in &firings {
+        let mut next = HashSet::new();
+        for counts in &reachable {
+            for bonus_type in options {
+                let mut candidate = *counts;
+                candidate[mana_type_slot(*bonus_type)] += 1;
+                next.insert(candidate);
+            }
+        }
+        reachable = next;
+    }
+    reachable.into_iter().any(|counts| {
+        let Some(player_data) = virtual_state.players.iter_mut().find(|p| p.id == player) else {
+            return false;
+        };
+        player_data.mana_pool = baseline_pool.clone();
+        for (slot, count) in counts.iter().enumerate() {
+            for _ in 0..*count {
                 player_data.mana_pool.add(crate::types::mana::ManaUnit::new(
-                    *bonus_type,
+                    MANA_TYPE_SLOTS[slot],
                     crate::types::identifiers::ObjectId(0),
                     false,
                     Vec::new(),
                 ));
             }
         }
-        if payable_from_state(&virtual_state) {
-            return true;
+        payable(&virtual_state)
+    })
+}
+
+/// CR 605.4a: a sound necessary condition for the echo-bonus preview. Treat
+/// every owed firing as a wildcard and check the two demands no assignment can
+/// escape: the cost's minimum number of mana units, and each colour's mandatory
+/// single-type pips. A shortfall here makes the search pointless.
+fn echo_bonus_upper_bound_is_short(
+    cost: &crate::types::mana::ManaCost,
+    baseline_pool: &crate::types::mana::ManaPool,
+    firings: usize,
+) -> bool {
+    use crate::types::mana::{ManaCost, ManaCostShard};
+
+    let ManaCost::Cost { shards, generic } = cost else {
+        return false;
+    };
+    // CR 107.4a-e: every symbol consumes at least one mana unit except `{X}`
+    // and a Phyrexian symbol, which can be paid without mana.
+    let minimum_units = *generic
+        + shards
+            .iter()
+            .map(|shard| match shard {
+                ManaCostShard::X
+                | ManaCostShard::PhyrexianWhite
+                | ManaCostShard::PhyrexianBlue
+                | ManaCostShard::PhyrexianBlack
+                | ManaCostShard::PhyrexianRed
+                | ManaCostShard::PhyrexianGreen
+                | ManaCostShard::PhyrexianWhiteBlue
+                | ManaCostShard::PhyrexianWhiteBlack
+                | ManaCostShard::PhyrexianBlueBlack
+                | ManaCostShard::PhyrexianBlueRed
+                | ManaCostShard::PhyrexianBlackRed
+                | ManaCostShard::PhyrexianBlackGreen
+                | ManaCostShard::PhyrexianRedWhite
+                | ManaCostShard::PhyrexianRedGreen
+                | ManaCostShard::PhyrexianGreenWhite
+                | ManaCostShard::PhyrexianGreenBlue => 0,
+                _ => 1,
+            })
+            .sum::<u32>();
+    if baseline_pool.total() as u32 + (firings as u32) < minimum_units {
+        return true;
+    }
+    MANA_TYPE_SLOTS.into_iter().any(|mana_type| {
+        let required = shards
+            .iter()
+            .filter(|shard| single_type_shard_color(**shard) == Some(mana_type))
+            .count() as u32;
+        required > 0 && baseline_pool.count_color(mana_type) as u32 + (firings as u32) < required
+    })
+}
+
+/// CR 107.4a + CR 107.4c: the one mana type a shard demands when it has only
+/// one legal single-mana payment (`{W}`, `{C}`, ...). Hybrid, `{2/W}`, and the
+/// flexible symbols have none.
+fn single_type_shard_color(
+    shard: crate::types::mana::ManaCostShard,
+) -> Option<crate::types::mana::ManaType> {
+    let allowed = shard.single_mana_payment_types()?;
+    let mut required = None;
+    for mana_type in MANA_TYPE_SLOTS {
+        if !allowed.contains(mana_type) {
+            continue;
         }
-        // Mixed-radix increment; exhaustion means no assignment funds the cost.
-        let mut position = 0;
-        loop {
-            stack[position] += 1;
-            if stack[position] < firings[position].len() {
-                break;
-            }
-            stack[position] = 0;
-            position += 1;
-            if position == firings.len() {
-                return false;
-            }
+        if required.is_some() {
+            return None;
         }
+        required = Some(mana_type);
+    }
+    required
+}
+
+/// CR 605.4a: the fixed slot order for the echo preview's aggregate count
+/// vector. Kept separate from `ManaType`'s enumeration order so the encoding
+/// cannot drift with the enum's declaration.
+const MANA_TYPE_SLOTS: [crate::types::mana::ManaType; 6] = [
+    crate::types::mana::ManaType::White,
+    crate::types::mana::ManaType::Blue,
+    crate::types::mana::ManaType::Black,
+    crate::types::mana::ManaType::Red,
+    crate::types::mana::ManaType::Green,
+    crate::types::mana::ManaType::Colorless,
+];
+
+fn mana_type_slot(mana_type: crate::types::mana::ManaType) -> usize {
+    use crate::types::mana::ManaType;
+    match mana_type {
+        ManaType::White => 0,
+        ManaType::Blue => 1,
+        ManaType::Black => 2,
+        ManaType::Red => 3,
+        ManaType::Green => 4,
+        ManaType::Colorless => 5,
     }
 }
 
@@ -22357,8 +22456,8 @@ pub(crate) enum PausedManaPayment {
     Resumable,
     /// The live payment cannot suspend (`pay_unless_cost`, which combat taxes
     /// and resolution-time "pay {X}" amounts pay through, and the rootless
-    /// special-action compat entries used by the planar die roll and Room
-    /// unlock), so a pause means the payment cannot complete.
+    /// special-action compat entry used by Room unlock), so a pause means the
+    /// payment cannot complete.
     Unresumable,
 }
 
@@ -22411,18 +22510,29 @@ pub(super) fn can_pay_effect_mana_cost_after_auto_tap(
         player,
         mana_spend_permission,
     );
-    simulated
-        .players
-        .iter()
-        .find(|p| p.id == player)
-        .is_some_and(|player_data| {
-            mana_payment::can_pay_for_spell(
-                &player_data.mana_pool,
-                cost,
-                Some(&effect_ctx),
-                permissions,
-            )
-        })
+    // CR 605.4a + CR 608.2d: effect-time payments carry a typed resolution
+    // root when the live path can suspend for a pre-spend echo choice, so the
+    // preview must account for the same bonus the spell/ability preview does.
+    // A rootless live payment keeps the conservative real-pool check.
+    let payable = |state: &GameState| {
+        state
+            .players
+            .iter()
+            .find(|p| p.id == player)
+            .is_some_and(|player_data| {
+                mana_payment::can_pay_for_spell(
+                    &player_data.mana_pool,
+                    cost,
+                    Some(&effect_ctx),
+                    permissions,
+                )
+            })
+    };
+    if payable(&simulated) {
+        return true;
+    }
+    matches!(paused, PausedManaPayment::Resumable)
+        && echo_bonus_preview_can_pay(&mut simulated, player, cost, &tap_events, &payable)
 }
 
 // Target/mode selection handlers are in casting_targets module.
@@ -23178,13 +23288,12 @@ pub(crate) fn pay_special_action_mana_cost_with_resume(
 
 /// CR 116.2 + CR 106.6: Whether a special action's mana cost is payable after
 /// auto-tapping sources, for a live payment with the capabilities of `paused`.
-/// Continuation-carrying flows (companion, turning a morph face up, ending a
-/// continuous effect) pay through [`pay_special_action_mana_cost_with_resume`]
-/// and pass `PausedManaPayment::Resumable`; the rootless planar die roll pays
-/// through [`pay_special_action_mana_cost`], which cannot suspend, and passes
-/// `PausedManaPayment::Unresumable` so the preview stays conservative. Room
-/// unlock is rootless in the same way, but it has no affordability probe to
-/// parameterize.
+/// Continuation-carrying flows (companion, planar die roll, turning a morph
+/// face up, ending a continuous effect) pay through
+/// [`pay_special_action_mana_cost_with_resume`] and pass
+/// `PausedManaPayment::Resumable`; the rootless Room unlock pays through
+/// [`pay_special_action_mana_cost`], which cannot suspend. Room unlock has no
+/// affordability probe to parameterize, so it never guesses between the two.
 pub(crate) fn can_pay_special_action_mana_cost_after_auto_tap(
     state: &GameState,
     player: PlayerId,
@@ -23250,32 +23359,8 @@ fn pay_non_cast_mana_cost(
     // spell/ability core above, threaded through this payment's own
     // continuation root (companion, effect, or special action). Without it the
     // preview admits a bonus-dependent payment the live path then fails before
-    // offering the choice. Nested mana sub-costs (`resume=None`) bypass this
-    // gate by construction; their ultimate mana-ability root settlement owns
-    // the pause instead.
-    if let Some(outer_payment) = resume {
-        let outer_resume = crate::types::game_state::ManaTriggerFixedPointResume::Root {
-            player,
-            resume: Box::new(outer_payment.clone()),
-        };
-        if super::triggers::settle_skipped_echo_before_spend(
-            state,
-            events,
-            events_before,
-            outer_resume,
-        )
-        .is_some()
-        {
-            return Err(EngineError::InvalidAction(
-                "Mana payment is awaiting a mana choice".to_string(),
-            ));
-        }
-        if mana_ability_cost_payment_is_paused(state) {
-            return Err(EngineError::InvalidAction(
-                "Mana payment is awaiting a replacement choice".to_string(),
-            ));
-        }
-    }
+    // offering the choice.
+    settle_pre_spend_echoes(state, player, events, events_before, resume, None)?;
 
     let permissions = {
         let mana_spend_permission =
@@ -23420,39 +23505,10 @@ fn auto_tap_and_pay_cost_excluding(
     super::triggers::resolve_tap_mana_triggers_inline(state, events, events_before);
 
     // CR 605.4a + CR 608.2d + CR 601.2g-h: a skipped multi-type mana-echo owes
-    // exactly one chosen bonus BEFORE the spend. The bare inline loop cannot
-    // pause, so settle through the typed fixed-point continuation with the
-    // exact outer payment as its root. Ordinary observers are deferred (never
-    // discarded) and the owned occurrences claimed, so constrained admissions
-    // survive and the post-action scan cannot double-collect. If settlement
-    // pauses for `ChooseManaColor`, suspend this payment: the finalizer
-    // restores `pending_cast` and returns the prompt, and answering resumes
-    // this same payment with the bonus in the pool. Previews (no outer
-    // `resume`) stay choice-free via the virtual accounting in
-    // `can_pay_mana_cost_after_auto_tap_with_context_and_cache`.
-    if let Some(outer_payment) = resume {
-        let outer_resume = crate::types::game_state::ManaTriggerFixedPointResume::Root {
-            player,
-            resume: Box::new(outer_payment.clone()),
-        };
-        if super::triggers::settle_skipped_echo_before_spend(
-            state,
-            events,
-            events_before,
-            outer_resume,
-        )
-        .is_some()
-        {
-            return Err(EngineError::InvalidAction(
-                "Mana payment is awaiting a mana choice".to_string(),
-            ));
-        }
-        if mana_ability_cost_payment_is_paused(state) {
-            return Err(EngineError::InvalidAction(
-                "Mana payment is awaiting a replacement choice".to_string(),
-            ));
-        }
-    }
+    // exactly one chosen bonus BEFORE the spend. The shared authority roots the
+    // suspension in the exact outer payment, or in this activation's own
+    // suspended cost cursor when the payment is a nested mana sub-cost.
+    settle_pre_spend_echoes(state, player, events, events_before, resume, parent)?;
 
     // CR 107.4f + CR 118.1 + CR 118.3 + CR 119.8: Bundle payment-time permissions
     // (`mana_spend_permission`, `max_life`, `life_colors`) once for the cast — K'rrik-style
@@ -23550,6 +23606,53 @@ fn auto_tap_and_pay_cost_excluding(
         },
         None => ManaCostPayment::Paid(spent_units),
     })
+}
+
+/// CR 605.4a + CR 608.2d: The single authority for settling a pre-spend
+/// mixed-type mana echo produced by this payment's own auto-taps. Ordinary
+/// inline-trigger bonuses are already in the pool; an echo that owes a type
+/// choice cannot be resolved by the bare inline loop and must settle through
+/// the typed fixed-point continuation before any mana is spent.
+///
+/// `resume` is the live payment's outer continuation (spell cast, ability
+/// activation, effect payment, or resumable special action). A nested mana
+/// sub-cost has no `ManaAbilityResume` of its own; its enclosing activation's
+/// suspended cost cursor (`parent`) retains the unpaid component and is the
+/// continuation that retries it after the bonus lands. A payment with neither
+/// cannot suspend, so it must not settle here — its preview stays conservative.
+fn settle_pre_spend_echoes(
+    state: &mut GameState,
+    player: PlayerId,
+    events: &[GameEvent],
+    events_before: usize,
+    resume: Option<&ManaAbilityResume>,
+    parent: Option<&ManaAbilityCostParent>,
+) -> Result<(), EngineError> {
+    let outer_resume = match (resume, parent) {
+        (Some(outer_payment), _) => crate::types::game_state::ManaTriggerFixedPointResume::Root {
+            player,
+            resume: Box::new(outer_payment.clone()),
+        },
+        // CR 605.3b + CR 605.4a: the suspended parent cursor is the authority
+        // for a nested sub-cost; no separate wait is reconstructed for it.
+        (None, Some(_)) => crate::types::game_state::ManaTriggerFixedPointResume::Parent,
+        (None, None) => return Ok(()),
+    };
+    if super::triggers::settle_skipped_echo_before_spend(state, events, events_before, outer_resume)
+        .is_some()
+    {
+        return Err(EngineError::InvalidAction(
+            "Mana payment is awaiting a mana choice".to_string(),
+        ));
+    }
+    // CR 118.12 + CR 605.3b + CR 616.1: a replacement choice surfaced by the
+    // settlement's own resolution is likewise an in-progress payment.
+    if mana_ability_cost_payment_is_paused(state) {
+        return Err(EngineError::InvalidAction(
+            "Mana payment is awaiting a replacement choice".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// CR 601.2h + CR 602.2b + CR 605.3b + CR 616.1: A mana ability's serialized

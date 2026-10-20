@@ -3980,7 +3980,8 @@ pub(crate) fn mixed_echo_bonus_firings_for_preview(
     let (accepted, _ordinary) = partition_collected_mana_frame_contexts(state, collected.contexts);
     let mut firings: Vec<Vec<crate::types::mana::ManaType>> = Vec::new();
     for view in accepted {
-        // CR 603.7c: the firing event carries the produced set the echo reads.
+        // CR 106.12a: the "is tapped for mana" firing event carries the
+        // produced set the echo reads.
         let trigger_event = view
             .context
             .pending
@@ -10611,20 +10612,52 @@ pub(crate) fn finish_accepted_triggered_mana_action(
             settled_direct_priority_root: false,
         });
     }
-    // CR 117.3c + CR 117.5: recognize the ONE consumed shape that may run full
+    // CR 117.3c + CR 117.5: recognize the consumed shapes that may run full
     // settled-Priority convergence, exhaustively and before the frame resumes:
-    // a direct `ManaAbilityResume::Priority` root, i.e. an activation that began
-    // at `WaitingFor::Priority` with nothing else owning the action. Every cast,
-    // payment, colour, unless and special-action owner is excluded here, not by
+    // a direct `ManaAbilityResume::Priority` root (an activation that began at
+    // `WaitingFor::Priority` with nothing else owning the action), and a
+    // top-level special action (CR 116.2) whose completion likewise returns
+    // priority with no enclosing owner left to scan its own events. Every cast,
+    // cast-payment, colour, and resolution-time owner is excluded here, not by
     // the convergence wrapper.
     let direct_priority_root = matches!(
         outer_resume,
         crate::types::game_state::ManaTriggerFixedPointResume::Root { ref resume, .. }
             if matches!(**resume, crate::types::game_state::ManaAbilityResume::Priority)
+                || resume.is_top_level_special_action()
     );
     let Some(wait) = super::mana_abilities::resume_settled_mana_frame(state, outer_resume, events)?
     else {
-        return Ok(TriggeredManaReadiness::Pending);
+        // CR 605.3b + CR 117.5: a nested sub-cost's suspended parent cursor
+        // has no reconstructed wait of its own; the typed cost-move
+        // continuation is the authority. Resume it at the common priority
+        // boundary NOW, so the enclosing activation finishes before priority
+        // is handed back — a parked cost move must never coexist with a
+        // visible `Priority` prompt. This is the same authority every other
+        // parked cost move drains through (CR 605.3b + CR 616.1).
+        let direct_priority_parent = matches!(
+            state.pending_cost_move_resume.as_ref(),
+            Some(
+                crate::types::game_state::PendingCostMoveResume::ManaAbilityPayment { pending, .. }
+            ) if matches!(
+                pending.resume,
+                crate::types::game_state::ManaAbilityResume::Priority
+            ) || pending.resume.is_top_level_special_action()
+        );
+        super::engine::resume_pending_continuation_if_priority(state, events)?;
+        let wait = state.waiting_for.clone();
+        // The drained parent may itself have paused again (a further echo, a
+        // replacement choice); only a fully settled Priority leaf converges.
+        let settled_direct_priority_root = direct_priority_parent
+            && matches!(wait, WaitingFor::Priority { .. })
+            && state.pending_triggered_mana_resume.is_none()
+            && state.pending_cast.is_none()
+            && !super::casting::mana_ability_cost_payment_is_paused(state)
+            && resolution_completion_can_settle(state);
+        return Ok(TriggeredManaReadiness::Resumed {
+            wait: Box::new(wait),
+            settled_direct_priority_root,
+        });
     };
     let settled_direct_priority_root = direct_priority_root
         && matches!(wait, WaitingFor::Priority { .. })
