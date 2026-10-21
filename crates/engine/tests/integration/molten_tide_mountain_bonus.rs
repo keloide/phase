@@ -10,10 +10,11 @@ use engine::game::mana_abilities::activate_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::triggers::{check_delayed_triggers, process_triggers};
 use engine::game::turns::execute_cleanup;
+use engine::types::actions::GameAction;
 use engine::types::events::{GameEvent, ManaTapState};
-use engine::types::game_state::ManaAbilityResume;
+use engine::types::game_state::{CastPaymentMode, ManaAbilityResume, StackEntryKind, WaitingFor};
 use engine::types::identifiers::ObjectId;
-use engine::types::mana::{ManaColor, ManaType, ManaUnit};
+use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 
@@ -231,5 +232,79 @@ fn molten_tide_bonus_only_for_controller_taps_own_mountain_then_expires() {
         red(&runner, P0),
         1,
         "after cleanup: only the base {{R}}, no bonus — the delayed trigger expired"
+    );
+}
+
+/// CR 605.4a + CR 608.2d: Molten Tide's fixed additional {R} owes no type
+/// choice, so the affordability preview must count it before deciding whether
+/// an auto-payment is possible. One Mountain's base {R} alone cannot pay
+/// Goblin Piker's {1}{R}; base {R} + the delayed {R} can.
+#[test]
+fn molten_tide_fixed_bonus_funds_auto_payment_without_prompt() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let tide = scenario
+        .add_spell_to_hand_from_oracle(P0, "Molten Tide", true, MOLTEN_TIDE_ORACLE)
+        .id();
+    let mountain = scenario.add_basic_land(P0, ManaColor::Red);
+    // Fund Molten Tide itself without consuming the Mountain under test.
+    scenario.with_mana_pool(
+        P0,
+        vec![ManaUnit::new(ManaType::Red, ObjectId(9999), false, vec![])],
+    );
+    let cost = ManaCost::Cost {
+        shards: vec![ManaCostShard::Red],
+        generic: 1,
+    };
+    let piker = scenario
+        .add_creature_to_hand(P0, "Goblin Piker", 2, 1)
+        .with_mana_cost(cost.clone())
+        .id();
+    let mut runner = scenario.build();
+    runner.cast(tide).resolve();
+    assert_eq!(
+        runner.state().delayed_triggers.len(),
+        1,
+        "Molten Tide must install its delayed trigger"
+    );
+    clear_pools(&mut runner);
+
+    // The regression: one Mountain's base {R} is insufficient for {1}{R}; the
+    // preview must count the fixed delayed {R} without a type choice.
+    assert!(
+        engine::game::casting::can_pay_cost_after_auto_tap(runner.state(), P0, piker, &cost),
+        "Molten Tide's fixed {{R}} bonus must make Goblin Piker castable from one Mountain"
+    );
+
+    let piker_card = runner.state().objects[&piker].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: piker,
+            card_id: piker_card,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("the fixed delayed bonus must fund the auto-payment");
+    assert!(
+        runner
+            .state()
+            .stack
+            .iter()
+            .any(|entry| matches!(entry.kind, StackEntryKind::Spell { .. })),
+        "the paid Goblin Piker must reach the stack"
+    );
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "the fixed delayed bonus owes no choice; got {:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(
+        red(&runner, P0),
+        0,
+        "base {{R}} + bonus {{R}} exactly pays {{1}}{{R}}"
+    );
+    assert!(
+        runner.state().objects[&mountain].tapped,
+        "the Mountain paid the cost"
     );
 }

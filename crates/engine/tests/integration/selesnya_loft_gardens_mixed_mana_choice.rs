@@ -21,13 +21,16 @@
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::triggers::process_triggers;
 use engine::types::ability::{
-    AbilityDefinition, AbilityKind, Effect, ManaProduction, TargetFilter, TriggerDefinition,
-    TypedFilter,
+    AbilityDefinition, AbilityKind, Effect, ManaProduction, QuantityExpr, TargetFilter,
+    TriggerDefinition, TypedFilter,
 };
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
-use engine::types::game_state::{CastPaymentMode, ManaChoice, ManaChoicePrompt, WaitingFor};
+use engine::types::game_state::{
+    CastPaymentMode, ConvokeMode, ManaChoice, ManaChoicePrompt, WaitingFor,
+};
 use engine::types::identifiers::ObjectId;
+use engine::types::keywords::Keyword;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
@@ -155,6 +158,17 @@ fn selesnya_echo_from_multitype_tap_offers_one_chosen_mana() {
         count(&runner, P0, ManaType::Blue),
         1,
         "no unchosen bonus {{U}} may be deposited"
+    );
+    // Completion: the answer must return the activation to Priority with no
+    // stranded inline-resolution frame and no trigger entry on the stack.
+    assert!(
+        runner.state().stack.is_empty(),
+        "the echo resolves inline and must not add a stack entry"
+    );
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "the echo choice must complete back to Priority, got {:?}",
+        runner.state().waiting_for
     );
 }
 
@@ -827,5 +841,201 @@ fn unscoped_echo_public_pipeline_prompts_and_pays_tapper() {
         matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }),
         "completion returns to Priority with no stranded state, got {:?}",
         runner.state().waiting_for
+    );
+}
+
+/// CR 702.51a + CR 605.4a + CR 601.2g-h: a Conclave-Tribunal-shaped
+/// ({3}{W}, Convoke) spell whose only feasible payment needs BOTH the Mirari's
+/// Wake echo bonus and a white creature's convoke tap must be offered and
+/// castable from an empty pool. The chamber's base {G}{U} + one chosen echo
+/// bonus is 3 mana; {3}{W} needs 4, so the white creature's convoke tap pays
+/// the {W}. The mana-only echo upper bound used to reject this payment before
+/// the exact convoke-aware search could see it. The test shell supplies
+/// Convoke and a no-target resolution; the card's ETB is not under test.
+#[test]
+fn mirari_echo_and_convoke_together_fund_bonus_dependent_payment() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_enchantment_from_oracle(P0, "Mirari's Wake", MIRARI_ORACLE);
+    let chamber = scenario
+        .add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE)
+        .id();
+    let elite = scenario
+        .add_creature(P0, "Elite Vanguard", 2, 1)
+        .with_color(vec![ManaColor::White])
+        .id();
+    let cost = ManaCost::Cost {
+        shards: vec![ManaCostShard::White],
+        generic: 3,
+    };
+    let spell = scenario
+        .add_spell_to_hand(P0, "Conclave Tribunal", true)
+        .with_mana_cost(cost.clone())
+        .with_keyword(Keyword::Convoke)
+        .with_ability(Effect::GainLife {
+            amount: QuantityExpr::Fixed { value: 1 },
+            player: TargetFilter::Controller,
+        })
+        .id();
+    let mut runner = scenario.build();
+
+    // The regression: empty pool, and neither resource alone can pay {3}{W}.
+    // The preview must count the per-firing echo bonus and the convoke
+    // contribution together.
+    assert!(
+        engine::game::casting::can_pay_cost_after_auto_tap(runner.state(), P0, spell, &cost),
+        "base {{G}}{{U}} + one echo bonus + the white creature's convoke tap must fund {{3}}{{W}}"
+    );
+
+    let spell_card = runner.state().objects[&spell].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: spell,
+            card_id: spell_card,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("the convoke-plus-echo cast must be offered and start");
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::ManaPayment {
+                convoke_mode: Some(ConvokeMode::Convoke),
+                ..
+            }
+        ),
+        "the spell must reach the interactive convoke payment step; got {:?}",
+        runner.state().waiting_for
+    );
+
+    // Convoke pays the white shard with the white creature.
+    runner
+        .act(GameAction::TapForConvoke {
+            object_id: elite,
+            mana_type: ManaType::White,
+        })
+        .expect("the white creature must pay the white shard");
+    assert!(runner.state().objects[&elite].tapped);
+
+    // Base {G}{U} from the chamber pauses on the Mirari echo; answer it.
+    let idx = mana_ability_index(&runner, chamber);
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: chamber,
+            ability_index: idx,
+        })
+        .expect("the chamber must produce the base {{G}}{{U}}");
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseManaColor {
+            player,
+            choice: ManaChoicePrompt::SingleColor { options },
+            ..
+        } => {
+            assert_eq!(*player, P0, "P0 pays, so P0 chooses");
+            assert_eq!(options.len(), 2);
+            assert!(options.contains(&ManaType::Green) && options.contains(&ManaType::Blue));
+        }
+        other => panic!("expected a SingleColor echo choice during convoke payment, got {other:?}"),
+    }
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Green),
+            count: 1,
+        })
+        .expect("answering the echo must resume the convoke payment");
+
+    // Commit the interactive payment.
+    runner
+        .act(GameAction::PassPriority)
+        .expect("the convoke-plus-echo payment must commit");
+    assert!(
+        runner.state().stack.iter().any(|entry| matches!(
+            entry.kind,
+            engine::types::game_state::StackEntryKind::Spell { .. }
+        )),
+        "the paid spell must reach the stack"
+    );
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "completion returns to Priority, got {:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(
+        runner.state().players[P0.0 as usize].mana_pool.total(),
+        0,
+        "3 mana + one convoke unit exactly pays {{3}}{{W}}"
+    );
+}
+
+/// CR 605.4a + CR 608.2d: a single-type delayed echo owes no type choice, so
+/// it resolves inline during payment. The affordability preview must count it
+/// before the auto-payment decision: one Forest's base {G} alone cannot pay
+/// {1}{G}, but base {G} + the delayed echo's {G} can.
+#[test]
+fn selesnya_single_type_delayed_echo_funds_auto_payment_without_prompt() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let selesnya = scenario
+        .add_land_from_oracle(P0, "Selesnya Loft Gardens", SELESNYA_ORACLE)
+        .id();
+    scenario.add_basic_land(P0, ManaColor::Green);
+    let cost = ManaCost::Cost {
+        shards: vec![ManaCostShard::Green],
+        generic: 1,
+    };
+    let spell = scenario
+        .add_spell_to_hand(P0, "Single-Type Echo Spell", true)
+        .with_mana_cost(cost.clone())
+        .with_ability(Effect::GainLife {
+            amount: QuantityExpr::Fixed { value: 1 },
+            player: TargetFilter::Controller,
+        })
+        .id();
+    let mut runner = scenario.build();
+
+    // Install Selesnya's until-end-of-turn delayed echo through the real chaos
+    // pipeline (same seam as `runner_with_selesnya_live`).
+    let events = vec![GameEvent::ChaosEnsued { plane_id: selesnya }];
+    process_triggers(runner.state_mut(), &events);
+    while runner.state().delayed_triggers.is_empty() && !runner.state().stack.is_empty() {
+        runner
+            .act(GameAction::PassPriority)
+            .expect("passing priority to resolve the chaos trigger must succeed");
+    }
+    assert_eq!(
+        runner.state().delayed_triggers.len(),
+        1,
+        "chaos must install exactly one Selesnya delayed trigger"
+    );
+
+    assert!(
+        engine::game::casting::can_pay_cost_after_auto_tap(runner.state(), P0, spell, &cost),
+        "one Forest plus the single-type delayed echo must fund {{1}}{{G}}"
+    );
+    let spell_card = runner.state().objects[&spell].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: spell,
+            card_id: spell_card,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("the single-type delayed echo must fund the auto-payment");
+    assert!(
+        runner.state().stack.iter().any(|entry| matches!(
+            entry.kind,
+            engine::types::game_state::StackEntryKind::Spell { .. }
+        )),
+        "the paid spell must reach the stack"
+    );
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "a single-type echo owes no choice; got {:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(
+        runner.state().players[P0.0 as usize].mana_pool.total(),
+        0,
+        "base {{G}} + one delayed {{G}} exactly pays {{1}}{{G}}"
     );
 }

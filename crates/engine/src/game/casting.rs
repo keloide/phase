@@ -21002,21 +21002,45 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
     if payable_from_state(simulated) {
         return true;
     }
-    // CR 605.4a + CR 608.2d: the owed echo bonus only reaches the pool when
-    // the live payment can suspend for its choice. A rootless live payment
-    // (`pay_unless_cost`, Room unlock) cannot, so its preview must stay at the
-    // real pool — counting the bonus would offer an action the live payment
-    // then fails.
+    // CR 605.4a + CR 608.2d: both a choice-owing echo and a deterministic
+    // delayed bonus reach the pool through the pre-spend settlement, which
+    // needs the live payment's resumable root. A rootless live payment
+    // (`pay_unless_cost`, Room unlock) cannot settle either, so its preview
+    // must stay at the real pool — counting the bonus would offer an action the
+    // live payment then fails.
     if !matches!(options.paused, PausedManaPayment::Resumable) {
         return false;
     }
+    // The collector applies deterministic delayed bonuses (a fixed `{R}` or a
+    // single-type echo) to the disposable pool and returns only the firings
+    // that owe a type choice; re-check the pool before the choice search.
+    let firings = super::triggers::echo_bonus_firings_for_preview(simulated, &tap_events);
+    if payable_from_state(simulated) {
+        return true;
+    }
+    // CR 702.51a + CR 702.126a + CR 702.66a + CR 701.67a: convoke, improvise,
+    // delve, and waterbend pay cost units with non-mana resources, so the
+    // mana-only echo upper bound is not a necessary condition when the
+    // authoritative tap-payment payer can apply. The active mode is the typed
+    // capability the exact search below already consumes.
+    let active_tap_payment_mode = if ctx.is_some_and(|ctx| matches!(ctx, PaymentContext::Spell(_)))
+    {
+        source_id.and_then(|source_id| {
+            options
+                .explicit_tap_payment_mode
+                .or_else(|| spell_tap_payment_mode(simulated, player, source_id))
+        })
+    } else {
+        None
+    };
     echo_bonus_preview_can_pay(
         simulated,
         player,
         cost,
-        &tap_events,
+        firings,
         permissions,
         &payable_from_state,
+        active_tap_payment_mode,
     )
 }
 
@@ -21030,15 +21054,21 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
 /// firing contributes exactly one unit, so payability depends only on the
 /// aggregate count vector. Deduplicating the reachable vectors at every firing
 /// keeps `k` identical two-type firings to `k + 1` states instead of `2^k`.
+///
+/// Deterministic delayed bonuses (fixed or single-type echo) were already
+/// resolved into `simulated` by the collector, so `baseline_pool` includes
+/// them; `firings` carries only the choice-owing ones. `tap_payment_mode` is
+/// the authoritative spell-tap contribution (`ConvokeMode`) when one applies,
+/// or `None` for a mana-only payment.
 fn echo_bonus_preview_can_pay(
-    simulated: &mut GameState,
+    simulated: &GameState,
     player: PlayerId,
     cost: &crate::types::mana::ManaCost,
-    tap_events: &[GameEvent],
+    firings: Vec<Vec<crate::types::mana::ManaType>>,
     permissions: crate::types::mana::CostPermissionContext,
     payable: &impl Fn(&GameState) -> bool,
+    tap_payment_mode: Option<ConvokeMode>,
 ) -> bool {
-    let firings = super::triggers::mixed_echo_bonus_firings_for_preview(simulated, tap_events);
     if firings.is_empty() {
         return false;
     }
@@ -21051,14 +21081,19 @@ fn echo_bonus_preview_can_pay(
         return false;
     };
     // CR 605.4a: reject before searching when even making every owed bonus the
-    // exact type the cost wants could not cover its minimum demand.
-    if echo_bonus_upper_bound_is_short(cost, &baseline_pool, firings.len(), permissions) {
+    // exact type the cost wants could not cover its minimum demand. The bound
+    // assumes every unit is mana; when the authoritative tap-payment payer can
+    // contribute non-mana units it is not a necessary condition (CR 702.51a
+    // convoke, CR 702.126a improvise, CR 702.66a delve, CR 701.67a waterbend).
+    if tap_payment_mode.is_none()
+        && echo_bonus_upper_bound_is_short(cost, &baseline_pool, firings.len(), permissions)
+    {
         return false;
     }
     // One scratch clone for the whole search — every candidate rebuilds the
-    // payer's pool from its post-inline baseline (the deterministic single-type
-    // `TapsForMana` bonuses above are already in it), so nothing outside the
-    // pool carries over between candidates.
+    // payer's pool from its post-inline baseline (deterministic delayed and
+    // battlefield bonuses are already in it), so nothing outside the pool
+    // carries over between candidates.
     let mut virtual_state = simulated.clone();
     let mut reachable: HashSet<[u16; 6]> = HashSet::from([[0; 6]]);
     for options in &firings {
@@ -21091,10 +21126,17 @@ fn echo_bonus_preview_can_pay(
     })
 }
 
-/// CR 605.4a: a sound necessary condition for the echo-bonus preview. Treat
-/// every owed firing as a wildcard and check the two demands no assignment can
-/// escape: the cost's minimum number of mana units, and each colour's mandatory
-/// single-type pips. A shortfall here makes the search pointless.
+/// CR 605.4a: a sound necessary condition for the echo-bonus preview when the
+/// payment is mana-only. Treat every owed firing as a wildcard and check the
+/// two demands no assignment can escape: the cost's minimum number of mana
+/// units, and each colour's mandatory single-type pips. A shortfall here makes
+/// the search pointless.
+///
+/// The caller must skip this check when the authoritative payer can contribute
+/// non-mana units (CR 702.51a convoke, CR 702.126a improvise, CR 702.66a
+/// delve, CR 701.67a waterbend): those units satisfy both demands without
+/// appearing in `baseline_pool`, so a shortfall here is not a shortfall in the
+/// real payment.
 fn echo_bonus_upper_bound_is_short(
     cost: &crate::types::mana::ManaCost,
     baseline_pool: &crate::types::mana::ManaPool,
@@ -22676,15 +22718,30 @@ pub(super) fn can_pay_effect_mana_cost_after_auto_tap(
     if payable(&simulated) {
         return true;
     }
-    matches!(paused, PausedManaPayment::Resumable)
-        && echo_bonus_preview_can_pay(
-            &mut simulated,
-            player,
-            cost,
-            &tap_events,
-            permissions,
-            &payable,
-        )
+    // CR 605.4a + CR 608.2d: the pre-spend settlement (choice-owing echo or
+    // deterministic delayed bonus) needs the live payment's resumable root; a
+    // rootless payment must keep the conservative real-pool check.
+    if !matches!(paused, PausedManaPayment::Resumable) {
+        return false;
+    }
+    // The collector applies deterministic delayed bonuses to the disposable
+    // pool and returns only the firings that owe a type choice; re-check the
+    // pool before the choice search.
+    let firings = super::triggers::echo_bonus_firings_for_preview(&mut simulated, &tap_events);
+    if payable(&simulated) {
+        return true;
+    }
+    echo_bonus_preview_can_pay(
+        &simulated,
+        player,
+        cost,
+        firings,
+        permissions,
+        &payable,
+        // Effect-time payments have no convoke/improvise/delve/waterbend
+        // tap-payment mode, so the mana-only upper bound stays sound.
+        None,
+    )
 }
 
 // Target/mode selection handlers are in casting_targets module.

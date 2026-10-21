@@ -4076,7 +4076,19 @@ pub(super) fn resolve_tap_mana_triggers_inline(
 }
 
 /// CR 605.4a + CR 608.2d + CR 601.2g-h: preview helper for the synchronous
-/// payment affordability probe. Returns one entry per owed echo firing in
+/// payment affordability probe.
+///
+/// Deterministic delayed mana production — a fixed `{R}` (Molten Tide's "add an
+/// additional {R}") or a single-type `TriggerEventManaType` echo (Selesnya's
+/// "add one mana of any type that land produced" after a single-type tap) —
+/// owes no type choice, so it is resolved straight into the disposable preview
+/// `state` through the same inline triggered-mana authority the live payment
+/// uses, and the caller re-reads the pool. Only delayed deterministic contexts
+/// are applied here: battlefield deterministic triggers were already resolved
+/// by `resolve_tap_mana_triggers_inline`, so applying a normal one again would
+/// double the bonus.
+///
+/// Choice-owing firings are returned as one entry per owed echo firing in
 /// `events` (the Pass-1 `continue` shape), each entry the distinct bonus types
 /// that firing may choose among. Collection runs through the same
 /// normal-plus-delayed authority the live settlement uses, so delayed-generator
@@ -4087,7 +4099,7 @@ pub(super) fn resolve_tap_mana_triggers_inline(
 /// fund an arbitrary cost, so previews must not count it. Runs on disposable
 /// preview state only; previews stay choice-free (no prompt) while the live
 /// payment pauses for a real choice via the typed fixed-point continuation.
-pub(crate) fn mixed_echo_bonus_firings_for_preview(
+pub(crate) fn echo_bonus_firings_for_preview(
     state: &mut GameState,
     events: &[GameEvent],
 ) -> Vec<Vec<crate::types::mana::ManaType>> {
@@ -4114,12 +4126,6 @@ pub(crate) fn mixed_echo_bonus_firings_for_preview(
         let Some(trigger_event) = trigger_event else {
             continue;
         };
-        if !super::mana_abilities::echo_body_owes_type_choice(
-            &view.context.pending.ability,
-            Some(trigger_event),
-        ) {
-            continue;
-        }
         // CR 106.4: only an unrestricted echo bonus is generally spendable;
         // a restricted one (e.g. spend-only-on-X) cannot be counted
         // optimistically for an arbitrary cost.
@@ -4130,11 +4136,60 @@ pub(crate) fn mixed_echo_bonus_firings_for_preview(
         if restricted {
             continue;
         }
-        let mut options = super::mana_abilities::echo_distinct_types(trigger_event);
-        options.sort();
-        options.dedup();
-        if !options.is_empty() {
-            firings.push(options);
+        if super::mana_abilities::echo_body_owes_type_choice(
+            &view.context.pending.ability,
+            Some(trigger_event),
+        ) {
+            let mut options = super::mana_abilities::echo_distinct_types(trigger_event);
+            options.sort();
+            options.dedup();
+            if !options.is_empty() {
+                firings.push(options);
+            }
+            continue;
+        }
+        // CR 106.4 + CR 605.4a: only a production that owes no type choice is
+        // resolved inline. `AnyOneColor` / `AnyCombination` / the
+        // `ChoiceAmong*` shapes and a multi-type `TriggerEventManaType` echo
+        // choose a type; fixed, colorless, mixed, and a single-type echo do
+        // not. `ChosenColor` / `NotedType` read a stored choice and are left
+        // out: the preview does not need that class, and an unset readback can
+        // surface a prompt.
+        let deterministic_production = match &view.context.pending.ability.effect {
+            Effect::Mana {
+                produced:
+                    crate::types::ability::ManaProduction::Fixed { .. }
+                    | crate::types::ability::ManaProduction::Colorless { .. }
+                    | crate::types::ability::ManaProduction::Mixed { .. },
+                ..
+            } => true,
+            Effect::Mana {
+                produced: crate::types::ability::ManaProduction::TriggerEventManaType,
+                ..
+            } => super::mana_abilities::echo_distinct_types(trigger_event).len() == 1,
+            _ => false,
+        };
+        // CR 605.4a: a deterministic delayed bonus owes no choice, so the
+        // optional-pause machinery cannot strand it. Resolve it inline into the
+        // disposable preview. `optional`/`optional_for` bodies are left out:
+        // the preview cannot answer a prompt, and a mandatory fixed/single-type
+        // echo is the class this preview exists for.
+        if deterministic_production
+            && matches!(
+                view.context.dispatch_origin,
+                PendingTriggerDispatchOrigin::Delayed
+            )
+            && !view.context.pending.ability.optional
+            && view.context.pending.ability.optional_for.is_none()
+        {
+            let mut scratch = Vec::new();
+            super::mana_abilities::resolve_triggered_mana_ability_inline(
+                state,
+                &view.context.pending.ability,
+                Some(trigger_event),
+                &mut scratch,
+                None,
+            );
         }
     }
     firings
