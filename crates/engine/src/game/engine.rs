@@ -12335,17 +12335,12 @@ fn apply_non_priority_pass_action(
             // CR 605.3b + CR 616.1: a paused cost move or pre-spend echo choice
             // leaves the action uncommitted; the typed planar-die root returns
             // its prompt and finishes the locked-cost roll once answered.
-            match crate::game::planechase::take_paid_planar_die_action(
-                state,
-                *player,
-                &mut events,
-            )? {
+            match crate::game::planechase::take_paid_planar_die_action(state, *player, &mut events)?
+            {
                 crate::game::planechase::PaidPlanarDieAction::Rolled(_) => {
                     WaitingFor::Priority { player: *player }
                 }
-                crate::game::planechase::PaidPlanarDieAction::Paused => {
-                    state.waiting_for.clone()
-                }
+                crate::game::planechase::PaidPlanarDieAction::Paused => state.waiting_for.clone(),
             }
         }
         // CR 715.3a: Player chooses creature or Adventure face.
@@ -13545,7 +13540,9 @@ fn apply_non_priority_pass_action(
                         wait,
                         settled_direct_priority_root,
                     } = super::triggers::finish_accepted_triggered_mana_action(
-                        state, &mut events, events_before,
+                        state,
+                        &mut events,
+                        events_before,
                     )? {
                         // CR 117.5 + CR 605.4a (mirrors the opponent-may arm):
                         // this reducer arm returns its `ActionResult` directly,
