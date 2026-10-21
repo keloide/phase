@@ -20984,9 +20984,10 @@ fn echo_bonus_upper_bound_is_short(
 
     // CR 107.4f + CR 118.3b: a K'rrik-style grant can pay a colored shard
     // with 2 life instead of mana, so the mana-only upper bound is not a
-    // necessary condition when that permission and budget exist. Let the
+    // necessary condition when that permission and budget exist. `max_life`
+    // counts affordable 2-life payments, so one unit already defers. Let the
     // exact search decide rather than risk a false negative.
-    if permissions.max_life >= 2 && !permissions.life_colors.is_empty() {
+    if permissions.max_life >= 1 && !permissions.life_colors.is_empty() {
         return false;
     }
     let ManaCost::Cost { shards, generic } = cost else {
@@ -21019,6 +21020,13 @@ fn echo_bonus_upper_bound_is_short(
             .sum::<u32>();
     if baseline_pool.total() as u32 + (firings as u32) < minimum_units {
         return true;
+    }
+    // CR 609.4b + CR 118.14: a spend-as-any-colour/type concession lets the
+    // pool's units pay a colored pip they do not match, so the per-colour
+    // demand is not necessary. The minimum-unit check above stays sound
+    // because every non-life-paid symbol still consumes one mana unit.
+    if permissions.mana_spend_permission.is_some() {
+        return false;
     }
     MANA_TYPE_SLOTS.into_iter().any(|mana_type| {
         let required = shards

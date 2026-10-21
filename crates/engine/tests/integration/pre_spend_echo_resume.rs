@@ -34,6 +34,8 @@ use engine::types::zones::Zone;
 const MIRARI_ECHO_ORACLE: &str = "Creatures you control get +1/+1.\nWhenever you tap a land for mana, add one mana of any type that land produced.";
 const CHAMBER_ORACLE: &str = "This land enters tapped.\nWhen this land enters, return a land you control to its owner's hand.\n{T}: Add {G}{U}.";
 const COAL_GOLEM_ORACLE: &str = "{3}, Sacrifice ~: Add {R}{R}{R}.";
+const MANABARBS_ORACLE: &str =
+    "Whenever a player taps a land for mana, this enchantment deals 1 damage to that player.";
 const DIGSITE_ORACLE: &str = "Sacrifice this creature: Exile up to four target cards from a single graveyard. Activate only as a sorcery.\nWhen this creature dies, you may pay {4}. If you do, discover 4.";
 
 fn floating_colorless(count: usize) -> Vec<ManaUnit> {
@@ -166,6 +168,10 @@ fn nested_mana_sub_cost_settles_echo_before_spending_parent_cost() {
     scenario.at_phase(Phase::PreCombatMain);
     scenario.add_enchantment_from_oracle(P0, "Mirari's Wake", MIRARI_ECHO_ORACLE);
     scenario.add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE);
+    // CR 117.5: Manabarbs is an ordinary observer of the same land tap. The
+    // nested ManaAbilityManaPayment chain must converge to Priority and put
+    // this trigger on the stack; without the recursive root walk it strands.
+    scenario.add_enchantment_from_oracle(P0, "Manabarbs", MANABARBS_ORACLE);
     let golem = scenario
         .add_creature_from_oracle(P0, "Coal Golem", 3, 3, COAL_GOLEM_ORACLE)
         .id();
@@ -212,6 +218,11 @@ fn nested_mana_sub_cost_settles_echo_before_spending_parent_cost() {
             .count_color(ManaType::Red),
         3,
         "all three produced mana is red"
+    );
+    assert_eq!(
+        runner.state().stack.len(),
+        1,
+        "Manabarbs' ordinary trigger from the same tap must reach the stack before priority returns"
     );
     assert!(
         matches!(

@@ -61106,30 +61106,70 @@ fn rootless_special_action_probe_stays_at_the_real_pool() {
 #[test]
 fn echo_upper_bound_defers_to_life_payment_permissions() {
     // CR 107.4f + CR 118.3b: a K'rrik-style grant pays a colored shard with
-    // 2 life instead of mana. The mana-only upper bound is not a necessary
-    // condition when that permission and budget exist, so it must defer to
-    // the exact echo search rather than reject a legal payment.
+    // 2 life instead of mana. `max_life` counts affordable 2-life payments,
+    // so one unit must already defer to the exact echo search rather than
+    // reject a legal payment. One firing and an empty pool make the
+    // minimum-unit check short without the deferral.
     let cost = ManaCost::Cost {
-        shards: vec![ManaCostShard::Black],
+        shards: vec![ManaCostShard::Black, ManaCostShard::Black],
         generic: 0,
     };
     let pool = crate::types::mana::ManaPool::default();
     let life_permission = crate::types::mana::CostPermissionContext {
-        max_life: 2,
+        max_life: 1,
         life_colors: std::iter::once(ManaColor::Black).collect(),
         ..Default::default()
     };
     assert!(
-        !super::echo_bonus_upper_bound_is_short(&cost, &pool, 0, life_permission),
-        "a life-payable {{B}} must not be rejected by the mana-only bound"
+        !super::echo_bonus_upper_bound_is_short(&cost, &pool, 1, life_permission),
+        "one affordable 2-life payment must defer the mana-only bound"
     );
     assert!(
         super::echo_bonus_upper_bound_is_short(
             &cost,
             &pool,
-            0,
+            1,
             crate::types::mana::CostPermissionContext::default()
         ),
         "without a life-payment permission the same empty pool is still short"
+    );
+}
+
+#[test]
+fn echo_upper_bound_defers_to_spend_any_color_permission() {
+    // CR 609.4b + CR 118.14: under "spend mana as though it were mana of any
+    // color", a green unit pays a black pip. The per-colour demand is not
+    // necessary, so the bound must defer; the minimum-unit demand still holds.
+    let cost = ManaCost::Cost {
+        shards: vec![
+            ManaCostShard::Black,
+            ManaCostShard::Black,
+            ManaCostShard::Black,
+        ],
+        generic: 0,
+    };
+    let mut pool = crate::types::mana::ManaPool::default();
+    pool.add(ManaUnit::new(
+        ManaType::Green,
+        ObjectId(0),
+        false,
+        Vec::new(),
+    ));
+    let any_color = crate::types::mana::CostPermissionContext {
+        mana_spend_permission: Some(ManaSpendPermission::AnyColor),
+        ..Default::default()
+    };
+    assert!(
+        !super::echo_bonus_upper_bound_is_short(&cost, &pool, 2, any_color),
+        "a spend-as-any-colour concession must defer the per-colour bound"
+    );
+    assert!(
+        super::echo_bonus_upper_bound_is_short(
+            &cost,
+            &pool,
+            2,
+            crate::types::mana::CostPermissionContext::default()
+        ),
+        "without the concession the green unit cannot cover the black pips"
     );
 }
