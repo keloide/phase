@@ -1425,6 +1425,80 @@ fn merge_clause_conditions(
     }
 }
 
+/// CR 115.1 + CR 608.2c + CR 608.2h: replace this instruction's captured
+/// scalar P/T gate with its chosen-object binding, retaining every independent
+/// constituent. Only root conjunctions expose owned constituents; a predicate
+/// inside `Not` or `Or` belongs to a different logical expression.
+fn rebind_owned_property_gate(
+    condition: &AbilityCondition,
+    captured: &AbilityCondition,
+) -> Option<AbilityCondition> {
+    let mut rebound = captured.clone();
+    let AbilityCondition::QuantityCheck {
+        lhs:
+            lhs @ QuantityExpr::Ref {
+                qty: QuantityRef::Power { .. } | QuantityRef::Toughness { .. },
+            },
+        ..
+    } = &mut rebound
+    else {
+        return None;
+    };
+    lower::rebind_cost_paid_object_pt_to_target(lhs);
+    if let QuantityExpr::Ref {
+        qty: QuantityRef::Power { scope } | QuantityRef::Toughness { scope },
+    } = lhs
+    {
+        if *scope == ObjectScope::Source {
+            *scope = ObjectScope::Target;
+        }
+    }
+
+    fn replace_constituent(
+        condition: &mut AbilityCondition,
+        captured: &AbilityCondition,
+        rebound: &AbilityCondition,
+    ) -> usize {
+        if condition == captured {
+            *condition = rebound.clone();
+            return 1;
+        }
+        match condition {
+            AbilityCondition::And { conditions } => conditions
+                .iter_mut()
+                .map(|member| replace_constituent(member, captured, rebound))
+                .sum(),
+            _ => 0,
+        }
+    }
+
+    let mut bound = condition.clone();
+    (replace_constituent(&mut bound, captured, &rebound) == 1).then_some(bound)
+}
+
+fn effect_declares_own_typed_object(effect: &Effect) -> bool {
+    triggers::extract_target_filter_from_effect(effect).is_some_and(|target| {
+        filter_introduces_typed_object(target)
+            && !target.is_context_ref()
+            && !target_filter_is_explicit_player_target(target)
+    })
+}
+
+fn property_owner_has_ambiguous_targets(
+    owner: &ParsedEffectClause,
+    outer_spec: Option<&MultiTargetSpec>,
+) -> bool {
+    outer_spec.is_some()
+        || owner.multi_target.is_some()
+        || std::iter::successors(owner.sub_ability.as_deref(), |def| {
+            def.sub_ability.as_deref()
+        })
+        .any(|def| {
+            def.multi_target.is_some()
+                || triggers::extract_target_filter_from_effect(&def.effect).is_some()
+        })
+}
+
 fn apply_outer_condition_to_clause(outer: &AbilityCondition, clause: &mut ClauseIr) {
     let inner = clause
         .condition
@@ -43261,8 +43335,8 @@ fn parse_effect_chain_ir_body(
             (route, suffix_route) => route.or(suffix_route),
         };
         let suffix_cond = suffix_cond.map(|(condition, _)| condition);
-        // Retain this producer's gate and its existing reflexive wrapper until
-        // the stripped instruction supplies typed target-declaration authority.
+        // Retain the exact constituent produced by this chunk. Its reflexive
+        // marker and other guards already belong to the assembled condition.
         let mut property_gate = property_cond
             .as_ref()
             .filter(|gate| {
@@ -43276,15 +43350,7 @@ fn parse_effect_chain_ir_body(
                     }
                 )
             })
-            .map(|gate| {
-                (
-                    gate.clone(),
-                    if_you_do
-                        .as_ref()
-                        .filter(|condition| condition.has_when_you_do_marker())
-                        .cloned(),
-                )
-            });
+            .cloned();
         let guard_condition = condition
             .or(counter_cond)
             .or(mv_cond)
@@ -43401,33 +43467,21 @@ fn parse_effect_chain_ir_body(
                 // Never search for a target in another emitted clause; another
                 // declaration makes the outer suffix ambiguous. Every body
                 // clause retains the same gate and condition extent.
-                if property_gate.is_some()
-                    && body_ir.clauses.first().is_some_and(|clause| {
+                if let Some(gate) = property_gate.as_ref().filter(|_| {
+                    body_ir.clauses.first().is_some_and(|clause| {
                         clause.target_reads == TargetReadOrigin::OwnAnnouncement
-                            && triggers::extract_target_filter_from_effect(&clause.parsed.effect)
-                                .is_some_and(|target| {
-                                    filter_introduces_typed_object(target)
-                                        && !target.is_context_ref()
-                                        && !target_filter_is_explicit_player_target(target)
-                                })
+                            && effect_declares_own_typed_object(&clause.parsed.effect)
                     })
-                {
+                }) {
                     let owner = &body_ir.clauses[0];
-                    if owner.multi_target.is_some()
-                        || owner.parsed.multi_target.is_some()
-                        || std::iter::successors(owner.parsed.sub_ability.as_deref(), |def| {
-                            def.sub_ability.as_deref()
-                        })
-                        .any(|def| {
-                            def.multi_target.is_some()
-                                || triggers::extract_target_filter_from_effect(&def.effect)
-                                    .is_some()
-                        })
-                        || body_ir
-                            .clauses
-                            .iter()
-                            .skip(1)
-                            .any(clause_announces_own_target)
+                    if property_owner_has_ambiguous_targets(
+                        &owner.parsed,
+                        owner.multi_target.as_ref(),
+                    ) || body_ir
+                        .clauses
+                        .iter()
+                        .skip(1)
+                        .any(clause_announces_own_target)
                     {
                         unimplemented_clause(
                             &mut builder,
@@ -43437,30 +43491,16 @@ fn parse_effect_chain_ir_body(
                         );
                         continue;
                     }
-                    if let Some((mut gate, reflexive)) = property_gate.clone() {
-                        if let AbilityCondition::QuantityCheck {
-                            lhs:
-                                lhs @ QuantityExpr::Ref {
-                                    qty: QuantityRef::Power { .. } | QuantityRef::Toughness { .. },
-                                },
-                            ..
-                        } = &mut gate
-                        {
-                            lower::rebind_cost_paid_object_pt_to_target(lhs);
-                            if let QuantityExpr::Ref {
-                                qty: QuantityRef::Power { scope } | QuantityRef::Toughness { scope },
-                            } = lhs
-                            {
-                                if *scope == ObjectScope::Source {
-                                    *scope = ObjectScope::Target;
-                                }
-                            }
-                            bound_outer = match reflexive {
-                                Some(marker) => marker.with_when_you_do_guard(gate),
-                                None => gate,
-                            };
-                        }
-                    }
+                    let Some(bound) = rebind_owned_property_gate(&bound_outer, gate) else {
+                        unimplemented_clause(
+                            &mut builder,
+                            "property_suffix_ambiguous_object",
+                            normalized_text,
+                            chunk.boundary_after,
+                        );
+                        continue;
+                    };
+                    bound_outer = bound;
                 }
                 for clause in &mut body_ir.clauses {
                     apply_outer_condition_to_clause(&bound_outer, clause);
@@ -43704,7 +43744,7 @@ fn parse_effect_chain_ir_body(
             Prepositional,
             SubjectOnly,
         }
-        let (text, mut condition, decline_dispatch) =
+        let (text, consequence_condition, decline_dispatch) =
             if let Some((body, decline_condition)) = strip_for_each_opponent_who_doesnt(&text) {
                 // CR 608.2e + CR 101.3: Do NOT stamp `player_scope` on the body
                 // — it inherits the parent's `player_scope: Opponent` iteration
@@ -43896,8 +43936,14 @@ fn parse_effect_chain_ir_body(
                 };
                 (body, Some(condition), DeclineDispatch::SubjectOnly)
             } else {
-                (text, condition, DeclineDispatch::None)
+                (text, None, DeclineDispatch::None)
             };
+        // CR 118.12 + CR 608.2c: a consequence adds its own outcome/scope gate
+        // without erasing a property, reflexive or same-name condition.
+        let mut condition = match consequence_condition {
+            Some(consequence) => Some(merge_clause_conditions(consequence, condition)),
+            None => condition,
+        };
         // Recipient rebinds apply to every chunk of the prepositional
         // decline-consequence sentence; the `Not{IfYouDo}` condition and
         // `player_scope` only to the head chunk that carried the "for each
@@ -45493,23 +45539,11 @@ fn parse_effect_chain_ir_body(
         // CR 115.1 + CR 608.2c + CR 608.2h: bind only the property suffix
         // retained from THIS chunk, after its parsed instruction declares one
         // object. This is not a rewrite of other conditions or chain targets.
-        if property_gate.is_some()
-            && triggers::extract_target_filter_from_effect(&clause.effect).is_some_and(|target| {
-                filter_introduces_typed_object(target)
-                    && !target.is_context_ref()
-                    && !target_filter_is_explicit_player_target(target)
-            })
+        if let Some(gate) = property_gate
+            .as_ref()
+            .filter(|_| effect_declares_own_typed_object(&clause.effect))
         {
-            if multi_target.is_some()
-                || clause.multi_target.is_some()
-                || std::iter::successors(clause.sub_ability.as_deref(), |def| {
-                    def.sub_ability.as_deref()
-                })
-                .any(|def| {
-                    def.multi_target.is_some()
-                        || triggers::extract_target_filter_from_effect(&def.effect).is_some()
-                })
-            {
+            if property_owner_has_ambiguous_targets(&clause, multi_target.as_ref()) {
                 unimplemented_clause(
                     &mut builder,
                     "property_suffix_ambiguous_object",
@@ -45518,36 +45552,19 @@ fn parse_effect_chain_ir_body(
                 );
                 continue;
             }
-            if let Some((mut gate, reflexive)) = property_gate {
-                if let AbilityCondition::QuantityCheck {
-                    lhs:
-                        lhs @ QuantityExpr::Ref {
-                            qty: QuantityRef::Power { .. } | QuantityRef::Toughness { .. },
-                        },
-                    ..
-                } = &mut gate
-                {
-                    lower::rebind_cost_paid_object_pt_to_target(lhs);
-                    if let QuantityExpr::Ref {
-                        qty: QuantityRef::Power { scope } | QuantityRef::Toughness { scope },
-                    } = lhs
-                    {
-                        if *scope == ObjectScope::Source {
-                            *scope = ObjectScope::Target;
-                        }
-                    }
-                    let bound = match reflexive {
-                        Some(marker) => marker.with_when_you_do_guard(gate),
-                        None => gate,
-                    };
-                    condition = Some(match unless_same_name_condition {
-                        Some(unless_cond) => AbilityCondition::And {
-                            conditions: vec![bound, unless_cond],
-                        },
-                        None => bound,
-                    });
-                }
-            }
+            let Some(bound) = condition
+                .as_ref()
+                .and_then(|condition| rebind_owned_property_gate(condition, gate))
+            else {
+                unimplemented_clause(
+                    &mut builder,
+                    "property_suffix_ambiguous_object",
+                    normalized_text,
+                    chunk.boundary_after,
+                );
+                continue;
+            };
+            condition = Some(bound);
         }
 
         if condition

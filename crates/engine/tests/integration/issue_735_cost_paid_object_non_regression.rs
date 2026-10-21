@@ -20,8 +20,10 @@
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::triggers::{drain_order_triggers_with_identity, process_triggers};
 use engine::game::zones::{create_object, move_to_zone};
+use engine::types::ability::EffectKind;
 use engine::types::card_type::CoreType;
 use engine::types::counter::CounterType;
+use engine::types::events::GameEvent;
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
@@ -175,4 +177,27 @@ fn ents_fury_own_target_gets_counter_then_pump() {
         Zone::Battlefield,
         "the countered and pumped 6/6 target survives fighting a 3/3"
     );
+}
+
+/// CR 608.2c + CR 608.2h: Ent's independent pump and fight still run when its
+/// own target starts below the counter threshold.
+#[test]
+fn ents_fury_below_threshold_still_pumps_and_fights() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let ally = scenario.add_creature(P0, "Small Ally", 3, 5).id();
+    let enemy = scenario.add_creature(P1, "Fight Enemy", 2, 4).id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Ent's Fury", false, ENTS_FURY_ORACLE)
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+    let outcome = runner.cast(spell).target_objects(&[ally, enemy]).resolve();
+    assert_eq!(p1p1(&runner, ally), 0);
+    assert_eq!(outcome.state().objects[&ally].power, Some(4));
+    outcome.assert_zone(&[ally], Zone::Battlefield);
+    // CR 701.14a + CR 704.5g: the pumped ally's four damage kills the 2/4.
+    outcome.assert_zone(&[enemy, spell], Zone::Graveyard);
+    assert!(outcome.events().iter().any(|event| matches!(event,
+        GameEvent::EffectResolved { kind: EffectKind::Fight, source_id, .. } if *source_id == spell)));
 }

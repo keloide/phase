@@ -3397,9 +3397,12 @@ pub fn parse_type_phrase_folding_with_ctx<'a>(
                     && extra_core_type_filters.is_empty()
                     && neg_type_filters.is_empty()
                 {
-                    if let Some(union) =
-                        parse_color_or_type_union(&properties, &other_filter, after_trimmed)
-                    {
+                    if let Some(union) = parse_color_or_type_union(
+                        &properties,
+                        &property_disjunction_ranges,
+                        &other_filter,
+                        after_trimmed,
+                    ) {
                         return (union, final_rest);
                     }
                 }
@@ -5005,7 +5008,7 @@ fn finalize_or_disjunction(combined: TargetFilter, shared_props: &[FilterProp]) 
     distribute_properties_to_or(combined)
 }
 
-/// CR 105.2 + CR 205.2a: "<color> or <type> <noun>" ("black or artifact
+/// CR 105.2 + CR 205.2a: "<colors> or <type> <noun>" ("black or artifact
 /// creature") joins two kinds of the same noun: the noun of that color, or the
 /// noun with that type. `left_props` hold the color-only left leg, `right` is
 /// the parsed right leg and `right_text` its lowercase source. Returns `None`
@@ -5016,6 +5019,7 @@ fn finalize_or_disjunction(combined: TargetFilter, shared_props: &[FilterProp]) 
 /// two legs identical.
 fn parse_color_or_type_union(
     left_props: &[FilterProp],
+    property_disjunction_ranges: &[(usize, usize)],
     right: &TargetFilter,
     right_text: &str,
 ) -> Option<TargetFilter> {
@@ -5034,20 +5038,20 @@ fn parse_color_or_type_union(
         .iter()
         .filter(|type_filter| **type_filter != adjective)
         .cloned();
-    let left = typed(
-        noun.next().unwrap_or(TypeFilter::Any),
-        None,
-        left_props.to_vec(),
-        noun.collect(),
-    );
+    let noun_head = noun.next().unwrap_or(TypeFilter::Any);
+    let noun_tail: Vec<TypeFilter> = noun.collect();
+    let mut filters: Vec<TargetFilter> =
+        expand_property_disjunctions(left_props.to_vec(), property_disjunction_ranges)
+            .into_iter()
+            .map(|properties| typed(noun_head.clone(), None, properties, noun_tail.clone()))
+            .collect();
+    filters.push(right.clone());
     let shared: Vec<FilterProp> = left_props
         .iter()
         .filter(|prop| !is_adjective_prefix_prop(prop))
         .cloned()
         .collect();
-    let combined = distribute_controller_to_or(TargetFilter::Or {
-        filters: vec![left, right.clone()],
-    });
+    let combined = distribute_controller_to_or(TargetFilter::Or { filters });
     let combined = distribute_shared_properties(combined, &shared);
     Some(distribute_properties_to_or(combined))
 }
@@ -23710,6 +23714,8 @@ mod exile_graveyard_source_shape {
 #[cfg(test)]
 mod color_or_type_union {
     use super::*;
+    use crate::game::filter::{matches_target_filter, FilterContext};
+    use crate::game::scenario::{GameScenario, P0, P1};
 
     /// Each `Or` leg as (type filters, colors), in order.
     fn legs(filter: &TargetFilter) -> Vec<(Vec<TypeFilter>, Vec<ManaColor>)> {
@@ -23748,6 +23754,272 @@ mod color_or_type_union {
                 (vec![TypeFilter::Artifact, TypeFilter::Creature], vec![]),
             ]
         );
+    }
+
+    /// Synthetic accepted grammar, not a printed card. CR 105.2 + CR 205.2a:
+    /// either listed color qualifies the shared creature noun; the independent
+    /// artifact leg requires both Artifact and Creature.
+    #[test]
+    fn synthetic_plural_colors_or_type_noun_matches_each_independent_kind() {
+        let (filter, rest) = parse_type_phrase_folding("black or green or artifact creature");
+        assert_eq!(rest, "");
+        assert_eq!(
+            legs(&filter),
+            vec![
+                (vec![TypeFilter::Creature], vec![ManaColor::Black]),
+                (vec![TypeFilter::Creature], vec![ManaColor::Green]),
+                (vec![TypeFilter::Artifact, TypeFilter::Creature], vec![]),
+            ]
+        );
+        let (target, rest) = parse_target("target black or green or artifact creature");
+        assert_eq!(rest, "");
+        assert_eq!(target, filter, "target wrapper preserves the same union");
+        let mut scenario = GameScenario::new();
+        let black = scenario
+            .add_creature(P0, "Black", 2, 2)
+            .with_color(vec![ManaColor::Black])
+            .id();
+        let green = scenario
+            .add_creature(P0, "Green", 2, 2)
+            .with_color(vec![ManaColor::Green])
+            .id();
+        let both = scenario
+            .add_creature(P0, "Both Colors", 2, 2)
+            .with_color(vec![ManaColor::Black, ManaColor::Green])
+            .id();
+        let artifact = scenario
+            .add_creature(P0, "Artifact Creature", 2, 2)
+            .as_artifact_creature()
+            .id();
+        let red = scenario
+            .add_creature(P0, "Red", 2, 2)
+            .with_color(vec![ManaColor::Red])
+            .id();
+        let colorless = scenario.add_creature(P0, "Colorless", 2, 2).id();
+        let black_noncreature = scenario
+            .add_creature(P0, "Black Enchantment", 0, 0)
+            .as_enchantment()
+            .with_color(vec![ManaColor::Black])
+            .id();
+        let green_noncreature = scenario
+            .add_creature(P0, "Green Enchantment", 0, 0)
+            .as_enchantment()
+            .with_color(vec![ManaColor::Green])
+            .id();
+        let artifact_noncreature = scenario
+            .add_creature(P0, "Noncreature Artifact", 0, 0)
+            .as_enchantment()
+            .as_artifact()
+            .id();
+        let runner = scenario.build();
+        let context = FilterContext::neutral();
+        for id in [black, green, both, artifact] {
+            assert!(
+                matches_target_filter(runner.state(), id, &target, &context),
+                "legal independent kind: {:?}",
+                runner.state().objects[&id]
+            );
+        }
+        for id in [
+            red,
+            colorless,
+            black_noncreature,
+            green_noncreature,
+            artifact_noncreature,
+        ] {
+            assert!(
+                !matches_target_filter(runner.state(), id, &target, &context),
+                "outside every concrete creature leg: {:?}",
+                runner.state().objects[&id]
+            );
+        }
+    }
+
+    /// CR 109.5 + CR 105.2: the shared controller suffix uses control rather
+    /// than ownership, and article-led/no-noun siblings keep their own scope.
+    #[test]
+    fn synthetic_plural_mixed_union_preserves_controller_and_noun_locality() {
+        let (filter, rest) =
+            parse_type_phrase_folding("black or green or artifact creature you control");
+        assert_eq!(rest, "");
+        assert_eq!(legs(&filter).len(), 3);
+        let mut scenario = GameScenario::new();
+        let borrowed = scenario
+            .add_creature(P1, "Borrowed Black", 2, 2)
+            .with_color(vec![ManaColor::Black])
+            .controlled_by(P0)
+            .id();
+        let stolen = scenario
+            .add_creature(P0, "Stolen Green", 2, 2)
+            .with_color(vec![ManaColor::Green])
+            .controlled_by(P1)
+            .id();
+        let own_artifact = scenario
+            .add_creature(P1, "Borrowed Artifact", 2, 2)
+            .as_artifact_creature()
+            .controlled_by(P0)
+            .id();
+        let other_artifact = scenario
+            .add_creature(P0, "Stolen Artifact", 2, 2)
+            .as_artifact_creature()
+            .controlled_by(P1)
+            .id();
+        let black_noncreature = scenario
+            .add_creature(P0, "Black Enchantment", 0, 0)
+            .as_enchantment()
+            .with_color(vec![ManaColor::Black])
+            .id();
+        let red = scenario
+            .add_creature(P0, "Red", 2, 2)
+            .with_color(vec![ManaColor::Red])
+            .id();
+        let runner = scenario.build();
+        let context = FilterContext::from_source_with_controller(borrowed, P0);
+        for id in [borrowed, own_artifact] {
+            assert!(matches_target_filter(runner.state(), id, &filter, &context));
+        }
+        for id in [stolen, other_artifact, black_noncreature, red] {
+            assert!(!matches_target_filter(
+                runner.state(),
+                id,
+                &filter,
+                &context
+            ));
+        }
+        let (article, rest) =
+            parse_type_phrase_folding("black or green creature or an artifact creature");
+        assert_eq!(rest, " or an artifact creature");
+        for id in [borrowed, stolen] {
+            assert!(matches_target_filter(
+                runner.state(),
+                id,
+                &article,
+                &context
+            ));
+        }
+        assert!(!matches_target_filter(
+            runner.state(),
+            own_artifact,
+            &article,
+            &context
+        ));
+        assert!(!matches_target_filter(
+            runner.state(),
+            red,
+            &article,
+            &context
+        ));
+        let (article_cards, rest) =
+            parse_type_phrase_folding("black or green creature card or an artifact creature card");
+        assert_eq!(rest, "");
+        let mut cards = GameScenario::new();
+        let black_card = cards
+            .add_creature_to_hand(P0, "Black Card", 2, 2)
+            .with_color(vec![ManaColor::Black])
+            .id();
+        let green_card = cards
+            .add_creature_to_hand(P0, "Green Card", 2, 2)
+            .with_color(vec![ManaColor::Green])
+            .id();
+        let artifact_card = cards
+            .add_creature_to_hand(P0, "Artifact Card", 2, 2)
+            .as_artifact_creature()
+            .id();
+        let red_card = cards
+            .add_creature_to_hand(P0, "Red Card", 2, 2)
+            .with_color(vec![ManaColor::Red])
+            .id();
+        let black_noncreature_card = cards
+            .add_creature_to_hand(P0, "Black Noncreature", 0, 0)
+            .as_enchantment()
+            .with_color(vec![ManaColor::Black])
+            .id();
+        let green_noncreature_card = cards
+            .add_creature_to_hand(P0, "Green Noncreature", 0, 0)
+            .as_enchantment()
+            .with_color(vec![ManaColor::Green])
+            .id();
+        let artifact_noncreature_card = cards
+            .add_creature_to_hand(P0, "Artifact Noncreature", 0, 0)
+            .as_enchantment()
+            .as_artifact()
+            .id();
+        let cards = cards.build();
+        for id in [black_card, green_card, artifact_card] {
+            assert!(matches_target_filter(
+                cards.state(),
+                id,
+                &article_cards,
+                &context
+            ));
+        }
+        for id in [
+            red_card,
+            black_noncreature_card,
+            green_noncreature_card,
+            artifact_noncreature_card,
+        ] {
+            assert!(!matches_target_filter(
+                cards.state(),
+                id,
+                &article_cards,
+                &context
+            ));
+        }
+        let (without_noun, rest) = parse_type_phrase_folding("black or green or artifact");
+        assert_eq!(rest, "");
+        assert_eq!(
+            legs(&without_noun),
+            vec![
+                (vec![TypeFilter::Any], vec![ManaColor::Black]),
+                (vec![TypeFilter::Any], vec![ManaColor::Green]),
+                (vec![TypeFilter::Artifact], vec![]),
+            ]
+        );
+        assert!(
+            matches_target_filter(runner.state(), black_noncreature, &without_noun, &context),
+            "without a shared noun the color leg intentionally accepts noncreatures"
+        );
+        assert!(matches_target_filter(
+            runner.state(),
+            own_artifact,
+            &without_noun,
+            &context
+        ));
+        assert!(!matches_target_filter(
+            runner.state(),
+            red,
+            &without_noun,
+            &context
+        ));
+    }
+
+    /// SHAPE: synthetic independent combat and color ranges expand as a
+    /// Cartesian product before the mixed shortcut constructs its Typed legs.
+    #[test]
+    fn synthetic_mixed_union_expands_recorded_property_products_once() {
+        let (filter, rest) =
+            parse_type_phrase_folding("attacking or blocking black or green or artifact creature");
+        assert_eq!(rest, "");
+        let TargetFilter::Or { filters } = &filter else {
+            panic!("expected mixed union: {filter:?}");
+        };
+        assert_eq!(
+            filters.len(),
+            5,
+            "four colored combat alternatives plus one independent artifact leg"
+        );
+        for color in [ManaColor::Black, ManaColor::Green] {
+            for combat in [
+                FilterProp::Attacking { defender: None },
+                FilterProp::Blocking,
+            ] {
+                assert!(filters.iter().any(|leg| matches!(leg, TargetFilter::Typed(typed)
+                    if typed.type_filters == vec![TypeFilter::Creature]
+                        && typed.properties == vec![combat.clone(), FilterProp::HasColor { color }])), "{color:?}/{combat:?}: {filter:?}");
+            }
+        }
+        assert_eq!(filters.iter().filter(|leg| matches!(leg, TargetFilter::Typed(typed) if typed.type_filters == vec![TypeFilter::Artifact, TypeFilter::Creature] && typed.properties.is_empty())).count(), 1, "independent right leg must not be duplicated or inherit adjectives");
     }
 
     /// CR 105.2 + CR 205.2a: without a noun ("red or artifact"), the color leg
