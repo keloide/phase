@@ -1,5 +1,5 @@
-# DRAFT ONLY. Interim phase3 native verification after reviewed generation artifacts and explicit generated-only commit.
-name: Essence phase3 combined verification case 743
+# Remaining phase3 native gates after run39824691926; its failed full-DB parity remains unresolved.
+name: Essence phase3 remaining native gates case 769
 on:
   push:
     branches:
@@ -202,66 +202,18 @@ jobs:
           components: rustfmt, clippy, rustc-codegen-cranelift-preview
           cache: false
           rustflags: ""
-      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
-        with:
-          tool: cargo-nextest
-      - name: Format, parser, skill, protocol and source authority gates
-        working-directory: source
-        run: |
-          set -euo pipefail
-          cargo fmt --all -- --check
-          ./scripts/check-parser-combinators.sh "$BASE_SHA"
-          ./scripts/check-prelowered-ratchet.sh
-          ./scripts/check-skill-doc.sh
-          ./scripts/check-cr-citation-anchors.sh
-          ./scripts/check-engine-authorities.sh "$BASE_SHA"
-          ./scripts/check-resolution-frame-boundaries.sh
-          ./scripts/check-test-card-data-load.sh "$BASE_SHA"
-          node scripts/check-protocol-version.mjs
-          python3 scripts/draw_replacement_census.py --corpus --check
-          python3 scripts/cost_walk_carrier_census.py --check
-      - name: Strict workspace and all-target Clippy including required feature surfaces
-        working-directory: source
-        run: |
-          set -euo pipefail
-          cargo clippy --locked --workspace --all-targets --features engine/proptest -- -D warnings 2>&1 | tee ../outputs/reports/clippy-ci.log
-          cargo clippy --locked --workspace --all-targets --features "$TEST_FEATURES" -- -D warnings 2>&1 | tee ../outputs/reports/clippy-required-features.log
-      - name: Full native workspace tests and test population
-        working-directory: source
-        env:
-          INSTA_UPDATE: no
-        run: |
-          set -euo pipefail
-          cargo nextest list --locked --workspace --features "$TEST_FEATURES" --message-format json > ../outputs/reports/native-test-list.json
-          cargo nextest run --locked --workspace --features "$TEST_FEATURES" --profile ci --test-threads 2 2>&1 | tee ../outputs/reports/native-tests.log
-          # This unfiltered run includes full oracle_effect and oracle_target modules, source censuses,
-          # integration controls, AI/server/server-core and shared state. Review required-case presence
-          # and skip reasons in the actual test population; ignored tests are not claimed executed.
-      - name: Full native workspace doctests
-        working-directory: source
-        run: |
-          set -euo pipefail
-          cargo test --locked --workspace --features "$TEST_FEATURES" --doc -- --test-threads=2 2>&1 | tee ../outputs/reports/doc-tests.log
-      - name: Required scanner and RW full database ordering parity
-        working-directory: source
-        env:
-          FORGE_TEST_FULL_DB: "1"
-        run: |
-          set -euo pipefail
-          cargo nextest run --locked -p phase-engine --features "$TEST_FEATURES" --profile ci --test-threads 2 --no-capture -E 'test(/ordering_parity_sweep/)' 2>&1 | tee ../outputs/reports/full-db-ordering-parity.log
-          # Read actual full-db counts/class deltas; no allowlist or policy-baseline edits.
       - name: Interaction bindings and exact-source schema validation
         working-directory: source
         run: |
           set -euo pipefail
-          ./scripts/check-interaction-bindings.sh --check
-          cargo run --locked --profile tool --features cli --bin card-data-validate -- data/card-data.json
-          python3 scripts/gen-test-fixture.py --check
+          ./scripts/check-interaction-bindings.sh --check 2>&1 | tee ../outputs/reports/interaction-bindings.log
+          cargo run --locked --profile tool --features cli --bin card-data-validate -- data/card-data.json 2>&1 | tee ../outputs/reports/card-data-validate.log
+          python3 scripts/gen-test-fixture.py --check 2>&1 | tee ../outputs/reports/canonical-fixture-check.log
       - name: Existing quick AI gate against the same returned export
         working-directory: source
         run: |
           set -euo pipefail
-          cargo ai-gate --games 10 --seed 10573729 --difficulty medium 2>&1 | tee ../outputs/reports/ai-gate.log
+          cargo ai-gate --games 10 --seed 10573729 --difficulty medium --current-output ../outputs/reports/ai-gate-current.json 2>&1 | tee ../outputs/reports/ai-gate.log
       - name: Require tracked source unchanged by checks
         working-directory: source
         run: |
@@ -290,7 +242,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always() && steps.native_results_size.outcome == 'success'
         with:
-          name: combined-native-results-pin20261013-asof20261014-head${{ env.SOURCE_SHA }}-base${{ env.BASE_SHA }}
+          name: remaining-native-results-pin20261013-asof20261014-head${{ env.SOURCE_SHA }}-base${{ env.BASE_SHA }}
           path: |
             outputs/reports
             source/crates/engine/src/parser/**/*.snap.new
