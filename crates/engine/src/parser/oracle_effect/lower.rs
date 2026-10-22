@@ -11235,6 +11235,28 @@ pub(crate) fn strip_trailing_where_x<'a>(tp: TextPair<'a>) -> (TextPair<'a>, Opt
     (tp, None)
 }
 
+/// Terminal-only form of [`strip_trailing_where_x`] for callers that lower only
+/// the text BEFORE the definition.
+///
+/// The general helper bounds the definition at the first instruction that
+/// follows it (CR 608.2c), which is right for callers that keep parsing the
+/// remainder. A caller that discards the remainder instead would silently drop
+/// every instruction written after the definition while still reporting the
+/// clause as lowered. Require the definition to be the sentence's own suffix —
+/// a single trailing period allowed — so that shape fails closed.
+pub(crate) fn strip_terminal_where_x<'a>(tp: TextPair<'a>) -> Option<(TextPair<'a>, String)> {
+    let (stripped, expression) = strip_trailing_where_x(tp);
+    let expression = expression?;
+    // `expression` was extracted from this same text, so a suffix match holds
+    // exactly when the definition runs to the sentence's end. A definition that
+    // the general helper bounded at a later instruction's comma leaves that
+    // instruction in the text and fails here.
+    let sentence = tp.trim_end().trim_end_matches('.');
+    // allow-noncombinator: TextPair dual-string suffix test, not parse-branch dispatch.
+    sentence.strip_suffix(&expression.to_lowercase())?;
+    Some((stripped, expression))
+}
+
 fn structurally_bound_where_x_clause<'a>(clause: TextPair<'a>) -> TextPair<'a> {
     let clause = clause.trim_start().trim_end_matches('.').trim_end();
     // CR 613.4c: a "+X/+Y" pump binds each axis to its own quantity via
@@ -13873,7 +13895,7 @@ mod tests {
         patch_choose_from_zone_counter_continuation_target, relink_gated_token_referent_consumers,
         relink_gated_tracked_set_consumers, strip_redundant_flip_win_quantifier,
         strip_return_destination_ext_with_remainder, strip_temporal_prefix, strip_temporal_suffix,
-        strip_trailing_duration, strip_trailing_where_x,
+        strip_terminal_where_x, strip_trailing_duration, strip_trailing_where_x,
         value_quantity_clause_owns_this_turn_suffix, ControlClausePossessor,
     };
     use crate::parser::oracle_ir::ast::parsed_clause;
@@ -15262,6 +15284,32 @@ mod tests {
 
         assert_eq!(without_where_x.original, "draw x cards");
         assert_eq!(expr.as_deref(), Some("the number of creatures you control"));
+    }
+
+    /// The terminal form accepts only a definition that ends the sentence, so a
+    /// caller that lowers nothing after it cannot drop a following instruction.
+    /// Paired negatives: both continuations the general helper bounds at.
+    #[test]
+    fn strip_terminal_where_x_requires_the_definition_to_end_the_sentence() {
+        let text = "empower jace x, where x is that excess damage";
+        let lower = text.to_ascii_lowercase();
+        let (stripped, expr) = strip_terminal_where_x(TextPair::new(text, &lower))
+            .expect("a terminal definition is accepted");
+        assert_eq!(stripped.original, "empower jace x");
+        assert_eq!(expr, "that excess damage");
+
+        for text in [
+            // A later instruction in the same sentence.
+            "empower jace x, where x is the number of creatures you control, draw a card",
+            // A later sentence.
+            "empower jace x, where x is that excess damage. draw a card",
+        ] {
+            let lower = text.to_ascii_lowercase();
+            assert!(
+                strip_terminal_where_x(TextPair::new(text, &lower)).is_none(),
+                "{text:?} must not be treated as terminal"
+            );
+        }
     }
 
     #[test]
