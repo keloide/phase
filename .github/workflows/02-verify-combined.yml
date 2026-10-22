@@ -1,0 +1,298 @@
+# DRAFT ONLY. Interim phase3 native verification after reviewed generation artifacts and explicit generated-only commit.
+name: Essence phase3 combined verification case 743
+on:
+  push:
+    branches:
+      - proof/essence-phase3-verification-case743
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: essence-phase3-combined-verification-case743
+  cancel-in-progress: false
+env:
+  RTK_DISABLED: "1"
+  CARGO_BUILD_JOBS: "2"
+  CARGO_INCREMENTAL: "0"
+  RUST_TEST_THREADS: "2"
+  GATED_SETS_AS_OF: "2026-10-14"
+  MTGJSON_SKIP_REFRESH: "1"
+  PHASE_REFRESH_MTGJSON: "0"
+  TEST_FEATURES: phase-engine/test-support,phase-engine/cli,phase-engine/proptest
+  SOURCE_SHA: ff218687de3a589d50442836f8cb75b0651ccdde
+  GENERATED_FROM_SHA: 9d0f1189616c52098d886271b1b1f04635df600d
+  BASE_SHA: 3a6f43de2baf86794975743ee67c3019ec705919
+  GENERATION_RUN_ID: "39737072941"
+  PAYLOAD_HASH: 4a8802b1987118eef1c8a15c890f1444ac5a86e549ce0c22eb860c9248a822c2
+  MANIFEST_HASH: 387cd3729df0d694f2ea168133b8cdd164923a4095c9962afe29d5deaed27d91
+jobs:
+  native:
+    if: github.repository == 'keloide/phase' && github.event_name == 'push' && github.ref == 'refs/heads/proof/essence-phase3-verification-case743'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate immutable inputs
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GENERATED_FROM_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GENERATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$PAYLOAD_HASH" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$MANIFEST_HASH" =~ ^[0-9a-f]{64}$ ]]
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: proof
+          sparse-checkout: payload
+          persist-credentials: false
+      - name: Reclaim only unused disposable hosted-image payloads
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - name: Audit actual resources before any toolchain or heavy command
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/reports
+          free -b | tee outputs/reports/memory.txt
+          cat /proc/swaps | tee outputs/reports/swaps.txt
+          cat /proc/self/cgroup | tee outputs/reports/cgroup.txt
+          df -B1 . | tee outputs/reports/disk.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, shutil
+          mem = {line.split(':')[0]: int(line.split()[1])*1024 for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith(('MemTotal:', 'MemAvailable:'))}
+          caps, available = [mem['MemTotal']], [mem['MemAvailable']]
+          pairs = [(Path('/sys/fs/cgroup/memory.max'),Path('/sys/fs/cgroup/memory.current')),(Path('/sys/fs/cgroup/memory/memory.limit_in_bytes'),Path('/sys/fs/cgroup/memory/memory.usage_in_bytes'))]
+          for line in Path('/proc/self/cgroup').read_text().splitlines():
+              hierarchy, controllers, group = line.split(':',2)
+              if hierarchy == '0' and not controllers:
+                  root, capname, usedname = Path('/sys/fs/cgroup'), 'memory.max', 'memory.current'
+              elif 'memory' in controllers.split(','):
+                  root, capname, usedname = Path('/sys/fs/cgroup/memory'), 'memory.limit_in_bytes', 'memory.usage_in_bytes'
+              else: continue
+              leaf = (root/group.lstrip('/')).resolve()
+              assert leaf.is_relative_to(root) and leaf.is_dir(), 'Cannot inspect current cgroup; stop before compiling'
+              for directory in [leaf,*leaf.parents]:
+                  if not directory.is_relative_to(root): break
+                  pairs.append((directory/capname,directory/usedname))
+          for capfile, usedfile in pairs:
+              p = Path(capfile)
+              if p.exists():
+                  value = p.read_text().strip()
+                  print(capfile, value)
+                  if value.isdecimal():
+                      cap = int(value)
+                      caps.append(cap)
+                      used = Path(usedfile)
+                      if used.exists(): available.append(max(0, cap-int(used.read_text().strip())))
+          p = Path('/sys/fs/cgroup/memory.swap.max')
+          if p.exists(): print(str(p), p.read_text().strip())
+          print('effective RAM', min(caps), 'effective available RAM', min(available), 'CPU affinity', sorted(os.sched_getaffinity(0)), 'free disk', shutil.disk_usage('.').free)
+          assert min(caps) >= 14*1024**3, 'Need 14 GiB real/effective RAM; swap does not count'
+          assert min(available) >= 12*1024**3, 'Need 12 GiB presently available effective RAM'
+          assert len(os.sched_getaffinity(0)) >= 2
+          assert shutil.disk_usage('.').free >= 45*1024**3, 'Need 45 GiB free disk after image cleanup'
+          PY
+      - name: Install required existing gate command
+        run: |
+          set -euo pipefail
+          if ! command -v rg >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ripgrep
+          fi
+          for tool in rg gh jq python3 tar gzip; do command -v "$tool"; done
+          rg --version
+      - name: Restore only the reviewed complete pinned public input payload
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "$MANIFEST_HASH" proof/payload/SHA256SUMS | sha256sum --check --strict
+          cat proof/payload/mtgjson-cr.tar.gz.part-* > "$RUNNER_TEMP/mtgjson-cr.tar.gz"
+          printf '%s  %s\n' "$PAYLOAD_HASH" "$RUNNER_TEMP/mtgjson-cr.tar.gz" | sha256sum --check --strict
+          # The reviewed archive must contain only regular files/directories under data/mtgjson and docs/MagicCompRules.txt.
+          tar -tzf "$RUNNER_TEMP/mtgjson-cr.tar.gz" > outputs/reports/payload-members.txt
+          ! rg '(^/|(^|/)\.\.(/|$))' outputs/reports/payload-members.txt
+          ! tar -tvzf "$RUNNER_TEMP/mtgjson-cr.tar.gz" | awk '$1 !~ /^[-d]/ {print; bad=1} END {exit !bad}'
+          mkdir inputs
+          tar -xzf "$RUNNER_TEMP/mtgjson-cr.tar.gz" -C inputs --no-same-owner --no-same-permissions
+          (cd inputs && sha256sum --check --strict ../proof/payload/SHA256SUMS)
+          (cd inputs && find . -type f -printf '%P\n' | LC_ALL=C sort) > "$RUNNER_TEMP/actual-input-paths"
+          sed -E 's/^[0-9a-f]{64}  //' proof/payload/SHA256SUMS | LC_ALL=C sort > "$RUNNER_TEMP/manifest-input-paths"
+          cmp "$RUNNER_TEMP/actual-input-paths" "$RUNNER_TEMP/manifest-input-paths"
+          test "$(find inputs/data/mtgjson/sets -type f -name '*.json' | wc -l)" -eq 338
+          test "$(find inputs/data/mtgjson/decks -type f -name '*.json' | wc -l)" -eq 3113
+          printf '%s  %s\n' b3aff1a71781fa5fb7f25ec5b39dda2204fd27a0e3b6a3cc7e9fa89d0b79a671 inputs/data/mtgjson/AtomicCards.json | sha256sum --check --strict
+          test "$(stat -c %s inputs/data/mtgjson/AtomicCards.json)" -eq 162407952
+          for f in AtomicCards Meta CardTypes SetList; do
+            jq -e '.meta.date == "2026-10-13" and .meta.version == "5.3.0+20261013"' "inputs/data/mtgjson/$f.json" >/dev/null
+          done
+          printf '%s  %s\n' 7e0b81ed7b25b2532982e40eefd64fd79204fcd89d1c3540f0256b8eb91fa47b inputs/data/mtgjson/Meta.json | sha256sum --check --strict
+          printf '%s  %s\n' d4d6c7fa9b0ebcc25a979fe32388e3ed27609916795b3e39e6c0e22a0c5263fc inputs/data/mtgjson/CardTypes.json | sha256sum --check --strict
+          printf '%s  %s\n' ebc941a40eb828303b497d1fae507d07a28bf682a27dde7071168c9491983a1d inputs/data/mtgjson/SetList.json | sha256sum --check --strict
+          printf '%s  %s\n' 8d860e451f20f38865b725b42d82feb714c725373dd8f3b32b8652b3eeb070ca inputs/docs/MagicCompRules.txt | sha256sum --check --strict
+          # No fetch-token-sets, gen-card-data.sh, refresh, download, or dataset substitution follows.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: keloide/phase
+          ref: ${{ env.SOURCE_SHA }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check exact combined head and generated-only intervening diff
+        working-directory: source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git cat-file -e "$BASE_SHA^{commit}"
+          git cat-file -e "$GENERATED_FROM_SHA^{commit}"
+          git merge-base --is-ancestor "$GENERATED_FROM_SHA" "$SOURCE_SHA"
+          git diff --name-only "$GENERATED_FROM_SHA" "$SOURCE_SHA" > ../outputs/reports/generation-commit-paths.txt
+          # Any changed engine/parser implementation invalidates the returned generation evidence.
+          ! rg -v '^(crates/engine/tests/fixtures/integration_cards\.json\.gz|crates/engine/src/parser/[^/]+/snapshots/[^/]+\.snap|crates/engine/tests/integration/snapshots/integration__oracle_parser__[^/]+\.snap|client/public/(card-data[^/]*|card-names|coverage-[^/]*|parser-warning-patterns|set-list|decks|card-i18n-[^/]*)\.json)$' ../outputs/reports/generation-commit-paths.txt
+          printf '%s  %s\n' eaea3f5352a3beaa7f7beb2b741fa21306ba9ab1a012b3109035458ebc29d5ed crates/engine/data/known-tokens.toml | sha256sum --check --strict
+          printf '%s  %s\n' 6d3e968e0e5de03a445a3f9dd94467cdf6edeed4bf18891a2e36fa700b7acea5 crates/engine/data/oracle-subtypes.json | sha256sum --check --strict
+          printf '%s  %s\n' 033b43c5f646509144583818a7ba7c5c54048baf09b2afb5c3b01113d6c77b07 data/bracket_lists.json | sha256sum --check --strict
+          for item in AtomicCards.json Meta.json CardTypes.json SetList.json sets decks; do
+            test ! -e "data/mtgjson/$item"
+            ln -s "$GITHUB_WORKSPACE/inputs/data/mtgjson/$item" "data/mtgjson/$item"
+          done
+          test ! -e docs/MagicCompRules.txt
+          ln -s "$GITHUB_WORKSPACE/inputs/docs/MagicCompRules.txt" docs/MagicCompRules.txt
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/essence-target" >> "$GITHUB_ENV"
+      - name: Verify frozen generation identity with documented collector-reader failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/keloide/phase/actions/runs/$GENERATION_RUN_ID" > "$RUNNER_TEMP/generation-run.json"
+          jq -e '.id == 39737072941 and .head_sha == "957faf230e692d528ba261914f1e9822e535c77d" and .conclusion == "failure" and .event == "push" and .head_branch == "proof/essence-phase3-generation-case743" and .name == "Essence phase3 proof generation case 743" and .path == ".github/workflows/01-generate.yml" and .repository.full_name == "keloide/phase"' "$RUNNER_TEMP/generation-run.json"
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-card-data-pin20261013-asof20261014-source${{ env.GENERATED_FROM_SHA }}
+          path: downloads/card-data
+          repository: keloide/phase
+          run-id: ${{ env.GENERATION_RUN_ID }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-generated-pin20261013-asof20261014-source${{ env.GENERATED_FROM_SHA }}
+          path: downloads/generated
+          repository: keloide/phase
+          run-id: ${{ env.GENERATION_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Install and verify returned generation inputs without regeneration
+        working-directory: source
+        run: |
+          set -euo pipefail
+          gzip -dc ../downloads/card-data/card-data.json.gz > data/card-data.json
+          gzip -dc ../downloads/generated/client/public/card-data-meta.json.gz > "$RUNNER_TEMP/card-data-meta.json"
+          jq -e --arg source "$GENERATED_FROM_SHA" '.commit == $source and .mtgjson_date == "2026-10-13" and .mtgjson_version == "5.3.0+20261013"' "$RUNNER_TEMP/card-data-meta.json"
+          data_hash=$(sha256sum data/card-data.json | cut -c1-16)
+          jq -e --arg hash "$data_hash" '.data_hash == $hash' "$RUNNER_TEMP/card-data-meta.json"
+          cmp crates/engine/tests/fixtures/integration_cards.json.gz ../downloads/generated/crates/engine/tests/fixtures/integration_cards.json.gz
+          cp data/card-data.json client/public/card-data.json
+          python3 scripts/gen-test-fixture.py --check
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          cache: false
+          rustflags: ""
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
+        with:
+          tool: cargo-nextest
+      - name: Format, parser, skill, protocol and source authority gates
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          ./scripts/check-parser-combinators.sh "$BASE_SHA"
+          ./scripts/check-prelowered-ratchet.sh
+          ./scripts/check-skill-doc.sh
+          ./scripts/check-cr-citation-anchors.sh
+          ./scripts/check-engine-authorities.sh "$BASE_SHA"
+          ./scripts/check-resolution-frame-boundaries.sh
+          ./scripts/check-test-card-data-load.sh "$BASE_SHA"
+          node scripts/check-protocol-version.mjs
+          python3 scripts/draw_replacement_census.py --corpus --check
+          python3 scripts/cost_walk_carrier_census.py --check
+      - name: Strict workspace and all-target Clippy including required feature surfaces
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --workspace --all-targets --features engine/proptest -- -D warnings 2>&1 | tee ../outputs/reports/clippy-ci.log
+          cargo clippy --locked --workspace --all-targets --features "$TEST_FEATURES" -- -D warnings 2>&1 | tee ../outputs/reports/clippy-required-features.log
+      - name: Full native workspace tests and test population
+        working-directory: source
+        env:
+          INSTA_UPDATE: no
+        run: |
+          set -euo pipefail
+          cargo nextest list --locked --workspace --features "$TEST_FEATURES" --message-format json > ../outputs/reports/native-test-list.json
+          cargo nextest run --locked --workspace --features "$TEST_FEATURES" --profile ci --test-threads 2 2>&1 | tee ../outputs/reports/native-tests.log
+          # This unfiltered run includes full oracle_effect and oracle_target modules, source censuses,
+          # integration controls, AI/server/server-core and shared state. Review required-case presence
+          # and skip reasons in the actual test population; ignored tests are not claimed executed.
+      - name: Full native workspace doctests
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo test --locked --workspace --features "$TEST_FEATURES" --doc -- --test-threads=2 2>&1 | tee ../outputs/reports/doc-tests.log
+      - name: Required scanner and RW full database ordering parity
+        working-directory: source
+        env:
+          FORGE_TEST_FULL_DB: "1"
+        run: |
+          set -euo pipefail
+          cargo nextest run --locked -p phase-engine --features "$TEST_FEATURES" --profile ci --test-threads 2 --no-capture -E 'test(/ordering_parity_sweep/)' 2>&1 | tee ../outputs/reports/full-db-ordering-parity.log
+          # Read actual full-db counts/class deltas; no allowlist or policy-baseline edits.
+      - name: Interaction bindings and exact-source schema validation
+        working-directory: source
+        run: |
+          set -euo pipefail
+          ./scripts/check-interaction-bindings.sh --check
+          cargo run --locked --profile tool --features cli --bin card-data-validate -- data/card-data.json
+          python3 scripts/gen-test-fixture.py --check
+      - name: Existing quick AI gate against the same returned export
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo ai-gate --games 10 --seed 10573729 --difficulty medium 2>&1 | tee ../outputs/reports/ai-gate.log
+      - name: Require tracked source unchanged by checks
+        working-directory: source
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          git diff --cached --exit-code
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          df -h /
+      - name: Bound complete native result artifact without changing its contents
+        id: native_results_size
+        if: always()
+        run: |
+          set -euo pipefail
+          size=0
+          if [ -d outputs/reports ]; then
+            size=$(du -sb outputs/reports | cut -f1)
+          fi
+          shopt -s nullglob globstar
+          for file in source/crates/engine/src/parser/**/*.snap.new; do
+            bytes=$(stat -c %s "$file")
+            size=$((size + bytes))
+          done
+          printf 'combined-native-results bytes=%s\n' "$size"
+          # Oversize is a failed, unresolved artifact handoff. Keep every complete file intact.
+          test "$size" -lt 31457280
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always() && steps.native_results_size.outcome == 'success'
+        with:
+          name: combined-native-results-pin20261013-asof20261014-head${{ env.SOURCE_SHA }}-base${{ env.BASE_SHA }}
+          path: |
+            outputs/reports
+            source/crates/engine/src/parser/**/*.snap.new
+          retention-days: 14
+          if-no-files-found: warn
