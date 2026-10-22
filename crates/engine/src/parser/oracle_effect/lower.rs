@@ -12176,6 +12176,11 @@ pub(super) fn apply_where_x_effect_expression(
         | Effect::CopyTokenOf { count: amount, .. }
         | Effect::Discard { count: amount, .. }
         | Effect::EachSourceDealsDamage { amount, .. }
+        // CR 701.71a + CR 107.3c: empower Jace's N is the ability's single
+        // quantity slot. A "where X is …" tail defines it exactly like every
+        // other carrier here; the licensed excess demonstrative (CR 120.10)
+        // arrives already normalized by `rebind_context_dependent_where_x`.
+        | Effect::EmpowerJace { count: amount }
         | Effect::Endure { amount, .. }
         | Effect::GainEnergy { amount, .. }
         | Effect::GivePlayerCounter { count: amount, .. }
