@@ -222,6 +222,8 @@ fn effect_offers_choice(e: &Effect) -> bool {
     match e {
         // Engine-set from the activation-payment snapshot, never a player prompt.
         Effect::NoteManaSpent | Effect::CompletePlayerAction { .. } => false,
+        // "note <number>" evaluates its operand silently — no player prompt.
+        Effect::NoteNumber { .. } => false,
         // ---- SCOPE FILTER. DESTRUCTURED WITHOUT `..` on every arm, exactly as
         //      HEAD's three allow arms are, so a new field on any of them forces
         //      a re-audit of whether the class is still in scope.
@@ -426,6 +428,11 @@ fn effect_offers_choice(e: &Effect) -> bool {
         | Effect::BecomeBlocked { .. }
         | Effect::SetClassLevel { .. }
         | Effect::CreateDelayedTrigger { .. }
+        // Digital-only Alchemy (no CR entry): installing the boon opens no
+        // prompt itself, but the granted body resolves later as its own
+        // ability and may prompt then (Valiant Batrider's "you may pay") —
+        // probe-worthy like a delayed body.
+        | Effect::CreateBoon { .. }
         | Effect::AddTargetReplacement { .. }
         | Effect::AddRestriction { .. }
         | Effect::ReduceNextSpellCost { .. }
@@ -573,6 +580,7 @@ pub(crate) fn chain_offers_choice(a: &ResolvedAbility) -> bool {
         repeat_until,
         repeat_for,
         // ---- choice-free: bound `_` with a one-line justification ----
+        instruction_actor: _, // pure authority resolution; no actor-selection prompt
         condition: _, // resolution branch selector, pure eval (both branches gate-checked below)
         duration: _,  // continuous-effect lifetime, no prompt
         player_scope: _, // iteration fan-out, pure player-filter eval
@@ -799,6 +807,69 @@ mod tests {
         let mut divided = base.clone();
         divided.distribute = Some(crate::types::game_state::DistributionUnit::Damage);
         assert!(!chain_offers_choice(&divided));
+    }
+
+    #[test]
+    fn instruction_actor_adds_no_prompt_and_preserves_child_and_else_choices() {
+        let base = ResolvedAbility::new(
+            Effect::DealDamage {
+                amount: fixed(1),
+                target: TargetFilter::Player,
+                damage_source: None,
+                excess: None,
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        );
+        assert!(!chain_offers_choice(&base));
+        for actor in crate::types::ability::instruction_actor_test_refs() {
+            let mut marked = base.clone();
+            marked.instruction_actor = Some(actor.clone());
+            assert!(!chain_offers_choice(&marked), "{actor:?}");
+            let mut optional = base.clone();
+            optional.optional = true;
+            marked.sub_ability = Some(Box::new(optional.clone()));
+            assert!(chain_offers_choice(&marked));
+            marked.sub_ability = None;
+            marked.else_ability = Some(Box::new(optional));
+            assert!(chain_offers_choice(&marked));
+        }
+        let state = probe_board();
+        let plain = ability(
+            &state,
+            Effect::GainLife {
+                amount: fixed(1),
+                player: TargetFilter::Controller,
+            },
+            vec![],
+        );
+        let expected = ability_resolution_choice_freedom(&state, &plain, &mut budget());
+        assert!(matches!(
+            expected,
+            ResolutionChoiceFreedom::FreeUnlessReplacements(_)
+        ));
+        for actor in crate::types::ability::instruction_actor_test_refs() {
+            let mut marked = plain.clone();
+            marked.instruction_actor = Some(actor);
+            assert_eq!(
+                ability_resolution_choice_freedom(&state, &marked, &mut budget()),
+                expected
+            );
+            for branch in [false, true] {
+                let mut choice = plain.clone();
+                choice.optional = true;
+                if branch {
+                    marked.else_ability = Some(Box::new(choice));
+                } else {
+                    marked.sub_ability = Some(Box::new(choice));
+                }
+                assert_eq!(
+                    ability_resolution_choice_freedom(&state, &marked, &mut budget()),
+                    ResolutionChoiceFreedom::MayPrompt
+                );
+            }
+        }
     }
 
     /// Snapshot every axis the witness reads.

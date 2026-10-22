@@ -33,7 +33,50 @@ use super::{
     zone_pipeline,
 };
 
-/// CR 115.1a + CR 601.2c + CR 702.47d: Dig's selected result cannot replace
+/// CR 101.4: Order and selection answers share terminal simultaneous-action
+/// stamping, observer batching and continuation/priority settlement.
+pub(super) fn settle_player_scope_sacrifice_outcome(
+    state: &mut GameState,
+    source_id: ObjectId,
+    player: crate::types::player::PlayerId,
+    outcome: effects::PendingPlayerScopeSacrificeOutcome,
+    events: &mut Vec<GameEvent>,
+) -> Result<ResolutionChoiceOutcome, EngineError> {
+    if let effects::PendingPlayerScopeSacrificeOutcome::Completed {
+        events_before_sacrifice,
+        events_after_sacrifice,
+        sacrificed_count,
+    } = outcome
+    {
+        effects::stamp_active_player_action_completion(
+            state,
+            source_id,
+            crate::types::ability::EffectResolutionResult {
+                cause: crate::types::ability::ThisWayCause::Sacrificed,
+                count: sacrificed_count,
+            },
+        );
+        if state.active_ability_continuation().is_none() {
+            state.finish_active_paused_post_replacement_dispatch();
+        }
+        set_priority(state, player);
+        resume_with_error_propagation(state, events)?;
+        if let Some(outcome) = batch_or_drain_observer_triggers(
+            state,
+            events,
+            events_before_sacrifice,
+            events_after_sacrifice,
+            false,
+        ) {
+            return Ok(outcome);
+        }
+    }
+    Ok(ResolutionChoiceOutcome::WaitingFor(
+        state.waiting_for.clone(),
+    ))
+}
+
+/// CR 115.1a + CR 601.2c: Dig's selected result cannot replace
 /// an instruction's announced targets. Result-dependent instructions bind the
 /// settled selection, including clearing a previous result on an empty choice.
 fn bind_dig_continuation_targets(chain: &mut ResolvedAbility, selected: &[ObjectId]) {
@@ -511,6 +554,7 @@ pub(crate) fn grant_search_found_permission_after_delivery(
                 single_use: false,
                 cast_cost_modifier: None,
                 alt_ability_cost: None,
+                without_paying_mana_cost: false,
                 land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                 invalidation: None,
             },
@@ -3864,6 +3908,19 @@ pub(super) fn handle_resolution_choice(
                 )));
             }
             if matches!(purpose, ZoneOpponentChooserPurpose::PerPlayerChoiceOrder) {
+                if matches!(ability.effect, Effect::Sacrifice { .. }) {
+                    let outcome = effects::answer_player_scope_sacrifice_order(
+                        state, &ability, player, opponent, events,
+                    )
+                    .map_err(|error| EngineError::InvalidAction(error.to_string()))?;
+                    return settle_player_scope_sacrifice_outcome(
+                        state,
+                        ability.source_id,
+                        player,
+                        outcome,
+                        events,
+                    );
+                }
                 // CR 101.4c: the chooser picked whose selection to make next.
                 // Candidates may include the chooser themself (each player).
                 effects::choose_from_zone::answer_per_player_order(
@@ -5460,9 +5517,14 @@ pub(super) fn handle_resolution_choice(
             // permission lands nowhere. Gated on the continuation actually
             // referencing a tracked set so non-consuming continuations
             // (partition sub-abilities reading `ParentTarget`) are unaffected.
-            let continuation_consumes_tracked_set = state
-                .active_ability_continuation()
-                .is_some_and(|cont| effects::chain_references_tracked_set(&cont.chain));
+            // A head that resumes with this pick as its own object publishes its
+            // result itself (`resolution_choice_head_publishes_on_resume`), so
+            // the answer leaves the chain's set to it.
+            let continuation_consumes_tracked_set =
+                state.active_ability_continuation().is_some_and(|cont| {
+                    effects::chain_references_tracked_set(&cont.chain)
+                        && !effects::resolution_choice_head_publishes_on_resume(&cont.chain)
+                });
             if continuation_consumes_tracked_set {
                 effects::publish_fresh_tracked_set(state, chosen.clone());
             }
@@ -5631,6 +5693,7 @@ pub(super) fn handle_resolution_choice(
                 continuation,
                 replacement_applied,
                 remaining_players,
+                trigger_context,
             },
             GameAction::ChooseBranch { index },
         ) => {
@@ -5647,6 +5710,7 @@ pub(super) fn handle_resolution_choice(
                     continuation,
                     replacement_applied,
                     remaining_players,
+                    trigger_context,
                     index,
                 },
                 events,
@@ -6054,6 +6118,17 @@ pub(super) fn handle_resolution_choice(
             },
             GameAction::SelectCards { cards: chosen },
         ) => {
+            if matches!(effect_kind, EffectKind::Sacrifice)
+                && state
+                    .pending_player_scope_sacrifice_choice
+                    .as_ref()
+                    .is_some_and(|pending| {
+                        pending.admitted_actors.is_some() && pending.ability.source_id == source_id
+                    })
+            {
+                effects::validate_player_scope_sacrifice_on_restore(state)
+                    .map_err(EngineError::InvalidAction)?;
+            }
             let legacy_optional_attach_empty = chosen.is_empty()
                 && matches!(effect_kind, EffectKind::Attach)
                 && !up_to
@@ -6264,7 +6339,7 @@ pub(super) fn handle_resolution_choice(
             }
 
             if matches!(effect_kind, EffectKind::Sacrifice)
-                && state.pending_player_scope_sacrifice_choice.is_some()
+                && effects::owns_player_scope_sacrifice_selection(state, player, source_id)
             {
                 // CR 101.4: If multiple players make choices for one
                 // instruction, collect those choices before the simultaneous
@@ -6273,54 +6348,9 @@ pub(super) fn handle_resolution_choice(
                     state, player, &chosen, events,
                 )
                 .map_err(|error| EngineError::InvalidAction(error.to_string()))?;
-                match outcome {
-                    effects::PendingPlayerScopeSacrificeOutcome::WaitingForNextChoice => {
-                        return Ok(ResolutionChoiceOutcome::WaitingFor(
-                            state.waiting_for.clone(),
-                        ));
-                    }
-                    effects::PendingPlayerScopeSacrificeOutcome::PausedForReplacement => {
-                        return Ok(ResolutionChoiceOutcome::WaitingFor(
-                            state.waiting_for.clone(),
-                        ));
-                    }
-                    effects::PendingPlayerScopeSacrificeOutcome::Completed {
-                        events_before_sacrifice,
-                        events_after_sacrifice,
-                        sacrificed_count,
-                    } => {
-                        effects::stamp_active_player_action_completion(
-                            state,
-                            source_id,
-                            crate::types::ability::EffectResolutionResult {
-                                cause: crate::types::ability::ThisWayCause::Sacrificed,
-                                count: sacrificed_count,
-                            },
-                        );
-                        // CR 614.12a + CR 614.13a: a direct sacrifice selection can be the
-                        // complete body of a paused post-replacement dispatch
-                        // (Devour). Retire that exact resident before its outer
-                        // ChangeZone iteration resumes; a chained ability
-                        // continuation remains its owner.
-                        if state.active_ability_continuation().is_none() {
-                            state.finish_active_paused_post_replacement_dispatch();
-                        }
-                        set_priority(state, player);
-                        resume_with_error_propagation(state, events)?;
-                        if let Some(outcome) = batch_or_drain_observer_triggers(
-                            state,
-                            events,
-                            events_before_sacrifice,
-                            events_after_sacrifice,
-                            false,
-                        ) {
-                            return Ok(outcome);
-                        }
-                        return Ok(ResolutionChoiceOutcome::WaitingFor(
-                            state.waiting_for.clone(),
-                        ));
-                    }
-                }
+                return settle_player_scope_sacrifice_outcome(
+                    state, source_id, player, outcome, events,
+                );
             }
 
             if chosen.is_empty() && matches!(effect_kind, EffectKind::CastFromZone) {
@@ -7614,6 +7644,21 @@ pub(super) fn handle_resolution_choice(
                 return Err(EngineError::InvalidAction(
                     "NamedChoice has incoherent source authority".to_string(),
                 ));
+            }
+
+            // CR 614.12a: a pre-entry as-enters choice answers the parked
+            // battlefield entry, not a resolving ability — no object binding and
+            // no continuation.
+            if source.as_ref().is_some_and(|source| {
+                source.binding == crate::types::game_state::NamedChoiceSourceBinding::PendingEntry
+            }) {
+                let waiting_for = crate::game::engine_replacement::handle_entry_named_choice(
+                    state,
+                    &choice_type,
+                    &choice,
+                    events,
+                )?;
+                return Ok(ResolutionChoiceOutcome::WaitingFor(waiting_for));
             }
 
             // CR 607.2d + CR 613.1: Persist the chosen attribute on the source
@@ -11110,6 +11155,7 @@ mod tests {
                     single_use: false,
                     cast_cost_modifier: None,
                     alt_ability_cost: None,
+                    without_paying_mana_cost: false,
                     land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                     invalidation: None,
                 },

@@ -598,13 +598,33 @@ fn cast_ram_through_at(
 /// redirect silently vanishes and `foe_life_delta` reads 0.
 #[test]
 fn t13_ram_through_trample_redirects_excess_through_real_cast() {
-    let (outcome, _source, victim) = cast_ram_through_at(true, 5, 2);
+    let (outcome, source, victim) = cast_ram_through_at(true, 5, 2);
     outcome.assert_life_delta(P1, -3);
-    assert_eq!(
-        outcome.state().objects[&victim].damage_marked,
-        2,
-        "the victim must take only the lethal 2, not the full 5 — the rest redirects"
-    );
+    for (recipient, expected) in [(TargetRef::Object(victim), 2), (TargetRef::Player(P1), 3)] {
+        let damage: Vec<_> = outcome
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                engine::types::events::GameEvent::DamageDealt {
+                    source_id,
+                    target,
+                    amount,
+                    is_combat,
+                    ..
+                } if *target == recipient => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            damage,
+            vec![(source, expected, false)],
+            "the victim must take only the lethal 2, not the full 5 — the rest redirects"
+        );
+    }
+    // CR 400.7: the dead victim is a new graveyard object with no marked damage.
+    outcome.assert_zone(&[victim], Zone::Graveyard);
+    assert_eq!(outcome.state().objects[&victim].damage_marked, 0);
+    outcome.assert_zone(&[source], Zone::Battlefield);
 }
 
 /// T14 — cast-pipeline proof (no trample), the paired negative: the same
@@ -613,11 +633,32 @@ fn t13_ram_through_trample_redirects_excess_through_real_cast() {
 /// controller) absorbs all 5.
 #[test]
 fn t14_ram_through_no_trample_deals_full_damage_no_redirect() {
-    let (outcome, _source, victim) = cast_ram_through_at(false, 5, 2);
+    let (outcome, source, victim) = cast_ram_through_at(false, 5, 2);
     outcome.assert_life_delta(P1, 0);
+    let damage: Vec<_> = outcome
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            engine::types::events::GameEvent::DamageDealt {
+                source_id,
+                target: TargetRef::Object(id),
+                amount,
+                is_combat,
+                ..
+            } if *id == victim => Some((*source_id, *amount, *is_combat)),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        outcome.state().objects[&victim].damage_marked,
-        5,
+        damage,
+        vec![(source, 5, false)],
         "without trample the victim must take the full 5 with no redirect"
     );
+    assert!(!outcome.events().iter().any(|event| matches!(event,
+        engine::types::events::GameEvent::DamageDealt { target: TargetRef::Player(player), .. } if *player == P1
+    )));
+    // CR 400.7: only the completed event retains the dead victim's damage amount.
+    outcome.assert_zone(&[victim], Zone::Graveyard);
+    assert_eq!(outcome.state().objects[&victim].damage_marked, 0);
+    outcome.assert_zone(&[source], Zone::Battlefield);
 }

@@ -94,9 +94,9 @@
 use crate::analysis::resource::{HistoryMember, HistoryReads};
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AttachCardinality, AttachSelection,
-    AttachmentReferent, CardTypeSetSource, ContinuousModification, ControllerRef, CountScope,
-    DelayedTriggerCondition, Duration, EachDamageRecipient, Effect, EffectScope, FilterProp,
-    ForEachCategoryAction, GuessSubject, KeeperConstraint, ManaProduction, ModalChoice,
+    AttachmentReferent, AttackSubject, CardTypeSetSource, ContinuousModification, ControllerRef,
+    CountScope, DelayedTriggerCondition, Duration, EachDamageRecipient, Effect, EffectScope,
+    FilterProp, ForEachCategoryAction, GuessSubject, KeeperConstraint, ManaProduction, ModalChoice,
     ModalSelectionCondition, ModalSelectionConstraint, MultiTargetSpec, NameStickerSet,
     ObjectScope, PlayerFilter, PlayerScope, PtValue, QuantityExpr, QuantityRef,
     ReciprocalZoneChoiceRole, RepeatContinuation, ReplacementCondition, ResolvedAbility,
@@ -235,6 +235,7 @@ pub(crate) enum FilterReadContext {
 /// `target_constraints`).
 fn resolved_ability_axes(a: &ResolvedAbility, mode: ScanMode) -> Axes {
     let ResolvedAbility {
+        instruction_actor,
         // ---- read-bearing: scanned into `acc` below ----
         effect,
         sub_ability,
@@ -337,6 +338,9 @@ fn resolved_ability_axes(a: &ResolvedAbility, mode: ScanMode) -> Axes {
     }
     if let Some(player_scope) = player_scope {
         acc = acc.or(scan_player_filter(player_scope, mode));
+    }
+    if let Some(actor) = instruction_actor {
+        acc = acc.or(scan_controller_ref(actor));
     }
     if let Some(starting_with) = starting_with {
         acc = acc.or(scan_controller_ref(starting_with));
@@ -1595,6 +1599,21 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
                 }
             }
         },
+        // Digital-only Alchemy (no CR entry): a boon installs a delayed
+        // trigger for its holder — the same CR 603.7 boundary as
+        // `CreateDelayedTrigger`, so the same mode split. Under
+        // `LoopFirewall` there is no tracked-set form (the recipient is a
+        // single player, scanned as a target filter) and the granted
+        // trigger scans whole, body included.
+        Effect::CreateBoon { recipient, trigger } => match mode {
+            ScanMode::Conservative => Axes::CONSERVATIVE,
+            ScanMode::LoopFirewall => {
+                let mut acc = scan_target_filter(recipient, target_ctx, mode);
+                acc = acc.or(scan_trigger_definition(trigger, mode));
+                acc
+            }
+        },
+        Effect::NoteNumber { value } => scan_quantity_expr(value, mode),
         Effect::AddTargetReplacement { .. } => Axes::CONSERVATIVE,
         Effect::AddRestriction { .. } => Axes::CONSERVATIVE,
         Effect::ReduceNextSpellCost {
@@ -2889,7 +2908,7 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
             ));
             acc
         }
-        QuantityRef::ChosenNumber => Axes::NONE,
+        QuantityRef::ChosenNumber | QuantityRef::NotedNumber => Axes::NONE,
         // CR 101.4 + CR 608.2d: the number a player chose this resolution. Like
         // its object-axis sibling `ChosenNumber` this is a bounded one-shot
         // answer, not an accumulating projected resource — a re-choose REPLACES
@@ -4201,6 +4220,9 @@ fn scan_trigger_condition(x: &TriggerCondition, mode: ScanMode) -> Axes {
         // mirroring `WasStartingPlayer { controller }`'s delegation to
         // `scan_controller_ref`.
         TriggerCondition::IsMonarch { player } => scan_player_scope(player),
+        // Digital-only Alchemy (no CR entry): "if you have a boon" — the
+        // subject scope classifies exactly like the monarch's.
+        TriggerCondition::HasBoon { player } => scan_player_scope(player),
         TriggerCondition::IsInitiative => Axes::NONE,
         TriggerCondition::NoMonarch => Axes::NONE,
         TriggerCondition::WasStartingPlayer { controller, .. } => {
@@ -4620,6 +4642,7 @@ fn scan_static_condition(x: &StaticCondition, mode: ScanMode) -> Axes {
         // CR 725.1: see the `TriggerCondition::IsMonarch` arm above — the
         // subject scope is classified through the shared `PlayerScope` walker.
         StaticCondition::IsMonarch { player } => scan_player_scope(player),
+        StaticCondition::HasBoon { player } => scan_player_scope(player),
         StaticCondition::IsInitiative => Axes::NONE,
         StaticCondition::NoMonarch => Axes::NONE,
         StaticCondition::HasCityBlessing => Axes::NONE,
@@ -4776,6 +4799,7 @@ fn scan_filter_prop(x: &FilterProp, mode: ScanMode) -> Axes {
         | FilterProp::Untapped
         | FilterProp::IsSaddled
         | FilterProp::SaddledSource
+        | FilterProp::CrewedThisTurn { .. }
         | FilterProp::ConvokedSource
         | FilterProp::HasHasteOrControlledSinceTurnBegan
         | FilterProp::WithKeyword { .. }
@@ -4972,10 +4996,17 @@ fn scan_player_filter(x: &PlayerFilter, mode: ScanMode) -> Axes {
             }
             acc
         }
-        PlayerFilter::OpponentAttacked {
-            subject: _,
-            scope: _,
-        } => Axes::NONE,
+        // CR 603.2: the event attackers are read from the trigger event, like
+        // `TriggeringPlayer`.
+        PlayerFilter::OpponentAttacked { subject, scope: _ } => match subject {
+            AttackSubject::You | AttackSubject::Source => Axes::NONE,
+            AttackSubject::EventAttackers => Axes {
+                event: true,
+                sibling: false,
+                projected: false,
+                history: HistoryReads::NONE,
+            },
+        },
         // CR 508.6: inverse combat relation of `OpponentAttacked` — reads the
         // per-combat attack-declaration ledger and the source's (static)
         // AttachedTo host. Neither is an event-context or projected-growth
@@ -4987,6 +5018,12 @@ fn scan_player_filter(x: &PlayerFilter, mode: ScanMode) -> Axes {
             acc = acc.or(scan_player_filter(exclude, mode));
             acc
         }
+        PlayerFilter::AnyOf { filters } => filters
+            .iter()
+            .fold(Axes::NONE, |acc, f| acc.or(scan_player_filter(f, mode))),
+        // CR 115.1: a declared-target read, the same read as
+        // `ControllerRef::TargetPlayer` (`scan_controller_ref`).
+        PlayerFilter::TargetPlayer => Axes::NONE,
         PlayerFilter::HighestSpeed => Axes::NONE,
         PlayerFilter::ZoneChangedThisWay => Axes::NONE,
         PlayerFilter::PerformedActionThisWay {
@@ -5433,6 +5470,7 @@ pub(crate) fn duration_reads_projected_resource(duration: &Duration) -> bool {
 /// where a trigger-body cost surface has to be argued.
 fn ability_definition_axes(def: &AbilityDefinition, mode: ScanMode) -> Axes {
     let AbilityDefinition {
+        instruction_actor,
         // ---- read-bearing ----
         effect,
         sub_ability,
@@ -5538,6 +5576,9 @@ fn ability_definition_axes(def: &AbilityDefinition, mode: ScanMode) -> Axes {
     }
     if let Some(ps) = player_scope {
         acc = acc.or(scan_player_filter(ps, mode));
+    }
+    if let Some(actor) = instruction_actor {
+        acc = acc.or(scan_controller_ref(actor));
     }
     if let Some(sw) = starting_with {
         acc = acc.or(scan_controller_ref(sw));
@@ -6452,6 +6493,7 @@ pub(crate) fn delayed_trigger_reads_growing_class_for_loop(
         source_id: _,
         one_shot: _,
         provenance: _,
+        kind: _,
     } = trigger;
     scan_delayed_trigger_condition(condition, ScanMode::LoopFirewall)
         .or(resolved_ability_axes(ability, ScanMode::LoopFirewall))
@@ -6660,6 +6702,7 @@ pub(crate) fn delayed_trigger_history(
         source_id: _,
         one_shot: _,
         provenance: _,
+        kind: _,
     } = trigger;
     scan_delayed_trigger_condition(condition, ScanMode::LoopFirewall)
         .or(resolved_ability_axes(ability, ScanMode::LoopFirewall))
@@ -7000,6 +7043,8 @@ fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
         | Effect::BecomeBlocked { .. }
         | Effect::SetClassLevel { .. }
         | Effect::CreateDelayedTrigger { .. }
+        | Effect::CreateBoon { .. }
+        | Effect::NoteNumber { .. }
         | Effect::AddTargetReplacement { .. }
         | Effect::AddRestriction { .. }
         | Effect::ReduceNextSpellCost { .. }
@@ -7412,6 +7457,8 @@ fn effect_census_role(e: &Effect) -> CensusRole {
         | Effect::BecomeBlocked { .. }
         | Effect::SetClassLevel { .. }
         | Effect::CreateDelayedTrigger { .. }
+        | Effect::CreateBoon { .. }
+        | Effect::NoteNumber { .. }
         | Effect::AddTargetReplacement { .. }
         | Effect::AddRestriction { .. }
         | Effect::ReduceNextSpellCost { .. }
@@ -7505,10 +7552,10 @@ fn effect_census_role(e: &Effect) -> CensusRole {
 mod tests {
     use super::*;
     use crate::types::ability::{
-        AbilityKind, AggregateFunction, CastManaObjectScope, CastManaSpentMetric, Comparator,
-        CostDerivation, DamageKindFilter, DelayedTriggerLifetime, DestinationConstraint,
-        ManaContribution, OriginConstraint, ReciprocalZoneChoiceRole, ReplacementDefinition,
-        StaticDefinition, TurnGate, WheneverEventExpiry, ZoneChangeClause,
+        AbilityKind, AggregateFunction, CastManaObjectScope, CastManaSpentMetric,
+        CombatHistoryScope, Comparator, CostDerivation, DamageKindFilter, DelayedTriggerLifetime,
+        DestinationConstraint, ManaContribution, OriginConstraint, ReciprocalZoneChoiceRole,
+        ReplacementDefinition, StaticDefinition, TurnGate, WheneverEventExpiry, ZoneChangeClause,
         ZoneChoiceCandidateSource, ZoneChoiceChooser, ZoneOwner,
     };
     use crate::types::counter::CounterType;
@@ -7520,6 +7567,70 @@ mod tests {
     use crate::types::statics::StaticMode;
     use crate::types::triggers::TriggerMode;
     use crate::types::zones::Zone;
+
+    /// U-a. CR 603.2: `OpponentAttacked { EventAttackers }` reads the trigger event,
+    /// like `TriggeringPlayer`; the controller's own attacks read no event.
+    #[test]
+    fn opponent_attacked_event_attackers_scans_the_event_axis() {
+        let scan = |subject| {
+            scan_player_filter(
+                &PlayerFilter::OpponentAttacked {
+                    subject,
+                    scope: CombatHistoryScope::ThisCombat,
+                },
+                ScanMode::Conservative,
+            )
+        };
+        assert!(scan(AttackSubject::EventAttackers).event);
+        assert!(!scan(AttackSubject::You).event);
+    }
+
+    #[test]
+    fn instruction_actor_scans_every_existing_controller_reference() {
+        let base = ResolvedAbility::new(Effect::NoOp, vec![], ObjectId(1), PlayerId(0));
+        let baseline = resolved_ability_axes(&base, ScanMode::Conservative);
+        assert!(!baseline.event && !baseline.sibling && !baseline.projected);
+        for actor in crate::types::ability::instruction_actor_test_refs() {
+            let expected = scan_controller_ref(&actor);
+            let mut resolved = base.clone();
+            resolved.instruction_actor = Some(actor.clone());
+            let actual = resolved_ability_axes(&resolved, ScanMode::Conservative);
+            assert_eq!(
+                (
+                    actual.event,
+                    actual.sibling,
+                    actual.projected,
+                    actual.history
+                ),
+                (
+                    expected.event,
+                    expected.sibling,
+                    expected.projected,
+                    expected.history
+                ),
+                "{actor:?}"
+            );
+            let mut definition = AbilityDefinition::new(AbilityKind::Spell, Effect::NoOp);
+            definition.instruction_actor = Some(actor.clone());
+            let actual = ability_definition_axes(&definition, ScanMode::Conservative);
+            assert_eq!(
+                (
+                    actual.event,
+                    actual.sibling,
+                    actual.projected,
+                    actual.history
+                ),
+                (
+                    expected.event,
+                    expected.sibling,
+                    expected.projected,
+                    expected.history
+                ),
+                "definition {actor:?}"
+            );
+        }
+        assert!(scan_controller_ref(&ControllerRef::EventTargetController).event);
+    }
 
     #[test]
     fn extra_turn_scan_reaches_dynamic_count() {

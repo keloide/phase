@@ -62,6 +62,10 @@ pub(super) fn begin_resolving_stack_entry(
 }
 
 /// Settles the active resolution carrier after its owning resolution completes.
+///
+/// Every resolution end — resolved, an intervening-if or CR 608.2b no-op, or an
+/// abandoned family — routes through here, so this is where the resolving
+/// stack object finally ceases to exist (CR 608.2n).
 pub(super) fn finish_resolving_stack_entry(
     state: &mut GameState,
     disposition: super::lifecycle::DelayedTerminalDisposition,
@@ -72,6 +76,13 @@ pub(super) fn finish_resolving_stack_entry(
     // occurrence, including ones parked across replacement choices.
     state.return_result_frames.clear();
     state.active_return_result_occurrence = None;
+    // CR 701.20a + CR 608.2n: a reveal-caused triggered ability keeps its card
+    // revealed until it leaves the stack, which a resolving ability does only
+    // as the final part of its resolution — after any pause for a choice, not
+    // when it was popped to begin resolving.
+    if let Some(entry) = entry.as_ref() {
+        state.release_stack_bound_reveals(entry.id);
+    }
     debug_assert!(
         firing.is_none()
             || entry
@@ -606,11 +617,12 @@ fn remove_stack_entry_at_unobserved(
             cause,
         })
         .expect("resolved stack removal must have a live journal cause");
-    // CR 701.20a: a triggered ability caused by revealing a card keeps that
-    // card revealed only until it leaves the stack — resolved, countered,
-    // fizzled, or drained. The release is its own journaled information edit,
-    // so replay applies it after this removal without re-deriving it.
-    state.release_stack_bound_reveals(entry.id);
+    // CR 701.20a: the reveal lease is NOT released here. A non-resolving
+    // removal (countered, drained, rolled back) ends it at once — see
+    // `remove_nonresolving_stack_entry_at` and `pop_nonresolving_top_stack_entry`
+    // — but the CR 405.5 resolution pop only begins resolution: the ability
+    // leaves the stack as the final part of that resolution (CR 608.2n), which
+    // `finish_resolving_stack_entry` settles.
 
     Some(PoppedStackEntry {
         entry,
@@ -660,11 +672,22 @@ pub(super) fn remove_nonresolving_stack_entry_at(
     disposition: super::lifecycle::DelayedTerminalDisposition,
 ) -> Option<PoppedStackEntry> {
     let popped = remove_stack_entry_at_unobserved(state, index)?;
+    release_departed_entry_reveals(state, &popped);
     record_departed_stack_spell(state, &popped.entry);
     if let Some(firing) = popped.trigger_firing {
         super::lifecycle::record_delayed_terminal(firing, disposition);
     }
     Some(popped)
+}
+
+/// CR 701.20a: "If revealing a card causes a triggered ability to trigger, the
+/// card remains revealed until that triggered ability leaves the stack." An
+/// entry removed WITHOUT resolving (countered, drained, rolled back) has left
+/// the stack for good, so its lease ends with the removal. The release is its
+/// own journaled information edit, so replay applies it after the removal
+/// without re-deriving it.
+fn release_departed_entry_reveals(state: &mut GameState, popped: &PoppedStackEntry) {
+    state.release_stack_bound_reveals(popped.entry.id);
 }
 
 /// CR 405.2: removes the topmost object from the stack.
@@ -673,6 +696,10 @@ pub(super) fn remove_nonresolving_stack_entry_at(
 /// index N-1 — kept because the resolution and drain callers have no index to
 /// pass and reading `remove_stack_entry_at_unobserved(state, state.stack.len() - 1)` at
 /// each of them would obscure that they are simply resolving the top object.
+///
+/// Releases no CR 701.20a reveal lease: the resolution caller hands the entry
+/// to the carrier, whose `finish_resolving_stack_entry` releases it, and the
+/// drain caller goes through [`pop_nonresolving_top_stack_entry`].
 pub(crate) fn pop_top_stack_entry(state: &mut GameState) -> Option<PoppedStackEntry> {
     remove_stack_entry_at_unobserved(state, state.stack.len().checked_sub(1)?)
 }
@@ -683,6 +710,7 @@ pub(super) fn pop_nonresolving_top_stack_entry(
     disposition: super::lifecycle::DelayedTerminalDisposition,
 ) -> Option<PoppedStackEntry> {
     let popped = pop_top_stack_entry(state)?;
+    release_departed_entry_reveals(state, &popped);
     if let Some(firing) = popped.trigger_firing {
         super::lifecycle::record_delayed_terminal(firing, disposition);
     }
@@ -1008,7 +1036,15 @@ fn deliver_resolved_spell_off_stack(
         // redirect INTO exile still records correctly.
         if spell_in_zone(state, spell_id, Zone::Exile) {
             if let Some(link_source) = stack_exile_link_source {
-                super::exile_links::push_tracked_by_source(state, spell_id, link_source);
+                // CR 607.2b + CR 113.7a: exiled with the Rod that stamped the
+                // rider, which may have left since (CR 400.7).
+                super::exile_links::push_with_kind_as(
+                    state,
+                    spell_id,
+                    link_source.object_id,
+                    Some(link_source.incarnation),
+                    ExileLinkKind::TrackedBySource,
+                );
             }
             // CR 603.7a + CR 702.170c: the exile-instead
             // replacement has now actually been APPLIED (the
@@ -1039,7 +1075,7 @@ fn deliver_resolved_spell_off_stack(
                     state,
                     spell_id,
                     spell_controller,
-                    stack_exile_link_source.unwrap_or(spell_id),
+                    stack_exile_link_source.map_or(spell_id, |source| source.object_id),
                     rider,
                     events,
                 );
@@ -1232,7 +1268,10 @@ fn top_pending_trigger_has_no_legal_required_targets(
 
 /// CR 614.1a + CR 608.2n + CR 607.2b: The per-object linked source is also the
 /// exile-instead marker for Rod of Absorption's resolving-spell rider.
-fn stack_exile_linked_source(state: &GameState, object_id: ObjectId) -> Option<ObjectId> {
+fn stack_exile_linked_source(
+    state: &GameState,
+    object_id: ObjectId,
+) -> Option<ObjectIncarnationRef> {
     state
         .objects
         .get(&object_id)
@@ -4288,6 +4327,7 @@ fn self_counter_run_key<'a>(
 
 fn self_counter_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
     let ResolvedAbility {
+        instruction_actor,
         effect,
         targets,
         declares_chosen_group,
@@ -4372,6 +4412,7 @@ fn self_counter_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
     );
 
     self_counter
+        && instruction_actor.is_none()
         && targets.is_empty()
         && declares_chosen_group.is_none()
         && reads_chosen_group.is_none()
@@ -4537,6 +4578,7 @@ fn fixed_controller_gain_life_run_key<'a>(
 
 fn fixed_controller_gain_life_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
     let ResolvedAbility {
+        instruction_actor,
         effect,
         targets,
         declares_chosen_group,
@@ -4620,6 +4662,7 @@ fn fixed_controller_gain_life_ability_is_batch_candidate(ability: &ResolvedAbili
     );
 
     fixed_controller_gain_life
+        && instruction_actor.is_none()
         && targets.is_empty()
         && declares_chosen_group.is_none()
         && reads_chosen_group.is_none()
@@ -4766,6 +4809,7 @@ fn fixed_opponent_effect_run_key<'a>(
 
 fn fixed_opponent_effect_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
     let ResolvedAbility {
+        instruction_actor,
         effect,
         targets,
         declares_chosen_group,
@@ -4853,6 +4897,7 @@ fn fixed_opponent_effect_ability_is_batch_candidate(ability: &ResolvedAbility) -
     );
 
     fixed_opponent_effect
+        && instruction_actor.is_none()
         && targets.is_empty()
         && declares_chosen_group.is_none()
         && reads_chosen_group.is_none()
@@ -5105,6 +5150,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
 ) -> bool {
     let ResolvedAbility {
         effect: a_effect,
+        instruction_actor: a_instruction_actor,
         targets: a_targets,
         declares_chosen_group: a_declares_chosen_group,
         reads_chosen_group: a_reads_chosen_group,
@@ -5191,6 +5237,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
     } = a;
     let ResolvedAbility {
         effect: b_effect,
+        instruction_actor: b_instruction_actor,
         targets: b_targets,
         declares_chosen_group: b_declares_chosen_group,
         reads_chosen_group: b_reads_chosen_group,
@@ -5277,6 +5324,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
     } = b;
 
     a_effect == b_effect
+        && a_instruction_actor == b_instruction_actor
         && a_targets == b_targets
         && a_declares_chosen_group == b_declares_chosen_group
         && a_reads_chosen_group == b_reads_chosen_group
@@ -5733,8 +5781,8 @@ pub(crate) fn create_warp_delayed_trigger(
     events: &mut Vec<GameEvent>,
 ) {
     use crate::types::ability::{
-        AbilityDefinition, AbilityKind, CastingPermission, DelayedTriggerCondition, Effect,
-        ResolvedAbility,
+        AbilityDefinition, AbilityKind, CastingPermission, DelayedTriggerCondition,
+        DelayedTriggerKind, Effect, ResolvedAbility,
     };
     use crate::types::phase::Phase;
 
@@ -5793,6 +5841,7 @@ pub(crate) fn create_warp_delayed_trigger(
             controller,
             source_id: object_id,
             one_shot: true,
+            kind: DelayedTriggerKind::Ordinary,
             provenance: crate::types::identifiers::DelayedInstallIdentity::LegacyDelayed,
         },
         events,
@@ -6250,6 +6299,86 @@ mod tests {
             &a,
             &same_shape_different_provenance
         ));
+    }
+
+    #[test]
+    fn instruction_actor_refuses_inert_batches_and_participates_in_recursive_identity() {
+        let counter = ResolvedAbility::new(
+            Effect::PutCounter {
+                counter_type: CounterType::Plus1Plus1,
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::SelfRef,
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        );
+        let gain = ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 2 },
+                player: TargetFilter::Controller,
+            },
+            vec![],
+            ObjectId(2),
+            PlayerId(0),
+        );
+        let mut loss = ResolvedAbility::new(
+            Effect::LoseLife {
+                amount: QuantityExpr::Fixed { value: 2 },
+                target: None,
+            },
+            vec![],
+            ObjectId(3),
+            PlayerId(0),
+        );
+        loss.player_scope = Some(crate::types::ability::PlayerFilter::Opponent);
+        assert!(self_counter_ability_is_batch_candidate(&counter));
+        assert!(fixed_controller_gain_life_ability_is_batch_candidate(&gain));
+        assert!(fixed_opponent_effect_ability_is_batch_candidate(&loss));
+        for actor in crate::types::ability::instruction_actor_test_refs() {
+            let mut a = counter.clone();
+            a.instruction_actor = Some(actor.clone());
+            assert!(!self_counter_ability_is_batch_candidate(&a), "{actor:?}");
+            let mut a = gain.clone();
+            a.instruction_actor = Some(actor.clone());
+            assert!(
+                !fixed_controller_gain_life_ability_is_batch_candidate(&a),
+                "{actor:?}"
+            );
+            let mut a = loss.clone();
+            a.instruction_actor = Some(actor.clone());
+            assert!(
+                !fixed_opponent_effect_ability_is_batch_candidate(&a),
+                "{actor:?}"
+            );
+            for branch in 0..3 {
+                let mut left = gain.clone();
+                let mut right = left.clone();
+                let mut child = gain.clone();
+                child.instruction_actor = Some(actor.clone());
+                match branch {
+                    0 => right.instruction_actor = Some(actor.clone()),
+                    1 => {
+                        left.sub_ability = Some(Box::new(gain.clone()));
+                        right.sub_ability = Some(Box::new(child));
+                    }
+                    2 => {
+                        left.else_ability = Some(Box::new(gain.clone()));
+                        right.else_ability = Some(Box::new(child));
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(!inert_trigger_abilities_eq_ignoring_provenance(
+                    &left, &right
+                ));
+                let mut same = right.clone();
+                same.source_id = ObjectId(999);
+                same.ability_index = Some(9);
+                assert!(inert_trigger_abilities_eq_ignoring_provenance(
+                    &right, &same
+                ));
+            }
+        }
     }
 
     #[test]
@@ -9934,6 +10063,124 @@ mod tests {
                 crate::game::perf_counters::snapshot().stack_batched_entries,
                 2
             );
+        }
+
+        #[test]
+        fn instruction_actor_ordinary_trigger_resolution_falls_back_from_each_inert_batch_family() {
+            for family in 0..4 {
+                for marked in [false, true] {
+                    crate::game::perf_counters::reset();
+                    let mut state = setup();
+                    let source = add_self_counter_source(&mut state, "Synthetic Actor Trigger");
+                    for player in [PlayerId(0), PlayerId(1)] {
+                        for index in 0..4 {
+                            create_object(
+                                &mut state,
+                                CardId(80_000 + u64::from(player.0) * 10 + index),
+                                player,
+                                "Mill card".into(),
+                                Zone::Library,
+                            );
+                        }
+                    }
+                    for _ in 0..2 {
+                        let event = life_event(PlayerId(0), 1);
+                        match family {
+                            0 => push_self_counter_trigger(&mut state, source, event),
+                            1 => push_fixed_controller_gain_life_trigger(&mut state, source, event),
+                            2 => push_fixed_opponent_lose_life_trigger(
+                                &mut state, source, event, None, None,
+                            ),
+                            3 => push_fixed_opponent_mill_trigger(&mut state, source, event),
+                            _ => unreachable!(),
+                        }
+                        if marked {
+                            let StackEntryKind::TriggeredAbility { ability, .. } =
+                                &mut state.stack.back_mut().unwrap().kind
+                            else {
+                                unreachable!()
+                            };
+                            ability.instruction_actor =
+                                Some(crate::types::ability::ControllerRef::SpecificPlayer {
+                                    id: PlayerId(1),
+                                });
+                        }
+                    }
+                    let life_before = [state.players[0].life, state.players[1].life];
+                    assert_eq!(state.stack.len(), 2);
+                    let mut events = crate::game::engine::apply(
+                        &mut state,
+                        PlayerId(0),
+                        crate::types::actions::GameAction::SetAutoPass {
+                            mode: crate::types::game_state::AutoPassRequest::UntilStackEmpty,
+                        },
+                    )
+                    .expect("the real Resolve All action admits the trigger stack")
+                    .events;
+                    for _ in 0..8 {
+                        if state.stack.is_empty() {
+                            break;
+                        }
+                        let crate::types::game_state::WaitingFor::Priority { player } =
+                            state.waiting_for
+                        else {
+                            panic!("the ordinary actor-bearing trigger needs only priority passes");
+                        };
+                        let submitter = authorized_submitter_for_player(&state, player);
+                        events.extend(
+                            crate::game::engine::apply(
+                                &mut state,
+                                submitter,
+                                crate::types::actions::GameAction::PassPriority,
+                            )
+                            .expect("the actual priority holder may pass")
+                            .events,
+                        );
+                    }
+                    assert_eq!(
+                        crate::game::perf_counters::snapshot().stack_batched_entries,
+                        if marked { 0 } else { 2 },
+                        "family {family}: actor-bearing entries use normal single-entry resolution"
+                    );
+                    assert!(state.stack.is_empty());
+                    assert_eq!(
+                        events
+                            .iter()
+                            .filter(|event| matches!(event, GameEvent::StackResolved { .. }))
+                            .count(),
+                        2
+                    );
+                    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { source_id, .. } if *source_id == source)).count(), 2);
+                    match family {
+                        0 => {
+                            assert_eq!(
+                                state.objects[&source]
+                                    .counters
+                                    .get(&CounterType::Plus1Plus1),
+                                Some(&2)
+                            );
+                            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::CounterAdded { actor, object_id, counter_type: CounterType::Plus1Plus1, count: 1 } if *actor == PlayerId(u8::from(marked)) && *object_id == source)).count(), 2);
+                        }
+                        1 => {
+                            let recipient = usize::from(marked);
+                            assert_eq!(state.players[recipient].life, life_before[recipient] + 2);
+                            assert_eq!(
+                                state.players[1 - recipient].life,
+                                life_before[1 - recipient]
+                            );
+                        }
+                        2 => {
+                            assert_eq!(state.players[1].life, life_before[1] - 4);
+                            assert_eq!(state.players[0].life, life_before[0]);
+                        }
+                        3 => {
+                            assert_eq!(state.players[1].graveyard.len(), 2);
+                            assert!(state.players[0].graveyard.is_empty());
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
         }
 
         #[test]
@@ -16239,8 +16486,13 @@ mod tests {
 #[cfg(test)]
 mod stack_bound_reveal_release_tests {
     //! CR 603.3d + CR 701.20a: the uncommitted-trigger pop releases the popped
-    //! entry's reveal lease, and only when it actually popped.
-    use super::pop_uncommitted_pending_trigger_entry;
+    //! entry's reveal lease, and only when it actually popped. CR 608.2n: the
+    //! resolution pop leaves the lease to the carrier's finish.
+    use super::{
+        begin_resolving_stack_entry, finish_resolving_stack_entry,
+        pop_nonresolving_top_stack_entry, pop_top_stack_entry,
+        pop_uncommitted_pending_trigger_entry,
+    };
     use crate::game::zones::create_object;
     use crate::types::ability::{Effect, ResolvedAbility, TargetFilter};
     use crate::types::game_state::{GameState, StackEntry, StackEntryKind};
@@ -16318,6 +16570,59 @@ mod stack_bound_reveal_release_tests {
         );
         assert!(state.stack.is_empty(), "reach guard: popped");
         assert!(!state.holds_stack_bound_reveal(card));
+        assert!(state.stack_bound_reveals.is_empty());
+    }
+
+    /// CR 701.20a + CR 608.2n: the CR 405.5 resolution pop only begins
+    /// resolution, so the lease survives it and ends when the carrier finishes;
+    /// a non-resolving drain of the top entry (CR 724.1b) ends it at once.
+    #[test]
+    fn only_the_carrier_finish_or_a_nonresolving_pop_releases_the_lease() {
+        let mut state = GameState::new_two_player(3);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Source".into(),
+            Zone::Battlefield,
+        );
+        let card = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Leased".into(),
+            Zone::Hand,
+        );
+
+        let resolving = trigger_entry(&mut state, source);
+        state.grant_stack_bound_reveal(resolving, &[card]);
+        let popped = pop_top_stack_entry(&mut state).expect("reach guard: popped");
+        assert_eq!(popped.entry.id, resolving, "reach guard: the leased entry");
+        assert!(
+            state.holds_stack_bound_reveal(card),
+            "the resolution pop keeps the lease"
+        );
+        begin_resolving_stack_entry(&mut state, popped.entry, popped.trigger_firing)
+            .expect("reach guard: carrier installed");
+        assert!(state.holds_stack_bound_reveal(card), "still resolving");
+        finish_resolving_stack_entry(
+            &mut state,
+            crate::game::lifecycle::DelayedTerminalDisposition::Resolved,
+        );
+        assert!(!state.holds_stack_bound_reveal(card), "finish releases it");
+        assert!(state.stack_bound_reveals.is_empty());
+
+        let drained = trigger_entry(&mut state, source);
+        state.grant_stack_bound_reveal(drained, &[card]);
+        pop_nonresolving_top_stack_entry(
+            &mut state,
+            crate::game::lifecycle::DelayedTerminalDisposition::Removed,
+        )
+        .expect("reach guard: drained");
+        assert!(
+            !state.holds_stack_bound_reveal(card),
+            "the drain releases it"
+        );
         assert!(state.stack_bound_reveals.is_empty());
     }
 }

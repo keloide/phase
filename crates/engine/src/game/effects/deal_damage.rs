@@ -2076,6 +2076,15 @@ fn collect_matching_players(
                             source_id,
                         )
                     }
+                    // CR 102.1 + CR 608.2c: the union of the members, answered
+                    // member by member by the generic predicate authority.
+                    PlayerFilter::AnyOf { .. } => crate::game::effects::matches_player_scope(
+                        state,
+                        p.id,
+                        &player_filter,
+                        source_controller,
+                        source_id,
+                    ),
                     PlayerFilter::Opponent => p.id != source_controller,
                     PlayerFilter::DefendingPlayer => {
                         crate::game::targeting::resolve_event_context_target_for_event_or_state(
@@ -2203,12 +2212,14 @@ fn collect_matching_players(
                         .last_vote_ballots
                         .iter()
                         .any(|(voter, idx)| *voter == p.id && *idx == choice_index),
-                    // CR 109.4 + CR 108.3 + CR 601.2a: the parent-object-target anchors,
-                    // the resolution-scoped chosen-player anchor and the unlatched
-                    // granter caster have no meaning for a damage-each-player effect
-                    // (none is in scope here); never matches.
+                    // CR 109.4 + CR 108.3 + CR 601.2a + CR 115.1: the parent-object-target
+                    // anchors, the declared-player-target anchor, the resolution-scoped
+                    // chosen-player anchor and the unlatched granter caster have no
+                    // meaning for a damage-each-player effect (none is in scope
+                    // here); never matches.
                     PlayerFilter::ParentObjectTargetController
                     | PlayerFilter::ParentObjectTargetOwner
+                    | PlayerFilter::TargetPlayer
                     | PlayerFilter::GrantingObjectCaster
                     | PlayerFilter::ChosenPlayer { .. } => false,
                     // CR 109.4 + CR 109.5: "each [player class] who controls
@@ -2347,6 +2358,15 @@ pub fn resolve_each_player(
                             ability.source_id,
                         )
                     }
+                    // CR 102.1 + CR 608.2c: the union of the members, answered
+                    // member by member by the generic predicate authority.
+                    PlayerFilter::AnyOf { .. } => crate::game::effects::matches_player_scope(
+                        state,
+                        p.id,
+                        &player_filter,
+                        ability.controller,
+                        ability.source_id,
+                    ),
                     PlayerFilter::Opponent => p.id != ability.controller,
                     PlayerFilter::DefendingPlayer => {
                         crate::game::targeting::resolve_event_context_target_for_event_or_state(
@@ -2476,12 +2496,14 @@ pub fn resolve_each_player(
                         .last_vote_ballots
                         .iter()
                         .any(|(voter, idx)| *voter == p.id && *idx == *choice_index),
-                    // CR 109.4 + CR 108.3 + CR 601.2a: the parent-object-target anchors,
-                    // the resolution-scoped chosen-player anchor and the unlatched
-                    // granter caster have no meaning for a damage-each-player effect
-                    // (none is in scope here); never matches.
+                    // CR 109.4 + CR 108.3 + CR 601.2a + CR 115.1: the parent-object-target
+                    // anchors, the declared-player-target anchor, the resolution-scoped
+                    // chosen-player anchor and the unlatched granter caster have no
+                    // meaning for a damage-each-player effect (none is in scope
+                    // here); never matches.
                     PlayerFilter::ParentObjectTargetController
                     | PlayerFilter::ParentObjectTargetOwner
+                    | PlayerFilter::TargetPlayer
                     | PlayerFilter::GrantingObjectCaster
                     | PlayerFilter::ChosenPlayer { .. } => false,
                     // CR 109.4 + CR 109.5: "each [player class] who controls
@@ -7736,12 +7758,29 @@ mod tests {
             .target_object(victim)
             .resolve();
 
-        // CR 208.3: damage equals the source's power (4).
+        // CR 208.1 + CR 120.2b: the ability deals damage equal to the source's power (4).
+        let damage: Vec<_> = outcome
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target: TargetRef::Object(id),
+                    amount,
+                    is_combat,
+                    ..
+                } if *id == victim => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
         assert_eq!(
-            outcome.state().objects[&victim].damage_marked,
-            4,
+            damage,
+            vec![(iron_fist, 4, false)],
             "Iron Fist must deal damage equal to his power (4) to the chosen other target"
         );
+        // CR 704.5g + CR 400.7: lethal damage leaves a new, unmarked graveyard object.
+        assert_eq!(outcome.state().objects[&victim].zone, Zone::Graveyard);
+        assert_eq!(outcome.state().objects[&victim].damage_marked, 0);
     }
 
     /// CR 115.4 — DISCRIMINATING runtime gate that "any OTHER target" (i.e.
@@ -7913,11 +7952,28 @@ mod tests {
                 .activate(red_hulk, ability_index)
                 .target_object(victim)
                 .resolve();
+            let damage: Vec<_> = outcome
+                .events()
+                .iter()
+                .filter_map(|event| match event {
+                    GameEvent::DamageDealt {
+                        source_id,
+                        target: TargetRef::Object(id),
+                        amount,
+                        is_combat,
+                        ..
+                    } if *id == victim => Some((*source_id, *amount, *is_combat)),
+                    _ => None,
+                })
+                .collect();
             assert_eq!(
-                outcome.state().objects[&victim].damage_marked,
-                3,
+                damage,
+                vec![(red_hulk, 3, false)],
                 "Red Hulk's reflex must deal damage equal to its +1/+1 counter count (3)"
             );
+            // CR 704.5g + CR 400.7: lethal damage leaves a new, unmarked graveyard object.
+            assert_eq!(outcome.state().objects[&victim].zone, Zone::Graveyard);
+            assert_eq!(outcome.state().objects[&victim].damage_marked, 0);
         }
         // Silence the unused CounterType import on builds where the matches! arm
         // already consumed it via the qualified path.

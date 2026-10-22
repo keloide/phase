@@ -6,9 +6,12 @@
 use engine::game::game_object::PhaseOutCause;
 use engine::game::phasing::phase_out_object;
 use engine::game::scenario::{GameScenario, P0, P1};
+use engine::types::ability::TargetRef;
+use engine::types::events::GameEvent;
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
+use engine::types::zones::Zone;
 
 const ENTS_FURY_ORACLE: &str = "Put a +1/+1 counter on target creature you control if its power is 4 or greater. Then that creature gets +1/+1 until end of turn and fights target creature you don't control.";
 
@@ -38,16 +41,42 @@ fn ents_fury_fights_boosted_creature_against_opponent_creature() {
 
     let mut runner = scenario.build();
 
-    runner
+    let outcome = runner
         .cast(spell)
         .target_objects(&[bear, wolf])
         .commit()
         .resolve();
 
-    assert!(
-        runner.state().objects[&wolf].damage_marked >= 6,
-        "boosted bear must deal fight damage to wolf, got {}",
-        runner.state().objects[&wolf].damage_marked
+    // CR 701.14a/d: each fighter deals its current power as noncombat damage.
+    for (recipient, dealer, amount) in [(wolf, bear, 7), (bear, wolf, 2)] {
+        let damage: Vec<_> = outcome
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target: TargetRef::Object(id),
+                    amount,
+                    is_combat,
+                    ..
+                } if *id == recipient => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            damage,
+            vec![(dealer, amount, false)],
+            "boosted bear must deal fight damage to wolf, and wolf fights back"
+        );
+    }
+    // CR 400.7: Wolf's new graveyard object has cleared marked damage.
+    assert_eq!(runner.state().objects[&wolf].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&wolf].damage_marked, 0);
+    assert_eq!(runner.state().objects[&bear].zone, Zone::Battlefield);
+    assert_eq!(runner.state().objects[&bear].power, Some(7));
+    assert_eq!(
+        runner.state().objects[&bear].counters[&engine::types::counter::CounterType::Plus1Plus1],
+        1
     );
     assert_eq!(
         runner.state().objects[&bear].damage_marked,

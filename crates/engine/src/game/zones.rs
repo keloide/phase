@@ -1,7 +1,8 @@
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    GameState, ResolutionSourceRelatch, StackEntry, StackEntryKind, ZoneChangeCombatStatus,
+    GameState, LinkedExileLki, LinkedExileSnapshot, ResolutionSourceRelatch, StackEntry,
+    StackEntryKind, ZoneChangeCombatStatus,
 };
 use crate::types::identifiers::{CardId, ObjectId, ObjectIncarnationRef};
 use crate::types::player::PlayerId;
@@ -216,6 +217,12 @@ pub(crate) fn apply_zone_exit_cleanup(
             // CR 400.7: the spell's identity ends with the spell.
             obj.spell_announcement = None;
         }
+    }
+    // CR 607.2q + CR 400.7 + CR 400.7d + CR 608.3a: a cast-cost link follows the spell
+    // onto the stack and onto the battlefield as the permanent it becomes; any other
+    // move makes a new object the cost was not paid for.
+    if !(to == Zone::Stack || (from == Zone::Stack && to == Zone::Battlefield)) {
+        crate::game::exile_links::end_cast_cost_links(state, object_id);
     }
     // CR 400.7 + CR 403.4: Activation-use history belongs to the old
     // object. `ObjectId` is storage identity here, so clear per-object counts
@@ -695,7 +702,7 @@ pub(crate) fn apply_zone_exit_cleanup(
         // object's "exiled with" linkage (Pit of Offerings, Bojuka Bog, etc.).
         // `UntilSourceLeaves` links are intentionally preserved here because
         // `check_exile_returns` runs later in the priority loop and consumes
-        // them to return the exiled cards (CR 610.3a).
+        // them to return the exiled cards (CR 610.3).
         // CR 702.55b + CR 702.55c: `Haunt` links are likewise preserved — the haunted
         // creature leaving the battlefield (its death) is exactly when the
         // card's haunt-payoff trigger reads the link to fire from exile. The
@@ -706,6 +713,8 @@ pub(crate) fn apply_zone_exit_cleanup(
         // returned permanent to still read what it was crafted with.
         // CR 406.3: `HideawayLookable` links are preserved because a look outlives
         // its source; their live rule stops admitting once the source is gone.
+        // CR 607.2q + CR 400.7: `CastCost` links are already gone on any
+        // battlefield exit (the exit prune above).
         // CR 607.2a + CR 400.7: `TrackedBySource` links are preserved when the
         // source leaves the battlefield TO EXILE. A source that self-exiles
         // (typically as its own activation cost — Mechtitan Core: "Exile this
@@ -734,6 +743,25 @@ pub(crate) fn apply_zone_exit_cleanup(
                         crate::types::game_state::ExileLinkKind::TrackedBySource
                     ))
         });
+        // CR 400.7 + CR 607.2a: the cards exiled with this object this turn are the
+        // departed object's; a later object under the same id starts with none. Both
+        // leaves-the-battlefield records (`move_to_zone_with_entry_flags`,
+        // `move_to_library_at_index`) have already synced this list
+        // (`sync_trigger_source_exiled_cards`), so their readers keep it.
+        state.cards_exiled_with_source_this_turn.remove(&object_id);
+        // CR 400.7: a permission source's "once each turn" belongs to the
+        // departed object; a later object under the same id has its own.
+        state.graveyard_cast_permissions_used.remove(&object_id);
+        state
+            .graveyard_cast_permissions_used_per_type
+            .retain(|(source, _)| *source != object_id);
+        state.hand_cast_free_permissions_used.remove(&object_id);
+        state.alt_cost_grant_permissions_used.remove(&object_id);
+        state.exile_play_permissions_used.remove(&object_id);
+        state.exile_cast_permissions_used.remove(&object_id);
+        state
+            .top_of_library_cast_permissions_used
+            .remove(&object_id);
 
         // PR-7 Phase 4c (B5 defuse): CR 104.4b / CR 110.1 / CR 700.4 — an enabling
         // permanent leaving the battlefield revokes the revocable-∞ capability it
@@ -1210,6 +1238,11 @@ pub fn apply_resolved_zone_change(
         .get_mut(&command.object.object_id)
         .expect("validated zone command object remains live");
     object.zone = command.to;
+    // CR 400.7 + CR 120.6: recorded replay bypasses the live exit reset,
+    // so reproduce only its marked-damage clear on a real battlefield exit.
+    if command.from == Zone::Battlefield && command.to != Zone::Battlefield {
+        object.damage_marked = 0;
+    }
     if command.rebound_from.is_some() {
         install_rebound_owner(object, command.owner);
     }
@@ -1501,6 +1534,7 @@ pub(crate) fn move_to_zone_with_entry_flags(
     // with" cards here, before CR 400.7 cleanup prunes `TrackedBySource`.
     zone_change_record.linked_exile_snapshot =
         capture_linked_exile_snapshot(state, object_id, from);
+    let cast_cost_pile = crate::game::exile_links::cast_cost_pile(state, object_id);
     zone_change_record.sync_trigger_source_exiled_cards(
         state
             .cards_exiled_with_source_this_turn
@@ -1508,15 +1542,6 @@ pub(crate) fn move_to_zone_with_entry_flags(
             .cloned()
             .unwrap_or_default(),
     );
-    // CR 607.2b + CR 603.10e: Persist the linked-exile snapshot as last-known
-    // information so a self-sacrifice ability that refers to "cards exiled with
-    // this permanent" (Rod of Absorption) still resolves correctly after its own
-    // source is gone and the live `TrackedBySource` links have been pruned.
-    if !zone_change_record.linked_exile_snapshot.is_empty() {
-        state
-            .linked_exile_lki
-            .insert(object_id, zone_change_record.linked_exile_snapshot.clone());
-    }
     zone_change_record.combat_status = if let Some(target) = liminal_attack_target {
         ZoneChangeCombatStatus {
             attacking: true,
@@ -1611,13 +1636,21 @@ pub(crate) fn move_to_zone_with_entry_flags(
                 true,
             )
         };
+    record_linked_exile_departure(
+        state,
+        object_id,
+        pre_bump_incarnation,
+        new_incarnation,
+        &zone_change_record.linked_exile_snapshot,
+        &cast_cost_pile,
+    );
 
     // CR 603.6c: Drop the leaving permanent from the TriggerIndex. The
     // leaves-battlefield last-known-information scan in
     // `collect_pending_triggers` reads `state.objects` directly (the object's
     // zone is no longer Battlefield), unaffected by this removal. The
-    // authoritative correctness path is the `evaluate_layers` rebuild
-    // (CR 611.2e); this hook is incremental optimization between layer flushes.
+    // authoritative correctness path is the `evaluate_layers` rebuild; this
+    // hook is incremental optimization between layer flushes.
     if from == Zone::Battlefield {
         state.trigger_index.remove(object_id);
     }
@@ -1777,7 +1810,7 @@ pub(crate) fn move_to_zone_with_entry_flags(
     // CR 603.6a: Register the post-reset trigger definitions in the index so
     // `state.clone()` consumers see a coherent battlefield → trigger candidate
     // map. AUTHORITATIVE PATH: the end-of-`evaluate_layers` rebuild
-    // (CR 611.2e, `layers.rs`) is the safety net; this hook is incremental
+    // (`layers.rs`) is the safety net; this hook is incremental
     // optimization between layer flushes. `state.layers_dirty = true` was set
     // above, guaranteeing a post-layer rebuild on the next
     // `collect_pending_triggers` consult.
@@ -1874,6 +1907,12 @@ pub(crate) fn record_and_emit_entry_from_no_zone(
         .objects
         .get(&object_id)
         .map(|obj| obj.snapshot_for_zone_change(object_id, None, Zone::Battlefield))?;
+    // CR 400.7: entries from no zone are created in place — no `move_to_zone`
+    // call fills the entered incarnation — so the authority fills it here from
+    // the birth incarnation, mirroring the battlefield arm there. Without it,
+    // entry-event pins (`zone_change_parent_target_pin`) and arrival
+    // forwarding cannot see token/conjured entrants at all.
+    record.entered_incarnation = state.objects.get(&object_id).map(|obj| obj.incarnation);
     super::restrictions::record_zone_change(state, &mut record);
     events.push(GameEvent::ZoneChanged {
         object_id,
@@ -2112,8 +2151,9 @@ pub fn stamp_simultaneous_from_slice(state: &GameState, slice: &mut [GameEvent])
 /// is_some()` branch). Every `ExileLinkKind` is kind-agnostically readable via
 /// `ExiledBySource` (`HideawayLookable`'s and `CraftMaterial`'s own doc
 /// comments say so explicitly) and the LIVE lookup
-/// (`players::linked_exile_cards_for_source`) reads the same
-/// `exile_links::live_links_for_source` accessor —
+/// (`players::linked_exile_cards_for_source`) reads
+/// `exile_links::links_for_reader`, which for the live object is this
+/// `live_links_for_source` surface —
 /// this snapshot must match that surface exactly, or a card whose "play the
 /// exiled card" clause resolves via a TRIGGERED ability (Fight Rigging's
 /// begin-of-combat trigger, as opposed to Windbrisk Heights' activated
@@ -2129,18 +2169,50 @@ pub(crate) fn capture_linked_exile_snapshot(
     }
 
     crate::game::exile_links::live_links_for_source(state, source_id)
-        .filter_map(|link| {
-            state.objects.get(&link.exiled_id).and_then(|obj| {
-                (obj.zone == Zone::Exile).then(|| crate::types::game_state::LinkedExileSnapshot {
-                    exiled_id: link.exiled_id,
-                    owner: obj.owner,
-                    // CR 202.3d + CR 709.4b: the exiled card is off the stack, so
-                    // a split card records its combined mana value.
-                    mana_value: obj.effective_mana_value(),
-                })
-            })
-        })
+        .filter_map(|link| crate::game::exile_links::exiled_card_snapshot(state, link.exiled_id))
         .collect()
+}
+
+/// CR 607.2a + CR 607.2b + CR 113.7a: Persist a battlefield departure's
+/// linked-exile snapshot as last-known information so an ability of the departed
+/// source (Rod of Absorption sacrificing itself) still finds the cards exiled
+/// with it. CR 400.7: bound it to this departure's incarnations so a later
+/// object under the same id cannot read it. Shared by every departure path
+/// (`move_to_zone_with_entry_flags`, `move_to_library_at_index`). The cards in
+/// `cast_cost_pile` (the departed permanent's `CastCost` links) get an entry of
+/// their own that admits only the departed incarnation.
+fn record_linked_exile_departure(
+    state: &mut GameState,
+    object_id: ObjectId,
+    departed: u64,
+    successor: u64,
+    snapshot: &[LinkedExileSnapshot],
+    cast_cost_pile: &[ObjectId],
+) {
+    if snapshot.is_empty() {
+        return;
+    }
+    // CR 113.7a + CR 400.7 + CR 607.2q: only an ability of the departed
+    // permanent reads its cast-cost pile; the object it became is a new object
+    // that no spell became, and an entry admitting the successor would let that
+    // object's own reads see the pile (`LinkedExileLki::admits`). KNOWN
+    // LIMITATION (CR 113.7a): an activation that sacrifices or exiles this
+    // permanent as its cost is stamped with the successor and so does not read
+    // this pile; no printed card pairs such an activation with a cast-cost pile.
+    let (cast_cost, rest): (Vec<_>, Vec<_>) = snapshot
+        .iter()
+        .cloned()
+        .partition(|snap| cast_cost_pile.contains(&snap.exiled_id));
+    let entries = state.linked_exile_lki.entry(object_id).or_default();
+    for (admitted, pile) in [(successor, rest), (departed, cast_cost)] {
+        if !pile.is_empty() {
+            entries.push(LinkedExileLki {
+                departed,
+                successor: admitted,
+                snapshot: pile,
+            });
+        }
+    }
 }
 
 /// After leave-time snapshots are captured on the zone-change record, sever
@@ -2384,6 +2456,11 @@ pub fn move_to_library_at_index(
     // sever (CR 701.3d) clears it.
     zone_change_record.attachments = capture_attachment_snapshot(state, obj);
     zone_change_record.combat_status = capture_combat_status(state, object_id);
+    // CR 603.10a + CR 607.2a: as in `move_to_zone_with_entry_flags`, snapshot
+    // the linked "exiled with" cards before CR 400.7 cleanup prunes them.
+    zone_change_record.linked_exile_snapshot =
+        capture_linked_exile_snapshot(state, object_id, from);
+    let cast_cost_pile = crate::game::exile_links::cast_cost_pile(state, object_id);
     zone_change_record.sync_trigger_source_exiled_cards(
         state
             .cards_exiled_with_source_this_turn
@@ -2438,6 +2515,14 @@ pub fn move_to_library_at_index(
     }
     if let Some((pre, new)) = bump {
         record_resolution_source_relatch(state, object_id, from, pre, new);
+        record_linked_exile_departure(
+            state,
+            object_id,
+            pre,
+            new,
+            &zone_change_record.linked_exile_snapshot,
+            &cast_cost_pile,
+        );
     }
 
     super::restrictions::record_zone_change(state, &mut zone_change_record);
@@ -4936,6 +5021,7 @@ mod tests {
                 exiled_id: exiled,
                 owner: PlayerId(1),
                 mana_value: 4,
+                incarnation: state.objects[&exiled].incarnation,
             }]
         );
         assert!(
@@ -5034,6 +5120,56 @@ mod tests {
                 .all(|link| link.source_id != source),
             "TrackedBySource links keyed to a re-entering source must be dropped (CR 400.7)"
         );
+    }
+
+    /// CR 400.7 + CR 607.2a + CR 113.7a: each battlefield departure of a source
+    /// records its own linked-exile entry, bounded to that departure's
+    /// incarnations; a second departure in the same step does not overwrite
+    /// the first.
+    #[test]
+    fn each_battlefield_departure_records_its_own_bounded_linked_exile_entry() {
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(64),
+            PlayerId(0),
+            "Departing Source".to_string(),
+            Zone::Battlefield,
+        );
+        let mut events = Vec::new();
+        let mut departures = Vec::new();
+        for card_id in [65, 66] {
+            if state.objects[&source].zone != Zone::Battlefield {
+                move_to_zone(&mut state, source, Zone::Battlefield, &mut events);
+            }
+            let exiled = create_object(
+                &mut state,
+                CardId(card_id),
+                PlayerId(1),
+                "Exiled With Source".to_string(),
+                Zone::Exile,
+            );
+            state.exile_links.push(crate::types::game_state::ExileLink {
+                source_id: source,
+                exiled_id: exiled,
+                kind: crate::types::game_state::ExileLinkKind::TrackedBySource,
+            });
+            let departed = state.objects[&source].incarnation;
+            move_to_zone(&mut state, source, Zone::Graveyard, &mut events);
+            departures.push(LinkedExileLki {
+                departed,
+                successor: state.objects[&source].incarnation,
+                snapshot: vec![LinkedExileSnapshot {
+                    exiled_id: exiled,
+                    owner: PlayerId(1),
+                    mana_value: 0,
+                    incarnation: state.objects[&exiled].incarnation,
+                }],
+            });
+        }
+
+        assert_ne!(departures[0].successor, departures[1].departed);
+        assert_eq!(state.linked_exile_lki.get(&source), Some(&departures));
     }
 
     /// CR 712.8a + CR 400.7: An MDFC permanent that entered the battlefield as
@@ -5696,6 +5832,103 @@ mod tests {
     }
 
     #[test]
+    fn battlefield_exit_marked_damage_is_reproduced_by_resolved_command_replay() {
+        for destination in [Zone::Hand, Zone::Graveyard, Zone::Exile] {
+            let mut live = setup();
+            let host = create_object(
+                &mut live,
+                CardId(1),
+                PlayerId(0),
+                "Damaged host".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = live.objects.get_mut(&host).unwrap();
+                obj.card_types
+                    .core_types
+                    .push(crate::types::card_type::CoreType::Creature);
+                obj.power = Some(2);
+                obj.toughness = Some(6);
+                obj.damage_marked = 5;
+            }
+            let old_incarnation = live.objects[&host].incarnation;
+            let mut replayed = live.clone();
+            assert_eq!(replayed.objects[&host].damage_marked, 5);
+            move_to_zone(&mut live, host, destination, &mut Vec::new());
+            let command =
+                live.resolved_rules_journal
+                    .entries()
+                    .iter()
+                    .filter_map(|entry| entry.command.as_ref())
+                    .find_map(|command| match command {
+                        crate::types::resolved_commands::ResolvedRulesCommand::ZoneChange(
+                            command,
+                        ) if command.object.object_id == host => Some(command.as_ref().clone()),
+                        _ => None,
+                    })
+                    .expect("actual damaged battlefield exit records its command");
+            assert_eq!(command.from, Zone::Battlefield);
+            assert_eq!(command.to, destination);
+            assert_eq!(command.zone_change_record.controller, PlayerId(0));
+            assert_eq!(command.zone_change_record.owner, PlayerId(0));
+            assert_eq!(command.zone_change_record.power, Some(2));
+            assert_eq!(command.zone_change_record.toughness, Some(6));
+            assert!(command
+                .zone_change_record
+                .core_types
+                .contains(&crate::types::card_type::CoreType::Creature));
+            assert_eq!(
+                live.objects[&host].damage_marked, 0,
+                "live damaged exit clears damage"
+            );
+            assert_eq!(live.objects[&host].zone, destination);
+            assert!(live.objects[&host].incarnation > old_incarnation);
+            apply_resolved_zone_change(&mut replayed, &command)
+                .expect("actual recorded exit replays from damaged pre-cleanup state");
+            assert_eq!(
+                replayed.objects[&host].damage_marked, 0,
+                "recorded battlefield exit must clear five marked damage from damaged prestate"
+            );
+            assert_eq!(replayed.objects[&host].zone, destination);
+            assert_eq!(
+                replayed.objects[&host].incarnation,
+                command.resulting_incarnation
+            );
+            assert_eq!(replayed.objects[&host].card_id, live.objects[&host].card_id);
+            assert_eq!(replayed.objects[&host].owner, live.objects[&host].owner);
+            assert_eq!(replayed.zone_changes_this_turn, live.zone_changes_this_turn);
+        }
+        let mut unchanged = setup();
+        let host = create_object(
+            &mut unchanged,
+            CardId(2),
+            PlayerId(0),
+            "Same-zone host".to_string(),
+            Zone::Battlefield,
+        );
+        unchanged.objects.get_mut(&host).unwrap().damage_marked = 5;
+        let entries = unchanged.resolved_rules_journal.entries().len();
+        move_to_zone(&mut unchanged, host, Zone::Battlefield, &mut Vec::new());
+        assert_eq!(unchanged.objects[&host].damage_marked, 5);
+        assert_eq!(unchanged.resolved_rules_journal.entries().len(), entries);
+        let off_battlefield = create_object(
+            &mut unchanged,
+            CardId(3),
+            PlayerId(0),
+            "Undamaged card".to_string(),
+            Zone::Hand,
+        );
+        move_to_zone(
+            &mut unchanged,
+            off_battlefield,
+            Zone::Exile,
+            &mut Vec::new(),
+        );
+        assert_eq!(unchanged.objects[&off_battlefield].zone, Zone::Exile);
+        assert_eq!(unchanged.objects[&off_battlefield].damage_marked, 0);
+    }
+
+    #[test]
     fn host_exit_severing_is_reproduced_by_resolved_command_replay() {
         // The live transition severs the attachment graph BEFORE delegating to
         // `resolve_and_apply_zone_change`, and `ResolvedZoneChangeCommand`
@@ -6146,6 +6379,108 @@ mod tests {
                 )
             }),
             "SBA zone movement must still publish the unattach event for triggers"
+        );
+    }
+
+    /// CR 400.7: the per-turn exile list and the seven once-each-turn usage sets
+    /// drop the departing source's entries on its battlefield exit and keep
+    /// every other source's.
+    #[test]
+    fn battlefield_departure_ends_the_sources_per_turn_entries() {
+        let mut state = setup();
+        let [departing, staying] = [CardId(1), CardId(2)].map(|card_id| {
+            create_object(
+                &mut state,
+                card_id,
+                PlayerId(0),
+                "Source".into(),
+                Zone::Battlefield,
+            )
+        });
+        for source in [departing, staying] {
+            state
+                .cards_exiled_with_source_this_turn
+                .insert(source, vec![ObjectId(99)]);
+            state.graveyard_cast_permissions_used.insert(source);
+            state
+                .graveyard_cast_permissions_used_per_type
+                .extend([(source, CoreType::Creature), (source, CoreType::Land)]);
+            state.hand_cast_free_permissions_used.insert(source);
+            state.alt_cost_grant_permissions_used.insert(source);
+            state.exile_play_permissions_used.insert(source);
+            state.exile_cast_permissions_used.insert(source);
+            state.top_of_library_cast_permissions_used.insert(source);
+        }
+
+        move_to_zone(&mut state, departing, Zone::Graveyard, &mut Vec::new());
+
+        let holds = |state: &GameState, source: ObjectId| {
+            [
+                state
+                    .cards_exiled_with_source_this_turn
+                    .contains_key(&source),
+                state.graveyard_cast_permissions_used.contains(&source),
+                state
+                    .graveyard_cast_permissions_used_per_type
+                    .contains(&(source, CoreType::Creature)),
+                state
+                    .graveyard_cast_permissions_used_per_type
+                    .contains(&(source, CoreType::Land)),
+                state.hand_cast_free_permissions_used.contains(&source),
+                state.alt_cost_grant_permissions_used.contains(&source),
+                state.exile_play_permissions_used.contains(&source),
+                state.exile_cast_permissions_used.contains(&source),
+                state.top_of_library_cast_permissions_used.contains(&source),
+            ]
+        };
+        assert_eq!(holds(&state, departing), [false; 9]);
+        assert_eq!(holds(&state, staying), [true; 9]);
+    }
+
+    /// CR 603.10a + CR 607.2a: the departure record keeps the departed
+    /// source's "exiled with it this turn" list after the live entry ends.
+    #[test]
+    fn departure_record_keeps_the_sources_exiled_this_turn_list() {
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Source".into(),
+            Zone::Battlefield,
+        );
+        let exiled = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Exiled".into(),
+            Zone::Exile,
+        );
+        state
+            .cards_exiled_with_source_this_turn
+            .insert(source, vec![exiled]);
+
+        let mut events = Vec::new();
+        move_to_zone(&mut state, source, Zone::Graveyard, &mut events);
+
+        assert!(!state
+            .cards_exiled_with_source_this_turn
+            .contains_key(&source));
+        let record = events
+            .iter()
+            .find_map(|event| match event {
+                GameEvent::ZoneChanged {
+                    object_id, record, ..
+                } if *object_id == source => Some(record),
+                _ => None,
+            })
+            .expect("the departure emits its zone-change record");
+        assert_eq!(
+            record
+                .trigger_source_context()
+                .expect("the departure record carries its source context")
+                .cards_exiled_this_turn,
+            vec![exiled]
         );
     }
 }

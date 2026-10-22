@@ -1470,13 +1470,56 @@ fn a_slot_reads_the_root_of_its_own_entry() {
     };
     state.priority_player = PlayerId(0);
     let mut runner = GameRunner::from_state(state);
-    runner.resolve_top();
-    let damage_on = |id| runner.state().objects[&id].damage_marked;
+    let initial_stack_len = runner.state().stack.len();
+    let mut events = Vec::new();
+    for _ in 0..10 {
+        if runner.state().stack.len() < initial_stack_len {
+            break;
+        }
+        events.extend(
+            runner
+                .act(GameAction::PassPriority)
+                .expect("resolve only the upper entry")
+                .events,
+        );
+    }
+    let damage: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::DamageDealt {
+                source_id,
+                target: TargetRef::Object(id),
+                amount,
+                is_combat,
+                ..
+            } if *id == second => Some((*source_id, *amount, *is_combat)),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        (damage_on(first), damage_on(second)),
-        (0, 2),
+        damage,
+        vec![(source, 1, false), (source, 1, false)],
         "engine agreement: both nodes of the upper entry hit its own target"
     );
+    assert!(!events.iter().any(|event| matches!(event,
+        GameEvent::DamageDealt { target: TargetRef::Object(id), .. } if *id == first
+    )));
+    assert_eq!(runner.state().objects[&first].zone, Zone::Battlefield);
+    assert_eq!(runner.state().objects[&first].damage_marked, 0);
+    // CR 400.7: the second target's new graveyard object loses marked damage.
+    assert_eq!(runner.state().objects[&second].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&second].damage_marked, 0);
+    assert_eq!(runner.state().stack.len(), initial_stack_len - 1);
+    assert_eq!(runner.state().stack[0].id, ObjectId(900));
+    assert_eq!(
+        reach(runner.state(), ObjectId(900))[1].2,
+        vec![TargetRef::Object(first)]
+    );
+    assert!(!runner
+        .state()
+        .stack
+        .iter()
+        .any(|entry| entry.id == ObjectId(901)));
 }
 
 #[test]

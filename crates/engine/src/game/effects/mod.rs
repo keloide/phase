@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::game::conditions::{
     eval_has_city_blessing, eval_has_enduring_story, eval_is_initiative, eval_is_monarch,
@@ -29,13 +29,12 @@ use crate::types::ability::{AttackSubject, CombatHistoryScope};
 use crate::types::events::{GameEvent, PlayerActionKind};
 use crate::types::format::ZoneScope;
 use crate::types::game_state::{
-    AutoMayChoice, CastOfferKind, ClauseMinimumSnapshot, DayNight, DiscardBatchCursor,
-    ExileLinkKind, GameState, LKISnapshot, ManaAbilityResume, MayTriggerAutoChoiceKey,
-    PendingContinuation, PendingCostMoveResume, PendingDiscardBatchCompletion,
-    PendingPlayerScopeLinkedExile, PendingPlayerScopeSacrificeChoice,
-    PendingPlayerScopeSacrificeCompletion, PendingPlayerScopeSacrificeFollowUp,
-    RepeatUntilStopWitness, ResolutionOptionalPaymentOption, ReturnResultOccurrenceId, WaitingFor,
-    ZoneChangeRecord, ZoneOpponentChooserPurpose,
+    AutoMayChoice, CastOfferKind, ClauseMinimumSnapshot, DayNight, DiscardBatchCursor, GameState,
+    LKISnapshot, ManaAbilityResume, MayTriggerAutoChoiceKey, PendingContinuation,
+    PendingCostMoveResume, PendingDiscardBatchCompletion, PendingPlayerScopeLinkedExile,
+    PendingPlayerScopeSacrificeChoice, PendingPlayerScopeSacrificeCompletion,
+    PendingPlayerScopeSacrificeFollowUp, RepeatUntilStopWitness, ResolutionOptionalPaymentOption,
+    ReturnResultOccurrenceId, WaitingFor, ZoneChangeRecord, ZoneOpponentChooserPurpose,
 };
 use crate::types::identifiers::{ObjectId, ObjectIncarnationRef, TrackedSetId};
 use crate::types::mana::ManaCost;
@@ -93,6 +92,7 @@ pub mod copy_spell;
 pub mod copy_token_blocking;
 pub mod counter;
 pub mod counters;
+pub mod create_boon;
 pub mod create_damage_replacement;
 pub mod create_draw_replacement;
 pub mod create_emblem;
@@ -174,6 +174,7 @@ pub mod mill;
 pub mod monstrosity;
 pub mod myriad;
 pub mod note_mana_spent;
+pub mod note_number;
 pub mod open_booster_pack;
 pub mod opponent_guess;
 pub mod overload;
@@ -431,6 +432,11 @@ pub(crate) fn matches_player_scope(
                     PlayerFilter::AllExcept { exclude } => {
                         !matches_player_scope(state, p.id, exclude, controller, source_id)
                     }
+                    // CR 102.1 + CR 608.2c: predicate form of the union — a
+                    // player matches when any member names it.
+                    PlayerFilter::AnyOf { filters } => filters
+                        .iter()
+                        .any(|f| matches_player_scope(state, p.id, f, controller, source_id)),
                     // CR 102.2 / CR 102.3: "opponent" is a game-topology
                     // relation, not raw player-ID inequality. In team
                     // multiplayer a teammate is neither the controller nor an
@@ -584,6 +590,11 @@ pub(crate) fn matches_player_scope(
                     // (it has the ability in scope). Unreachable here — fail
                     // closed, mirroring the `ParentObjectTargetController` arm.
                     PlayerFilter::ChosenPlayer { .. } => false,
+                    // CR 115.1: the declared-target anchor needs the resolving
+                    // `ResolvedAbility` (for `ability.targets`), which this
+                    // generic scope predicate does not carry; the player_scope
+                    // driver routes it through `speed_effects::players_for_filter`.
+                    PlayerFilter::TargetPlayer => false,
                     // CR 108.3 + CR 109.4: the parent-object-target OWNER anchor
                     // likewise requires `ability.targets` to resolve via
                     // `ability_utils::parent_target_owner`. Resolved in
@@ -3493,13 +3504,93 @@ fn try_begin_deferred_else_branch_target_selection(
 /// Every OTHER chain condition — `EffectOutcome`, `QuantityCheck`, intervening
 /// `if` gates — is left intact and is still re-checked at resolution (CR 603.4).
 fn consume_reflexive_creation_gate(ability: &mut ResolvedAbility) {
-    AbilityCondition::take_when_you_do_marker(&mut ability.condition);
+    if AbilityCondition::take_when_you_do_marker(&mut ability.condition) {
+        settle_reflexive_zone_change_event(&mut ability.condition);
+    }
     if let Some(sub) = ability.sub_ability.as_deref_mut() {
         consume_reflexive_creation_gate(sub);
     }
     if let Some(alt) = ability.else_ability.as_deref_mut() {
         consume_reflexive_creation_gate(alt);
     }
+}
+
+/// CR 603.12 + CR 400.7 + CR 608.2b: the attachment pool of a reflexive
+/// "attach one of them" (`Attach { attachment: ParentTarget }`) created by a
+/// zone-change event. The pool is the event-scoped moved set — already bound by
+/// a `forward_result` hand-off, or read now from the creating resolution's
+/// ledger — and it is the ONLY carrier of that operand on the stack object: the
+/// forwarded copy the legacy hand-off wrote into `targets` would be judged as a
+/// declared host target when the reflexive resolves (CR 608.2b) and fizzle it,
+/// so it is dropped. A declared host is chosen as the reflexive is put on the
+/// stack (CR 603.3d). `None` when the reflexive is not such an attach or the
+/// event moved nothing matching.
+fn freeze_reflexive_attachment_pool(
+    state: &GameState,
+    reflexive: &ResolvedAbility,
+) -> Option<ResolvedAbility> {
+    if !matches!(
+        reflexive.effect,
+        Effect::Attach {
+            attachment: TargetFilter::ParentTarget,
+            ..
+        }
+    ) || reflexive
+        .condition
+        .as_ref()
+        .and_then(AbilityCondition::zone_changed_this_way_head)
+        .is_none()
+    {
+        return None;
+    }
+    let candidates = if reflexive.attach_attachment_candidates().is_empty() {
+        attach::attachment_candidates_from_zone_change(
+            state,
+            reflexive,
+            state.last_zone_changed_ids.as_slice(),
+        )
+    } else {
+        reflexive.attach_attachment_candidates().to_vec()
+    };
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut owned = reflexive.clone();
+    owned.bind_attach_attachment_candidates(candidates);
+    owned.set_unpinned_targets(Vec::new());
+    Some(owned)
+}
+
+/// CR 603.12: a reflexive triggered ability "trigger[s] based on whether the
+/// trigger event or events occurred earlier during the resolution of the spell
+/// or ability that created" it. For "When <a zone change> this way, …" that
+/// event is the root `ZoneChangedThisWay` member of the creation gate, read from
+/// the creating resolution's own zone-change ledger (`last_zone_changed_ids`).
+/// It was checked when the trigger was created, and it is not an intervening
+/// "if" (CR 603.4): the zone change already happened, and the ledger it reads
+/// belongs to the creating resolution, not to the reflexive ability's own
+/// resolution. Remove it from the stack object, collapsing the residual root
+/// like `take_when_you_do_marker` does. The parser never composes a
+/// zone-change intervening "if" with `WhenYouDo` (see
+/// `AbilityCondition::zone_changed_this_way_head`), so every root
+/// `ZoneChangedThisWay` member here is that trigger event. Only root members are
+/// settled; a `ZoneChangedThisWay` inside `Or`/`Not`/nested `And` is a different
+/// expression and stays.
+fn settle_reflexive_zone_change_event(condition: &mut Option<AbilityCondition>) {
+    let is_zone_change_event =
+        |member: &AbilityCondition| matches!(member, AbilityCondition::ZoneChangedThisWay { .. });
+    *condition = match condition.take() {
+        Some(AbilityCondition::And { mut conditions }) => {
+            conditions.retain(|member| !is_zone_change_event(member));
+            match conditions.len() {
+                0 => None,
+                1 => conditions.pop(),
+                _ => Some(AbilityCondition::And { conditions }),
+            }
+        }
+        Some(member) if is_zone_change_event(&member) => None,
+        other => other,
+    };
 }
 
 /// CR 603.12 + CR 603.3: Build one complete synthetic reflexive trigger from an
@@ -3652,6 +3743,24 @@ fn try_materialize_reflexive_trigger_inner(
         apply_parent_chain_context(&mut owned, parent, effect_context_object, state);
         reflexive_context_owned = owned;
         &reflexive_context_owned
+    } else {
+        reflexive
+    };
+
+    // CR 603.12 + CR 400.7 + CR 608.2c: "When you put one or more Equipment onto
+    // the battlefield this way, you may attach one of them …" — "them" is the
+    // set the zone change moved. The creating resolution's ledger names that
+    // set only until this reflexive leaves it, so freeze the incarnation-pinned
+    // attachment pool now, while the creation gate is still being evaluated.
+    let frozen_pool_owned;
+    let reflexive = if creates_reflexive_trigger {
+        match freeze_reflexive_attachment_pool(state, reflexive) {
+            Some(owned) => {
+                frozen_pool_owned = owned;
+                &frozen_pool_owned
+            }
+            None => reflexive,
+        }
     } else {
         reflexive
     };
@@ -4177,8 +4286,8 @@ pub(crate) fn apply_parent_chain_context(
     // context wholesale, so preserve the node-local intent while inheriting
     // the remaining casting-time facts from its parent.
     let child_face_down_in_exile = child.context.face_down_in_exile;
-    // CR 610.3b: `check_exile_returns` latches a specified "until" event on the
-    // exact duration-bearing ChangeZone node it happened for (after the trigger,
+    // CR 610.3a / CR 610.3b: `check_exile_returns` latches a specified "until" event on the
+    // exact duration-bearing ChangeZone node it happened for (after the activation or trigger,
     // before that node's initial zone change). Like the face-down marker, the
     // latch is node-local: a non-ChangeZone parent (a hand reveal, a target
     // declaration) carries none, so the wholesale hand-off must not erase it.
@@ -4573,6 +4682,10 @@ fn waits_for_resolution_choice(waiting_for: &WaitingFor) -> bool {
             | WaitingFor::ChooseFromZoneOpponentChooser { .. }
             | WaitingFor::ChooseOneOfBranch { .. }
             | WaitingFor::ReturnAsAuraTarget { .. }
+            // CR 608.2c: a "one of them" host choice pauses token creation;
+            // anything chained after it must wait for the host (and any
+            // replacement work the resumed creation opens).
+            | WaitingFor::ChooseTokenHost { .. }
             | WaitingFor::ChooseManaColor { .. }
             | WaitingFor::ManifestDreadChoice { .. }
             | WaitingFor::DiscardChoice { .. }
@@ -4728,7 +4841,11 @@ pub(crate) fn optional_decline_branch(
         || (sub.sub_link == SubAbilityLink::SequentialSibling
             && !sub_ability_is_reflexive(sub)
             && !(matches!(&ability.effect, Effect::CastFromZone { .. })
-                && (cast_from_zone::graveyard_destination_rider(&sub.effect).is_some()
+                && (cast_from_zone::graveyard_destination_rider(
+                    &sub.effect,
+                    sub.condition.as_ref(),
+                )
+                .is_some()
                     || cast_from_zone::is_enters_with_counter_rider_subability(sub))));
     if !selected {
         // CR 608.2c: a declined "you may" fails the "if you do" gate `sub`,
@@ -5069,6 +5186,7 @@ fn instruction_outlives_declined_gate(
     parent_target_is_declared: bool,
 ) -> bool {
     let ResolvedAbility {
+        instruction_actor,
         // The printed instruction, audited by the caller (`audit`), and how
         // long it lasts, audited below.
         effect: _,
@@ -5160,7 +5278,10 @@ fn instruction_outlives_declined_gate(
         activation_cost_reduction: _,
         activation_record: _,
     } = node;
-    let unbound = condition.is_none()
+    let unbound = matches!(
+        instruction_actor,
+        None | Some(ControllerRef::You | ControllerRef::SpecificPlayer { .. })
+    ) && condition.is_none()
         && declares_chosen_group
             .is_none_or(crate::types::ability::ChosenGroupId::is_declared_player)
         && reads_chosen_group.is_none()
@@ -5525,6 +5646,10 @@ fn audit_later_instruction(effect: &Effect) -> LaterInstructionAudit<'_> {
         | Effect::BecomeSaddled { .. }
         | Effect::SetClassLevel { .. }
         | Effect::CreateDelayedTrigger { .. }
+        // Digital-only Alchemy (no CR entry): a boon always carries its
+        // granted trigger, whose later referents are unauditable — refused
+        // like every other boundary carrier.
+        | Effect::CreateBoon { .. }
         | Effect::AddTargetReplacement { .. }
         | Effect::AddRestriction { .. }
         | Effect::ReduceNextSpellCost { .. }
@@ -5569,6 +5694,7 @@ fn audit_later_instruction(effect: &Effect) -> LaterInstructionAudit<'_> {
         | Effect::ChooseFromZone { .. }
         | Effect::RememberCard { .. }
         | Effect::NoteManaSpent
+        | Effect::NoteNumber { .. }
         | Effect::ForEachCategory { .. }
         | Effect::ChooseObjectsIntoTrackedSet { .. }
         | Effect::ChooseAndSacrificeRest { .. }
@@ -6071,6 +6197,7 @@ fn quantity_ref_counts_population_matching(
         | QuantityRef::LandsPlayedThisTurn { .. }
         | QuantityRef::TurnsTaken
         | QuantityRef::ChosenNumber
+        | QuantityRef::NotedNumber
         | QuantityRef::DescendedThisTurn
         | QuantityRef::LoyaltyAbilitiesActivatedThisTurn { .. }
         | QuantityRef::SpellsCastLastTurn
@@ -7053,6 +7180,7 @@ fn scope_keeps_scoped_whole_hand_shuffle_local(scope: &PlayerFilter) -> bool {
         | PlayerFilter::ParentObjectTargetController
         | PlayerFilter::ParentObjectTargetOwner
         | PlayerFilter::GrantingObjectCaster
+        | PlayerFilter::TargetPlayer
         | PlayerFilter::ChosenPlayer { .. }
         // Turn/combat ledgers.
         | PlayerFilter::OpponentLostLife
@@ -7076,6 +7204,10 @@ fn scope_keeps_scoped_whole_hand_shuffle_local(scope: &PlayerFilter) -> bool {
         // Behaviour-identical while every arm above is `true`; recursing keeps it
         // from silently disagreeing with its anchor the moment one is not.
         PlayerFilter::AllExcept { exclude } => scope_keeps_scoped_whole_hand_shuffle_local(exclude),
+        // The union keeps the pair local only when every member does.
+        PlayerFilter::AnyOf { filters } => filters
+            .iter()
+            .all(scope_keeps_scoped_whole_hand_shuffle_local),
     }
 }
 
@@ -7997,6 +8129,7 @@ pub fn resolve_effect(
             resolve_add_pending_enters_modifications(state, ability, events)
         }
         Effect::CreateEmblem { .. } => create_emblem::resolve(state, ability, events),
+        Effect::CreateBoon { .. } => create_boon::resolve(state, ability, events),
         Effect::PayCost { .. } => pay::resolve(state, ability, events),
         Effect::CastFromZone { .. } => cast_from_zone::resolve(state, ability, events),
         Effect::FreeCastFromZones { .. } => free_cast_from_zones::resolve(state, ability, events),
@@ -8024,6 +8157,7 @@ pub fn resolve_effect(
         Effect::ChooseFromZone { .. } => choose_from_zone::resolve(state, ability, events),
         Effect::RememberCard { .. } => remember_card::resolve(state, ability, events),
         Effect::NoteManaSpent => note_mana_spent::resolve(state, ability, events),
+        Effect::NoteNumber { .. } => note_number::resolve(state, ability, events),
         Effect::ForEachCategory { .. } => {
             choose_from_zone::resolve_for_each_category(state, ability, events)
         }
@@ -8207,6 +8341,82 @@ pub fn is_known_effect(effect: &Effect) -> bool {
 /// The walk STOPS at a mode boundary — see [`crosses_modal_boundary`].
 pub(crate) fn next_sub_needs_tracked_set(ability: &ResolvedAbility) -> bool {
     branch_references_tracked_set(ability.sub_ability.as_deref())
+}
+
+/// CR 608.2c + CR 608.2e: does the text that FOLLOWS `producer` consume the
+/// chain's tracked set?
+///
+/// Ordinarily that text is `producer`'s own `sub_ability` chain
+/// ([`next_sub_needs_tracked_set`]). A `player_scope` fan-out that pauses on a
+/// seat's choice parks the clause's remaining seats and its unscoped tail as
+/// the active ability continuation; the paused seat's answer then resolves the
+/// seat's producer with no consumer in its own chain. Its following text is
+/// that parked continuation, so it publishes into the clause's set as the
+/// continuation's generated legs do. A seat whose answer is itself the
+/// producing choice (an `EffectZoneChoice`) resumes no producer and does not
+/// reach this predicate; the fan-out driver's comment records that gap.
+///
+/// Two stops keep a parked continuation from being read as following text
+/// when it is not:
+///  * a CR 700.2 mode boundary inside `producer`'s own chain
+///    ([`crosses_modal_boundary`]): the continuation then follows a later mode;
+///  * a different source: another object's chain resolving during the pause
+///    (a replacement effect's, CR 614.1) is not this instruction's text.
+fn resolution_next_needs_tracked_set(state: &GameState, producer: &ResolvedAbility) -> bool {
+    next_sub_needs_tracked_set(producer)
+        || (std::iter::successors(producer.sub_ability.as_deref(), |node| {
+            node.sub_ability.as_deref()
+        })
+        .all(|node| !crosses_modal_boundary(node))
+            && state
+                .active_ability_continuation()
+                .is_some_and(|continuation| {
+                    continuation.chain.source_id == producer.source_id
+                        && chain_references_tracked_set(&continuation.chain)
+                }))
+}
+
+/// CR 608.2d + CR 115.10a: does `ability` choose, while it resolves, the
+/// object it puts counters on or whose counter kinds it reads, rather than
+/// carrying one declared with the ability?
+pub(crate) fn awaits_resolution_object_choice(ability: &ResolvedAbility) -> bool {
+    let needs_resolution_object_choice = match &ability.effect {
+        // CR 115.10a: "no recipient chosen yet" means "no OBJECT target", not
+        // "no targets at all". A `PutCounter` reached as a `ChooseOneOf` branch
+        // carries the `TargetRef::Player` that `choose_one_of::resolve_branch`
+        // injects for the branch chooser, which is not a recipient. This is a
+        // strict superset of the former `targets.is_empty()` test (an empty
+        // target list contains no `TargetRef::Object` either), so every
+        // pre-existing `PutCounter` caller is unaffected.
+        Effect::PutCounter { .. } => !ability
+            .targets
+            .iter()
+            .any(|target| matches!(target, TargetRef::Object(_))),
+        Effect::ChooseCounterKind { target, .. } => {
+            !matches!(target, TargetFilter::SpecificObject { .. })
+        }
+        _ => false,
+    };
+    ability.target_choice_timing == TargetChoiceTiming::Resolution
+        && needs_resolution_object_choice
+        && ability.distribution.is_none()
+}
+
+/// CR 608.2c + CR 608.2d: once its resolution-time object choice is answered,
+/// does the parked `head` publish its own result into the chain's tracked set?
+///
+/// A head that [`awaits_resolution_object_choice`] parks itself and resumes
+/// with the pick bound as its object. When its own chain reads the set, its
+/// postlude publishes the objects it affected through
+/// [`resolution_next_needs_tracked_set`], extending the chain's set as the
+/// single-candidate binding does. The answer must then publish nothing: a
+/// fresh set would drop what earlier instructions published, such as the
+/// earlier seats of a paused `player_scope` fan-out. This reads the
+/// frame-independent half of that predicate ([`next_sub_needs_tracked_set`]),
+/// because while the choice is pending the head's own parked frame is still
+/// the active continuation.
+pub(crate) fn resolution_choice_head_publishes_on_resume(head: &ResolvedAbility) -> bool {
+    awaits_resolution_object_choice(head) && next_sub_needs_tracked_set(head)
 }
 
 /// CR 700.2 + CR 608.2c: does ENTERING `node` cross into a different modal
@@ -8744,12 +8954,15 @@ fn player_filter_references_tracked_set(filter: &PlayerFilter) -> bool {
         | PlayerFilter::ParentObjectTargetController
         | PlayerFilter::ParentObjectTargetOwner
         | PlayerFilter::GrantingObjectCaster
+        | PlayerFilter::TargetPlayer
         | PlayerFilter::ChosenPlayer { .. }
         | PlayerFilter::ControlsCount { .. }
         | PlayerFilter::PlayerAttribute { .. } => false,
         // The negation wrapper inherits its inner filter's consumption: an
         // "all except <tracked-set possessor>" scope still needs the set.
         PlayerFilter::AllExcept { exclude } => player_filter_references_tracked_set(exclude),
+        // The union needs the set when any member does.
+        PlayerFilter::AnyOf { filters } => filters.iter().any(player_filter_references_tracked_set),
     }
 }
 
@@ -9480,7 +9693,7 @@ fn affected_objects_from_events(
 ///
 /// A mass zone move is the exception: CR 603.12 keys the reflexive on the
 /// move EVENT, which CR 118.12's "started to pay" reading of "if you do" does
-/// not need. An empty or CR 610.3b-refused `ChangeZoneAll` moved nothing, so
+/// not need. An empty or CR 610.3a/b-refused `ChangeZoneAll` moved nothing, so
 /// no reflexive — authoritative even over an accepted or inherited performed
 /// mark (`mandatory_parent_event_occurred`).
 fn when_you_do_mandatory_parent_did_nothing(
@@ -9497,6 +9710,25 @@ fn when_you_do_mandatory_parent_did_nothing(
     !parent.optional
         && !parent.context.optional_effect_performed
         && !mandatory_parent_effect_performed(&parent.effect, parent_events)
+}
+
+/// CR 608.2c: Whether this node only grants a play or cast permission over cards
+/// an earlier instruction moved ("You may play that card this turn") and is
+/// directly followed by a "… this way" head that reads the earlier mover's
+/// zone-change ledger (Cait Sith, Fortune Teller; Hidetsugu, Devouring Chaos).
+/// Such a permission node moves nothing, so it leaves that ledger in place for
+/// the head. Scoped to the direct reader: other consumers after a permission
+/// node keep the established cleared ledger, because "cards exiled with this
+/// enchantment" readers (Court of Locthwain) would otherwise narrow to the
+/// current resolution's exile. Deliberately excludes `CastFromZone`, which can
+/// also cast during resolution.
+fn permission_node_keeps_ledger_for_this_way_head(ability: &ResolvedAbility) -> bool {
+    matches!(ability.effect, Effect::GrantCastingPermission { .. })
+        && ability
+            .sub_ability
+            .as_ref()
+            .and_then(|sub| sub.condition.as_ref())
+            .is_some_and(|condition| condition.zone_changed_this_way_head().is_some())
 }
 
 /// CR 603.12: Effect kinds whose reflexive "when you do" needs an actual move
@@ -9550,6 +9782,71 @@ pub(crate) fn condition_has_reveal_until_matched_guard(condition: &AbilityCondit
     match condition {
         AbilityCondition::And { conditions } => conditions.iter().any(is_guard),
         condition => is_guard(condition),
+    }
+}
+
+#[cfg(test)]
+mod settle_reflexive_zone_change_event_tests {
+    use super::settle_reflexive_zone_change_event;
+    use crate::types::ability::{AbilityCondition, TargetFilter};
+
+    fn event() -> AbilityCondition {
+        AbilityCondition::ZoneChangedThisWay {
+            filter: TargetFilter::Any,
+            destination: None,
+        }
+    }
+
+    /// CR 603.12 + CR 603.4: only the root zone-change event is settled; an
+    /// ordinary guard and any nested expression ride onto the stack object.
+    #[test]
+    fn settles_only_the_root_zone_change_event() {
+        let mut alone = Some(event());
+        settle_reflexive_zone_change_event(&mut alone);
+        assert_eq!(alone, None);
+
+        let mut with_guard = Some(AbilityCondition::And {
+            conditions: vec![event(), AbilityCondition::IsYourTurn],
+        });
+        settle_reflexive_zone_change_event(&mut with_guard);
+        assert_eq!(with_guard, Some(AbilityCondition::IsYourTurn));
+
+        let nested = AbilityCondition::Or {
+            conditions: vec![event(), AbilityCondition::IsYourTurn],
+        };
+        let negated = AbilityCondition::Not {
+            condition: Box::new(event()),
+        };
+        for kept in [nested, negated] {
+            let mut condition = Some(kept.clone());
+            settle_reflexive_zone_change_event(&mut condition);
+            assert_eq!(condition, Some(kept));
+        }
+
+        let mut nested_and = Some(AbilityCondition::And {
+            conditions: vec![
+                AbilityCondition::IsYourTurn,
+                AbilityCondition::And {
+                    conditions: vec![event(), AbilityCondition::IsMonarch],
+                },
+            ],
+        });
+        let before = nested_and.clone();
+        settle_reflexive_zone_change_event(&mut nested_and);
+        assert_eq!(nested_and, before, "a nested And is a different expression");
+    }
+
+    /// The parser never composes a zone-change guard with `WhenYouDo`, so the
+    /// root member is the event by contract (see
+    /// `AbilityCondition::zone_changed_this_way_head`).
+    #[test]
+    fn the_reflexive_gate_names_its_event() {
+        let gate = AbilityCondition::when_you_do_with_guard(event());
+        assert_eq!(gate.zone_changed_this_way_head(), Some(&event()));
+        assert!(gate.has_root_zone_changed_this_way());
+        assert!(AbilityCondition::IsYourTurn
+            .zone_changed_this_way_head()
+            .is_none());
     }
 }
 
@@ -10184,7 +10481,7 @@ pub(crate) fn publish_tracked_set_for_resolution(
         (
             TrackedSetPublicationMode::Normal,
             TrackedSetPublicationInput::ResolvedEvents { ability, events },
-        ) if next_sub_needs_tracked_set(producer) => {
+        ) if resolution_next_needs_tracked_set(state, producer) => {
             let affected = affected_objects_with_causes(state, ability, &ability.effect, events);
             publish_tracked_set_with_causes(state, affected);
         }
@@ -12593,6 +12890,13 @@ fn hydratable_event_context_filter(filter: &TargetFilter) -> bool {
 /// Returns the filter only for event-context variants (TriggeringSpellController, etc.)
 /// that auto-resolve from `state.current_trigger_event` at resolution time.
 fn extract_event_context_filter(effect: &Effect) -> Option<&TargetFilter> {
+    // CR 608.2k + CR 707.10: a copy's `ParentTarget` names the copied stack
+    // object, which `copy_spell::copy_source_entry` resolves from the same
+    // trigger event; hydrating it would bind the event's object or the source's
+    // attached host (CR 301.5a / CR 303.4b) in its place.
+    if effect.parent_target_is_copy_referent() {
+        return None;
+    }
     // CR 110.2 + CR 603.7c: `GiveControl` carries both an object `target` and a
     // `recipient`. Kain ("that player gains control of Kain") binds the recipient
     // to `TriggeringPlayer` while the object is `SelfRef` — only the recipient
@@ -13336,11 +13640,9 @@ pub(super) fn linked_exile_batch_from_events(
                 .objects
                 .get(&id)
                 .is_some_and(|object| object.zone == Zone::Exile)
-            && state.exile_links.iter().any(|link| {
-                link.exiled_id == id
-                    && link.source_id == source_id
-                    && link.kind == ExileLinkKind::TrackedBySource
-            })
+            // CR 607.2a + CR 113.7a: this resolution's own tracked exile, as the
+            // acting incarnation made it.
+            && crate::game::exile_links::tracked_exile_of_acting_incarnation(state, source_id, id)
         {
             batch.push(ObjectIncarnationRef::from_object(&state.objects[&id]));
         }
@@ -13513,23 +13815,27 @@ enum PlayerScopeSacrificePerformOutcome {
 fn scoped_player_sacrifice_ability(
     template: &ResolvedAbility,
     original_controller: PlayerId,
-    player: PlayerId,
+    slot: PlayerId,
+    actor: PlayerId,
 ) -> ResolvedAbility {
-    let mut scoped = template.clone();
-    scoped.set_original_controller_recursive(original_controller);
-    scoped.set_controller_recursive(player);
-    scoped.set_scoped_player_recursive(player);
+    let mut scoped = bind_scoped_seat(template, original_controller, slot);
+    // The cursor already admitted this actor; a paused reference is never
+    // resolved again after a source/control/choice change.
+    scoped.controller = actor;
+    scoped.instruction_actor = None;
     scoped
 }
 
 fn player_scope_sacrifice_step(
-    state: &mut GameState,
+    state: &GameState,
     template: &ResolvedAbility,
     original_controller: PlayerId,
+    slot: PlayerId,
     player: PlayerId,
+    reserved: &HashSet<ObjectId>,
 ) -> PlayerScopeSacrificeStep {
     // CR 701.21a: a player can sacrifice only a permanent they control.
-    let scoped = scoped_player_sacrifice_ability(template, original_controller, player);
+    let scoped = scoped_player_sacrifice_ability(template, original_controller, slot, player);
     let Effect::Sacrifice {
         target,
         count,
@@ -13551,14 +13857,15 @@ fn player_scope_sacrifice_step(
         .iter()
         .copied()
         .filter(|id| {
-            state.objects.get(id).is_some_and(|obj| {
-                obj.controller == player
+            !reserved.contains(id)
+                && state.objects.get(id).is_some_and(|obj| {
+                    obj.controller == player
                     && !obj.is_emblem
                     && crate::game::filter::matches_target_filter(state, *id, target, &ctx)
                     && !crate::game::static_abilities::triggered_cause_sacrifice_or_exile_muzzled(
                         state, &scoped, *id, player,
                     )
-            })
+                })
         })
         .collect();
 
@@ -13588,7 +13895,14 @@ fn set_player_scope_sacrifice_waiting_for(
     prompt: PlayerScopeSacrificePrompt,
     source_id: ObjectId,
 ) {
-    state.waiting_for = WaitingFor::EffectZoneChoice {
+    state.waiting_for = player_scope_sacrifice_waiting_for(prompt, source_id);
+}
+
+fn player_scope_sacrifice_waiting_for(
+    prompt: PlayerScopeSacrificePrompt,
+    source_id: ObjectId,
+) -> WaitingFor {
+    WaitingFor::EffectZoneChoice {
         player: prompt.player,
         cards: prompt.cards,
         count: prompt.count,
@@ -13614,7 +13928,7 @@ fn set_player_scope_sacrifice_waiting_for(
         is_cost_payment: false,
         enters_modified_if: None,
         duration: None,
-    };
+    }
 }
 
 fn perform_player_scope_sacrifices(
@@ -13622,6 +13936,7 @@ fn perform_player_scope_sacrifices(
     ability: &ResolvedAbility,
     mut selections: Vec<(PlayerId, Vec<ObjectId>)>,
     completion: Option<PendingPlayerScopeSacrificeCompletion>,
+    admitted_actors: Option<BTreeMap<PlayerId, PlayerId>>,
     events: &mut Vec<GameEvent>,
 ) -> Result<PlayerScopeSacrificePerformOutcome, EffectError> {
     let mut completion = completion.unwrap_or_default();
@@ -13650,6 +13965,16 @@ fn perform_player_scope_sacrifices(
         let (player, mut cards) = selections.remove(0);
         while !cards.is_empty() {
             let card = cards.remove(0);
+            // CR 701.21a: Announced authority stays fixed, but an unstarted
+            // move can no longer sacrifice an absent or differently controlled permanent.
+            if !state.battlefield.contains(&card)
+                || !state
+                    .objects
+                    .get(&card)
+                    .is_some_and(|object| object.controller == player)
+            {
+                continue;
+            }
             record_announced_sacrifice(&mut completion, card);
             let events_before_card = events.len();
             match crate::game::sacrifice::sacrifice_permanent(state, card, player, events)
@@ -13684,6 +14009,7 @@ fn perform_player_scope_sacrifices(
                     state.pending_player_scope_sacrifice_choice =
                         Some(PendingPlayerScopeSacrificeChoice {
                             ability: Box::new(ability.clone()),
+                            admitted_actors,
                             remaining_players: vec![],
                             selections,
                             completion,
@@ -13988,7 +14314,14 @@ pub(crate) fn perform_collected_player_scope_sacrifices_with_completion(
         source_id,
         source_controller,
     );
-    match perform_player_scope_sacrifices(state, &ability, selections, Some(completion), events)? {
+    match perform_player_scope_sacrifices(
+        state,
+        &ability,
+        selections,
+        Some(completion),
+        None,
+        events,
+    )? {
         PlayerScopeSacrificePerformOutcome::PausedForReplacement => {
             Ok(PendingPlayerScopeSacrificeOutcome::PausedForReplacement)
         }
@@ -14017,64 +14350,179 @@ fn start_player_scope_sacrifice_choices(
     events: &mut Vec<GameEvent>,
     depth: u32,
 ) -> Result<(), EffectError> {
-    // CR 101.4: If multiple players make choices for one instruction, choices
-    // are announced in APNAP order before the simultaneous action happens.
-    let mut selections = Vec::new();
-    for (i, player) in matching_players.iter().copied().enumerate() {
-        match player_scope_sacrifice_step(state, template, original_controller, player) {
-            PlayerScopeSacrificeStep::Noop => {}
-            PlayerScopeSacrificeStep::Auto { player, cards } => selections.push((player, cards)),
-            PlayerScopeSacrificeStep::Prompt(prompt) => {
-                if let Some(after_scope) = after_scope {
-                    append_to_pending_continuation(state, Some(after_scope));
-                }
-                state.pending_player_scope_sacrifice_choice =
-                    Some(PendingPlayerScopeSacrificeChoice {
-                        ability: Box::new(template.clone()),
-                        remaining_players: matching_players[i + 1..].to_vec(),
-                        selections,
-                        completion: PendingPlayerScopeSacrificeCompletion::default(),
-                    });
-                set_player_scope_sacrifice_waiting_for(state, prompt, template.source_id);
-                return Ok(());
-            }
+    // CR 101.4: Admit the whole population before the first count, candidate
+    // or choice read. Scope-slot identity and actual chooser are independent.
+    let mut admitted = BTreeMap::new();
+    for &slot in matching_players {
+        let mut scoped = bind_scoped_seat(template, original_controller, slot);
+        if let Some(actor) = super::ability_utils::bind_instruction_actor(state, &mut scoped) {
+            admitted.insert(slot, actor);
         }
     }
-
-    match perform_player_scope_sacrifices(state, template, selections, None, events)? {
-        PlayerScopeSacrificePerformOutcome::PausedForReplacement => {}
-        PlayerScopeSacrificePerformOutcome::Completed { .. } => {
-            if let Some(after_scope) = after_scope {
-                resolve_ability_chain(state, &after_scope, events, depth + 1)?;
+    if !matching_players.is_empty() && admitted.is_empty() {
+        skip_instruction_and_dependents(state, template, events, depth)?;
+        if let Some(tail) = after_scope {
+            resolve_ability_chain(state, &tail, events, depth + 1)?;
+        }
+        return Ok(());
+    }
+    // Use the same incoming anchor as the scope driver, before remapping
+    // slots to their admitted actors. The map does not define game order.
+    let apnap = super::players::apnap_order_from(
+        state,
+        template.starting_with.clone(),
+        original_controller,
+    );
+    let mut remaining_players: Vec<_> = matching_players
+        .iter()
+        .copied()
+        .filter(|slot| admitted.contains_key(slot))
+        .collect();
+    remaining_players.sort_by_key(|slot| {
+        apnap
+            .iter()
+            .position(|actor| *actor == admitted[slot])
+            .unwrap_or(usize::MAX)
+    });
+    let mut ability = template.clone();
+    ability.set_original_controller_recursive(
+        template.original_controller.unwrap_or(original_controller),
+    );
+    let pending = PendingPlayerScopeSacrificeChoice {
+        ability: Box::new(ability),
+        admitted_actors: Some(admitted),
+        remaining_players,
+        selections: Vec::new(),
+        completion: PendingPlayerScopeSacrificeCompletion::default(),
+    };
+    let outcome = advance_player_scope_sacrifice_collection(state, pending, None, events)?;
+    match outcome {
+        PendingPlayerScopeSacrificeOutcome::Completed { .. } => {
+            if let Some(tail) = after_scope {
+                resolve_ability_chain(state, &tail, events, depth + 1)?;
             }
+        }
+        PendingPlayerScopeSacrificeOutcome::WaitingForNextChoice
+        | PendingPlayerScopeSacrificeOutcome::PausedForReplacement => {
+            append_to_pending_continuation(state, after_scope);
         }
     }
     Ok(())
 }
 
-pub(crate) fn advance_pending_player_scope_sacrifice_choice(
+fn remove_collected_sacrifice_slot(
+    pending: &mut PendingPlayerScopeSacrificeChoice,
+    slot: PlayerId,
+) {
+    pending
+        .remaining_players
+        .retain(|candidate| *candidate != slot);
+    pending
+        .admitted_actors
+        .as_mut()
+        .expect("new collection owns admitted actors")
+        .remove(&slot);
+}
+
+/// CR 101.4c: Decide the next interacting slot before reserving ANY of its
+/// actor's candidates. Classification itself neither reserves nor moves cards.
+fn advance_player_scope_sacrifice_collection(
     state: &mut GameState,
-    player: PlayerId,
-    chosen: &[ObjectId],
+    mut pending: PendingPlayerScopeSacrificeChoice,
+    mut elected: Option<PlayerId>,
     events: &mut Vec<GameEvent>,
 ) -> Result<PendingPlayerScopeSacrificeOutcome, EffectError> {
-    // CR 101.4: Resume the APNAP choice walk until every player has chosen or a
-    // nested replacement choice pauses the simultaneous action.
-    let Some(mut pending) = state.pending_player_scope_sacrifice_choice.take() else {
-        return Ok(PendingPlayerScopeSacrificeOutcome::WaitingForNextChoice);
-    };
-    let original_controller = pending.ability.controller;
-    if !chosen.is_empty() {
-        pending.selections.push((player, chosen.to_vec()));
-    }
-
-    while let Some(next_player) = pending.remaining_players.first().copied() {
-        pending.remaining_players.remove(0);
-        match player_scope_sacrifice_step(state, &pending.ability, original_controller, next_player)
-        {
-            PlayerScopeSacrificeStep::Noop => {}
+    loop {
+        let Some(&front) = pending.remaining_players.first() else {
+            break;
+        };
+        let actors = pending
+            .admitted_actors
+            .as_ref()
+            .expect("collection has admission provenance");
+        let actor = actors[&front];
+        let group: Vec<_> = pending
+            .remaining_players
+            .iter()
+            .copied()
+            .take_while(|slot| actors[slot] == actor)
+            .collect();
+        let reserved: HashSet<_> = pending
+            .selections
+            .iter()
+            .flat_map(|(_, cards)| cards.iter().copied())
+            .collect();
+        let printed = pending
+            .ability
+            .original_controller
+            .unwrap_or(pending.ability.controller);
+        let mut steps: Vec<_> = group
+            .into_iter()
+            .map(|slot| {
+                (
+                    slot,
+                    player_scope_sacrifice_step(
+                        state,
+                        &pending.ability,
+                        printed,
+                        slot,
+                        actor,
+                        &reserved,
+                    ),
+                )
+            })
+            .collect();
+        for (slot, step) in &steps {
+            if matches!(step, PlayerScopeSacrificeStep::Noop) {
+                remove_collected_sacrifice_slot(&mut pending, *slot);
+            }
+        }
+        steps.retain(|(_, step)| !matches!(step, PlayerScopeSacrificeStep::Noop));
+        if steps.is_empty() {
+            elected = None;
+            continue;
+        }
+        let selected = if let Some(slot) = elected.take() {
+            // The elected slot may have become empty since the order prompt.
+            let Some(index) = steps.iter().position(|(candidate, _)| *candidate == slot) else {
+                continue;
+            };
+            index
+        } else {
+            let mut forced_cards = HashSet::new();
+            let forced_disjoint = steps.iter().all(|(_, step)| match step {
+                PlayerScopeSacrificeStep::Auto { cards, .. } => {
+                    cards.iter().all(|card| forced_cards.insert(*card))
+                }
+                PlayerScopeSacrificeStep::Noop => true,
+                PlayerScopeSacrificeStep::Prompt(_) => false,
+            });
+            if steps.len() > 1 && !forced_disjoint {
+                let candidates = steps.iter().map(|(slot, _)| *slot).collect();
+                state.waiting_for = WaitingFor::ChooseFromZoneOpponentChooser {
+                    player: actor,
+                    candidates,
+                    ability: pending.ability.clone(),
+                    purpose: ZoneOpponentChooserPurpose::PerPlayerChoiceOrder,
+                };
+                state.pending_player_scope_sacrifice_choice = Some(pending);
+                return Ok(PendingPlayerScopeSacrificeOutcome::WaitingForNextChoice);
+            }
+            0
+        };
+        let (slot, step) = steps.swap_remove(selected);
+        let position = pending
+            .remaining_players
+            .iter()
+            .position(|candidate| *candidate == slot)
+            .expect("classified slot remains outstanding");
+        pending.remaining_players.remove(position);
+        pending.remaining_players.insert(0, slot);
+        match step {
+            PlayerScopeSacrificeStep::Noop => unreachable!("removed empty slots"),
             PlayerScopeSacrificeStep::Auto { player, cards } => {
                 pending.selections.push((player, cards));
+                remove_collected_sacrifice_slot(&mut pending, slot);
             }
             PlayerScopeSacrificeStep::Prompt(prompt) => {
                 let source_id = pending.ability.source_id;
@@ -14084,12 +14532,20 @@ pub(crate) fn advance_pending_player_scope_sacrifice_choice(
             }
         }
     }
+    finish_collected_player_scope_sacrifices(state, pending, events)
+}
 
+fn finish_collected_player_scope_sacrifices(
+    state: &mut GameState,
+    pending: PendingPlayerScopeSacrificeChoice,
+    events: &mut Vec<GameEvent>,
+) -> Result<PendingPlayerScopeSacrificeOutcome, EffectError> {
     match perform_player_scope_sacrifices(
         state,
         &pending.ability,
         pending.selections,
         Some(pending.completion),
+        pending.admitted_actors,
         events,
     )? {
         PlayerScopeSacrificePerformOutcome::PausedForReplacement => {
@@ -14107,34 +14563,394 @@ pub(crate) fn advance_pending_player_scope_sacrifice_choice(
     }
 }
 
+pub(crate) fn owns_player_scope_sacrifice_selection(
+    state: &GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+) -> bool {
+    let Some(pending) = state.pending_player_scope_sacrifice_choice.as_ref() else {
+        return false;
+    };
+    if pending.ability.source_id != source_id
+        || !matches!(pending.ability.effect, Effect::Sacrifice { .. })
+    {
+        return false;
+    }
+    match pending.admitted_actors.as_ref() {
+        Some(_) => {
+            validate_player_scope_sacrifice_on_restore(state).is_ok()
+                && matches!(&state.waiting_for, WaitingFor::EffectZoneChoice { player: chooser, .. } if *chooser == player)
+        }
+        None => pending.ability.instruction_actor.is_none(), // legacy prompt already latched its actor
+    }
+}
+
+pub(crate) fn answer_player_scope_sacrifice_order(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    player: PlayerId,
+    slot: PlayerId,
+    events: &mut Vec<GameEvent>,
+) -> Result<PendingPlayerScopeSacrificeOutcome, EffectError> {
+    let Some(pending) = state.pending_player_scope_sacrifice_choice.as_ref() else {
+        return Err(EffectError::InvalidParam(
+            "missing sacrifice order cursor".into(),
+        ));
+    };
+    validate_player_scope_sacrifice_on_restore(state).map_err(EffectError::InvalidParam)?;
+    let offered = match &state.waiting_for {
+        WaitingFor::ChooseFromZoneOpponentChooser {
+            player: chooser,
+            candidates,
+            ability: prompt,
+            purpose: ZoneOpponentChooserPurpose::PerPlayerChoiceOrder,
+        } if *chooser == player && prompt.as_ref() == ability => candidates,
+        _ => {
+            return Err(EffectError::InvalidParam(
+                "sacrifice order prompt is not owned".into(),
+            ))
+        }
+    };
+    let Some(actors) = pending.admitted_actors.as_ref() else {
+        return Err(EffectError::InvalidParam(
+            "sacrifice order has no admitted actors".into(),
+        ));
+    };
+    if pending.ability.as_ref() != ability
+        || !offered.contains(&slot)
+        || pending
+            .remaining_players
+            .first()
+            .and_then(|first| actors.get(first))
+            != Some(&player)
+        || offered.iter().any(|candidate| {
+            !pending.remaining_players.contains(candidate) || actors.get(candidate) != Some(&player)
+        })
+    {
+        return Err(EffectError::InvalidParam(
+            "sacrifice order slot/actor/template mismatch".into(),
+        ));
+    }
+    let pending = state
+        .pending_player_scope_sacrifice_choice
+        .take()
+        .expect("validated cursor");
+    advance_player_scope_sacrifice_collection(state, pending, Some(slot), events)
+}
+
+pub(crate) fn advance_pending_player_scope_sacrifice_choice(
+    state: &mut GameState,
+    player: PlayerId,
+    chosen: &[ObjectId],
+    events: &mut Vec<GameEvent>,
+) -> Result<PendingPlayerScopeSacrificeOutcome, EffectError> {
+    let Some(mut pending) = state.pending_player_scope_sacrifice_choice.take() else {
+        return Ok(PendingPlayerScopeSacrificeOutcome::WaitingForNextChoice);
+    };
+    if let Some(actors) = pending.admitted_actors.as_ref() {
+        let Some(slot) = pending.remaining_players.first().copied() else {
+            state.pending_player_scope_sacrifice_choice = Some(pending);
+            return Err(EffectError::InvalidParam(
+                "sacrifice selection has no outstanding slot".into(),
+            ));
+        };
+        if actors.get(&slot) != Some(&player) {
+            state.pending_player_scope_sacrifice_choice = Some(pending);
+            return Err(EffectError::InvalidParam(
+                "sacrifice selection actor mismatch".into(),
+            ));
+        }
+        remove_collected_sacrifice_slot(&mut pending, slot);
+    } else {
+        if pending.ability.instruction_actor.is_some() {
+            state.pending_player_scope_sacrifice_choice = Some(pending);
+            return Err(EffectError::InvalidParam(
+                "marked legacy sacrifice lacks admission provenance".into(),
+            ));
+        }
+        // The current legacy prompt excluded its slot. Promote only untouched
+        // remainder; the already produced prompt's player is authoritative.
+        pending.admitted_actors = Some(
+            pending
+                .remaining_players
+                .iter()
+                .map(|slot| (*slot, *slot))
+                .collect(),
+        );
+    }
+    if !chosen.is_empty() {
+        pending.selections.push((player, chosen.to_vec()));
+    }
+    advance_player_scope_sacrifice_collection(state, pending, None, events)
+}
+
 pub(crate) fn drain_pending_player_scope_sacrifice_after_replacement(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
 ) -> Result<PendingPlayerScopeSacrificeOutcome, EffectError> {
-    // CR 101.4: After a CR 616.1 replacement choice resumes one selected
-    // sacrifice, continue the remaining already-announced simultaneous action.
-    let Some(pending) = state.pending_player_scope_sacrifice_choice.take() else {
+    // Only a selected batch belongs to a replacement drain. An unrelated
+    // replacement cannot consume a dormant order/selection cursor.
+    if !state
+        .pending_player_scope_sacrifice_choice
+        .as_ref()
+        .is_some_and(|pending| {
+            pending.remaining_players.is_empty()
+                && pending
+                    .admitted_actors
+                    .as_ref()
+                    .is_none_or(BTreeMap::is_empty)
+        })
+    {
         return Ok(PendingPlayerScopeSacrificeOutcome::WaitingForNextChoice);
+    }
+    let pending = state
+        .pending_player_scope_sacrifice_choice
+        .take()
+        .expect("selected batch checked above");
+    finish_collected_player_scope_sacrifices(state, pending, events)
+}
+
+pub(crate) fn player_scope_sacrifice_owns_live_work(state: &GameState) -> bool {
+    let Some(pending) = state.pending_player_scope_sacrifice_choice.as_ref() else {
+        return false;
     };
-    match perform_player_scope_sacrifices(
-        state,
-        &pending.ability,
-        pending.selections,
-        Some(pending.completion),
-        events,
-    )? {
-        PlayerScopeSacrificePerformOutcome::PausedForReplacement => {
-            Ok(PendingPlayerScopeSacrificeOutcome::PausedForReplacement)
+    match &state.waiting_for {
+        WaitingFor::EffectZoneChoice {
+            player,
+            source_id,
+            effect_kind: EffectKind::Sacrifice,
+            ..
+        } => owns_player_scope_sacrifice_selection(state, *player, *source_id),
+        WaitingFor::ChooseFromZoneOpponentChooser {
+            purpose: ZoneOpponentChooserPurpose::PerPlayerChoiceOrder,
+            ..
+        } => {
+            !pending.remaining_players.is_empty()
+                && validate_player_scope_sacrifice_on_restore(state).is_ok()
         }
-        PlayerScopeSacrificePerformOutcome::Completed {
-            events_before_sacrifice,
-            events_after_sacrifice,
-            sacrificed_count,
-        } => Ok(PendingPlayerScopeSacrificeOutcome::Completed {
-            events_before_sacrifice,
-            events_after_sacrifice,
-            sacrificed_count,
-        }),
+        WaitingFor::ReplacementChoice { .. } => {
+            pending.remaining_players.is_empty()
+                && pending.completion.spans_replacement_pause
+                && state
+                    .pending_replacement
+                    .as_ref()
+                    .and_then(|replacement| replacement.sacrifice_provenance.as_ref())
+                    .is_some_and(|provenance| {
+                        pending.completion.announced.contains(&provenance.object_id)
+                    })
+        }
+        _ => false,
+    }
+}
+
+/// CR 800.4a + CR 701.21a: A departed actual actor has no sacrifice pool.
+/// A departed scope slot still belongs to the admitted population when its
+/// saved actor survives; no choice or begun replacement relatches that actor.
+pub(crate) fn reconcile_player_scope_sacrifice_after_departure(
+    state: &mut GameState,
+    prompt_before: &WaitingFor,
+    leaving: &HashSet<PlayerId>,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let Some(mut pending) = state.pending_player_scope_sacrifice_choice.take() else {
+        return Ok(());
+    };
+    let original = pending
+        .ability
+        .original_controller
+        .unwrap_or(pending.ability.controller);
+    if leaving.contains(&original) {
+        // Completed events remain real even though the unresolved family ends.
+        let first = events.len();
+        events.append(&mut pending.completion.deferred_events);
+        let departed: Vec<_> = pending
+            .completion
+            .departed_zone_change_indices
+            .iter()
+            .filter_map(|index| state.zone_changes_this_turn.get(*index))
+            .map(|record| record.object_id)
+            .collect();
+        crate::game::zones::mark_simultaneous_departures(&mut events[first..], &departed);
+        crate::game::zones::mark_simultaneous_departure_records(
+            state,
+            &pending.completion.departed_zone_change_indices,
+            &departed,
+        );
+        if matches!(prompt_before, WaitingFor::ReplacementChoice { .. }) {
+            state.pending_replacement = None;
+            state.replacement_may_cost_paused = false;
+            super::replacement::abandon_post_replacement_continuation(state);
+        }
+        super::stack::abandon_active_resolution_carrier(
+            state,
+            super::lifecycle::DelayedTerminalDisposition::Eliminated,
+        );
+        state.waiting_for = WaitingFor::Priority {
+            player: super::players::next_player(state, original),
+        };
+        return Ok(());
+    }
+    if pending.remaining_players.is_empty() {
+        if state.pending_replacement.is_some() {
+            state.pending_player_scope_sacrifice_choice = Some(pending);
+            return Ok(());
+        }
+        let source = pending.ability.source_id;
+        let outcome = finish_collected_player_scope_sacrifices(state, pending, events)?;
+        super::engine_resolution_choices::settle_player_scope_sacrifice_outcome(
+            state, source, original, outcome, events,
+        )
+        .map_err(|error| EffectError::InvalidParam(error.to_string()))?;
+        return Ok(());
+    }
+    if pending.admitted_actors.is_none() {
+        // Legacy cursors exclude the currently produced prompt's slot. Keep
+        // that existing actor while admitting only the untouched remainder.
+        let current = match prompt_before {
+            WaitingFor::EffectZoneChoice { player, .. } => Some(*player),
+            _ => None,
+        };
+        if current.is_some_and(|player| !leaving.contains(&player)) {
+            state.pending_player_scope_sacrifice_choice = Some(pending);
+            return Ok(());
+        }
+        pending.admitted_actors = Some(
+            pending
+                .remaining_players
+                .iter()
+                .map(|slot| (*slot, *slot))
+                .collect(),
+        );
+    }
+    let elected = matches!(prompt_before, WaitingFor::EffectZoneChoice { .. })
+        .then(|| pending.remaining_players.first().copied())
+        .flatten();
+    let removed: Vec<_> = pending
+        .admitted_actors
+        .as_ref()
+        .expect("admitted remainder")
+        .iter()
+        .filter_map(|(slot, actor)| leaving.contains(actor).then_some(*slot))
+        .collect();
+    for slot in removed {
+        remove_collected_sacrifice_slot(&mut pending, slot);
+    }
+    let source = pending.ability.source_id;
+    let outcome = advance_player_scope_sacrifice_collection(state, pending, elected, events)?;
+    super::engine_resolution_choices::settle_player_scope_sacrifice_outcome(
+        state, source, original, outcome, events,
+    )
+    .map_err(|error| EffectError::InvalidParam(error.to_string()))?;
+    Ok(())
+}
+
+pub(crate) fn validate_player_scope_sacrifice_on_restore(state: &GameState) -> Result<(), String> {
+    let Some(pending) = state.pending_player_scope_sacrifice_choice.as_ref() else {
+        return Ok(());
+    };
+    let Some(actors) = pending.admitted_actors.as_ref() else {
+        return if pending.ability.instruction_actor.is_none() {
+            Ok(())
+        } else {
+            Err("marked sacrifice cursor has no admitted actors".into())
+        };
+    };
+    let slots: HashSet<_> = pending.remaining_players.iter().copied().collect();
+    if slots.len() != pending.remaining_players.len()
+        || slots.len() != actors.len()
+        || actors.keys().any(|slot| !slots.contains(slot))
+    {
+        return Err("sacrifice outstanding queue and actor keys differ".into());
+    }
+    if !matches!(pending.ability.effect, Effect::Sacrifice { .. }) {
+        return Err("admitted sacrifice cursor has a different effect".into());
+    }
+    if pending.remaining_players.is_empty() {
+        return if player_scope_sacrifice_owns_live_work(state) {
+            Ok(())
+        } else {
+            Err("empty sacrifice cursor has no owned selected-batch replacement".into())
+        };
+    }
+    let front = pending.remaining_players[0];
+    let actor = actors[&front];
+    let reserved: HashSet<_> = pending
+        .selections
+        .iter()
+        .flat_map(|(_, cards)| cards.iter().copied())
+        .collect();
+    let printed = pending
+        .ability
+        .original_controller
+        .unwrap_or(pending.ability.controller);
+    match &state.waiting_for {
+        WaitingFor::EffectZoneChoice { .. } => {
+            match player_scope_sacrifice_step(
+                state,
+                &pending.ability,
+                printed,
+                front,
+                actor,
+                &reserved,
+            ) {
+                PlayerScopeSacrificeStep::Prompt(prompt) => {
+                    if state.waiting_for
+                        == player_scope_sacrifice_waiting_for(prompt, pending.ability.source_id)
+                    {
+                        Ok(())
+                    } else {
+                        Err(
+                            "sacrifice selection differs from its canonical front-slot prompt"
+                                .into(),
+                        )
+                    }
+                }
+                _ => Err("sacrifice selection differs from its canonical front-slot prompt".into()),
+            }
+        }
+        WaitingFor::ChooseFromZoneOpponentChooser {
+            player,
+            candidates,
+            ability,
+            purpose: ZoneOpponentChooserPurpose::PerPlayerChoiceOrder,
+        } if *player == actor && ability.as_ref() == pending.ability.as_ref() => {
+            let mut expected = Vec::new();
+            let mut forced_cards = HashSet::new();
+            let mut forced_disjoint = true;
+            for slot in pending
+                .remaining_players
+                .iter()
+                .copied()
+                .take_while(|slot| actors[slot] == actor)
+            {
+                match player_scope_sacrifice_step(
+                    state,
+                    &pending.ability,
+                    printed,
+                    slot,
+                    actor,
+                    &reserved,
+                ) {
+                    PlayerScopeSacrificeStep::Noop => {}
+                    PlayerScopeSacrificeStep::Auto { cards, .. } => {
+                        expected.push(slot);
+                        for card in cards {
+                            forced_disjoint &= forced_cards.insert(card);
+                        }
+                    }
+                    PlayerScopeSacrificeStep::Prompt(_) => {
+                        expected.push(slot);
+                        forced_disjoint = false;
+                    }
+                }
+            }
+            if expected.len() > 1 && !forced_disjoint && *candidates == expected {
+                Ok(())
+            } else {
+                Err("sacrifice order differs from its complete canonical actor group".into())
+            }
+        }
+        _ => Err("sacrifice cursor does not own its live selection/order prompt".into()),
     }
 }
 
@@ -14303,7 +15119,12 @@ pub(crate) fn drain_pending_discard_batch(
             // into a later seat's `IfCurrentScopeSucceeded` read, for cards like
             // Refurbished Familiar and Aclazotz, Deepest Betrayal.
             state.cost_payment_failed_flag = false;
-            scoped.set_original_controller_recursive(fan_out.original_controller);
+            scoped.set_original_controller_recursive(
+                fan_out
+                    .scoped_template
+                    .original_controller
+                    .unwrap_or(fan_out.original_controller),
+            );
             scoped.set_controller_recursive(*pid);
             scoped.set_scoped_player_recursive(*pid);
             resolve_ability_chain(state, &scoped, events, 1)?;
@@ -14338,7 +15159,12 @@ pub(crate) fn drain_pending_discard_batch(
             let mut tail: Option<Box<ResolvedAbility>> = None;
             for &remaining_pid in fan_out.remaining_players[i + 1..].iter().rev() {
                 let mut remaining_scoped = (*fan_out.scoped_template).clone();
-                remaining_scoped.set_original_controller_recursive(fan_out.original_controller);
+                remaining_scoped.set_original_controller_recursive(
+                    fan_out
+                        .scoped_template
+                        .original_controller
+                        .unwrap_or(fan_out.original_controller),
+                );
                 remaining_scoped.set_controller_recursive(remaining_pid);
                 remaining_scoped.set_scoped_player_recursive(remaining_pid);
                 remaining_scoped.sub_link = SubAbilityLink::SequentialSibling;
@@ -14411,22 +15237,28 @@ pub(crate) fn finalize_discard_choice_completion(
     let PendingDiscardBatchCompletion::DiscardChoice { chosen } = completion else {
         return;
     };
-    let discarded_to_graveyard: Vec<ObjectId> = events
+    // CR 701.9a + CR 702.35a: a chosen card a replacement redirects on its way
+    // out of the hand (Rest in Peace, Leyline of the Void, madness → exile) is
+    // still discarded, so this completion — the single authority for what the
+    // discard moved, on both the synchronous and the replacement-paused path —
+    // publishes every chosen card's zone change, wherever it went. A public
+    // destination stays findable by the rest of the effect (CR 400.7j).
+    let discarded: Vec<ObjectId> = events
         .iter()
         .filter_map(|event| match event {
             GameEvent::ZoneChanged {
                 object_id,
-                to: Zone::Graveyard,
+                from: Some(Zone::Hand),
                 ..
-            } => Some(*object_id),
+            } if chosen.iter().any(|pick| pick.object_id == *object_id) => Some(*object_id),
             _ => None,
         })
         .collect();
-    if !discarded_to_graveyard.is_empty() {
-        state.last_zone_changed_ids = discarded_to_graveyard.clone();
+    if !discarded.is_empty() {
+        state.last_zone_changed_ids = discarded.clone();
         publish_tracked_set_with_causes(
             state,
-            discarded_to_graveyard
+            discarded
                 .into_iter()
                 .map(|id| (id, Some(ThisWayCause::Discarded)))
                 .collect(),
@@ -14900,6 +15732,11 @@ fn reset_top_level_resolution_state(state: &mut GameState) {
     // CR 608.2c: "that sticker" names a sticker this resolution's own PutSticker
     // instruction placed; a new top-level resolution cannot inherit a prior one's.
     state.placed_sticker_this_resolution = None;
+    // Digital-only Alchemy (no CR entry): a sibling grant snapshots only a
+    // note THIS resolution wrote; a new top-level resolution cannot inherit
+    // a prior one's, so a grant whose own resolution noted nothing captures
+    // `None` and reads fall back to the live global.
+    state.noted_numbers_this_resolution.clear();
     // CR 401.5 + CR 608.2c + CR 609.3 + issue #4950: Defense in depth —
     // `apply_parent_chain_context` already consumes this at the very next
     // parent->child hand-off after a Dig/ChooseFromZone/RevealHand sets
@@ -15199,6 +16036,21 @@ fn counter_tail_family_has_runtime_evidence(effect: &Effect) -> bool {
     )
 }
 
+/// CR 608.2c + CR 614.1a (issue #8762): does the counter rider branch in
+/// [`resolve_chain_body`] run `link`/`effect`, the link hung directly after a
+/// counter's graveyard-exile rider? It runs a `SequentialSibling` tail whose
+/// family [`counter_tail_family_has_runtime_evidence`] admits, and drops every
+/// other tail: an unadmitted family (Devious Cover-Up's `ChangeZone`), or a
+/// `ContinuationStep` link (Transcendent Dragon's ", then you may cast it").
+/// Coverage reads the same answer (`coverage::counter_exile_rider_drops_its_tail`),
+/// so a tail this drops is reported as a resolver gap. Asked of the link's
+/// fields because the resolver holds a `ResolvedAbility` and coverage an
+/// `AbilityDefinition` (the same convention as
+/// `cast_from_zone::is_graveyard_exile_rider_subability`).
+pub(crate) fn counter_exile_rider_runs_tail(link: SubAbilityLink, effect: &Effect) -> bool {
+    link == SubAbilityLink::SequentialSibling && counter_tail_family_has_runtime_evidence(effect)
+}
+
 /// One full pass of an ability's resolution chain — the parent effect (with its
 /// `repeat_for` count loop) and the entire `sub_ability` chain. This is one
 /// "process" for the purposes of "repeat this process" (CR 608.2c). Extracted
@@ -15206,12 +16058,51 @@ fn counter_tail_family_has_runtime_evidence(effect: &Effect) -> bool {
 /// iteratively. The `depth == 0` prelude (state-clearing, the resolution
 /// counter, the BeginGame/Mulligan guards) runs once in `resolve_ability_chain`
 /// and is intentionally NOT repeated per iteration.
+/// CR 608.2c: An impossible actor cannot execute this instruction or supply
+/// its dependent result. Continue at the next independently sequenced instruction.
+pub(crate) fn skip_instruction_and_dependents(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+    depth: u32,
+) -> Result<(), EffectError> {
+    let mut cursor = ability.sub_ability.as_deref();
+    while let Some(next) = cursor {
+        if next.sub_link == SubAbilityLink::SequentialSibling {
+            let mut sibling = next.clone();
+            apply_parent_chain_context(&mut sibling, ability, None, state);
+            return resolve_ability_chain(state, &sibling, events, depth + 1);
+        }
+        cursor = next.sub_ability.as_deref();
+    }
+    Ok(())
+}
+
 fn resolve_chain_body(
     state: &mut GameState,
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
     depth: u32,
 ) -> Result<(), EffectError> {
+    // CR 115.10a + CR 301.5f + CR 303.4b: an untargeted "enchanted/equipped X"
+    // recipient is bound to the source's host as this instruction begins to
+    // resolve, before its conditions and effect read it. With no provable host
+    // the instruction itself does nothing (`host_effect_impossible`).
+    let host_binding = crate::game::targeting::bind_resolution_attachment_hosts(state, ability);
+    let host_effect_impossible = match &host_binding {
+        crate::game::targeting::ResolutionHostBinding::Absent => true,
+        crate::game::targeting::ResolutionHostBinding::NotApplicable
+        | crate::game::targeting::ResolutionHostBinding::Bound(_) => false,
+    };
+    let host_bound;
+    let ability = match host_binding {
+        crate::game::targeting::ResolutionHostBinding::Bound(bound) => {
+            host_bound = *bound;
+            &host_bound
+        }
+        crate::game::targeting::ResolutionHostBinding::NotApplicable
+        | crate::game::targeting::ResolutionHostBinding::Absent => ability,
+    };
     // CR 608.2c: Snapshot the `pending_continuation` *value* at chain-body
     // entry so the sub_ability guard further down can compare by IDENTITY, not
     // mere presence. An unrelated outer continuation (e.g. a `player_scope`
@@ -15250,7 +16141,11 @@ fn resolve_chain_body(
         // 1. Reveal-all: resolve ONLY the producer effect once with targets left
         //    wide. `reveal_top::resolve` reveals every targeted player's top card
         //    (§2.4a) and fills `state.last_revealed_ids` with the full set.
-        resolve_effect(state, ability, events)?;
+        let mut producer = ability.clone();
+        if super::ability_utils::bind_instruction_actor(state, &mut producer).is_none() {
+            return skip_instruction_and_dependents(state, ability, events, depth);
+        }
+        resolve_effect(state, &producer, events)?;
 
         // A bare "two target players each reveal" with no consumer is fully
         // resolved by the reveal-all above.
@@ -15499,50 +16394,6 @@ fn resolve_chain_body(
     };
     let ability = ability.as_ref();
 
-    // CR 608.2d (override) + CR 701.9b (analogous) + CR 109.4: A random
-    // `Effect::Choose` ("choose a player at random") or `Effect::ChooseFromZone`
-    // ("choose one of them at random") is resolved here, at the chain resolution
-    // point where a mutable ability is available, so the game-selected value
-    // lands on `chosen_players` / `targets` BEFORE the chain descends to a
-    // dependent sub (Strax's reflexive Fight scoped to the chosen player; River
-    // Song's Diary's `CastFromZone { target: ParentTarget }`). No interactive
-    // `WaitingFor::NamedChoice` / `ChooseFromZoneChoice` is raised. This mirrors
-    // the resolution-point handling of `TargetSelectionMode::Random` for targets.
-    let random_choice_owned;
-    let random_is_choose = matches!(
-        &ability.effect,
-        Effect::Choose { selection, .. }
-            if matches!(selection, crate::types::ability::TargetSelectionMode::Random)
-    );
-    let random_is_choose_from_zone = matches!(
-        &ability.effect,
-        Effect::ChooseFromZone { selection, .. } if selection.is_random()
-    );
-    let (ability, random_choice_resolved) = if random_is_choose || random_is_choose_from_zone {
-        let mut owned = ability.clone();
-        if random_is_choose {
-            choose::resolve_random_in_chain(state, &mut owned, events);
-        } else {
-            choose_from_zone::resolve_random_in_chain(state, &mut owned, events);
-        }
-        random_choice_owned = owned;
-        (&random_choice_owned, true)
-    } else {
-        (ability, false)
-    };
-
-    if effect_depends_on_missing_chosen_player(ability) {
-        state.cost_payment_failed_flag = true;
-        if let Some(ref next) = ability.sub_ability {
-            if next.sub_link == SubAbilityLink::SequentialSibling {
-                let mut sibling = next.as_ref().clone();
-                apply_parent_chain_context(&mut sibling, ability, None, state);
-                resolve_ability_chain(state, &sibling, events, depth + 1)?;
-            }
-        }
-        return Ok(());
-    }
-
     if repeat_for_outermost_with_scope_or_unless(ability)
         && !has_member_driven_repeat_after_hydration(state, ability)
     {
@@ -15582,7 +16433,9 @@ fn resolve_chain_body(
         let matching_players: Vec<PlayerId> = match scope {
             PlayerFilter::AllExcept { .. }
             | PlayerFilter::ParentObjectTargetController
-            | PlayerFilter::ParentObjectTargetOwner => {
+            | PlayerFilter::ParentObjectTargetOwner
+            | PlayerFilter::AnyOf { .. }
+            | PlayerFilter::TargetPlayer => {
                 // CR 608.2c + CR 109.4 + CR 608.2h: these anchors are all
                 // ability-target references — the `AllExcept` exclude anchor and the
                 // direct `ParentObjectTargetController` / `ParentObjectTargetOwner`
@@ -15593,7 +16446,9 @@ fn resolve_chain_body(
                 // last-known-information lookup over `ability.targets` is
                 // unavailable). Route through the ability-aware
                 // `speed_effects::players_for_filter`, then re-impose APNAP order by
-                // intersecting against the apnap sequence.
+                // intersecting against the apnap sequence. CR 115.1 + CR 101.4:
+                // `AnyOf` resolves every member ability-aware; `TargetPlayer` reads
+                // `ability.targets`.
                 let set =
                     crate::game::effects::speed_effects::players_for_filter(state, scope, ability);
                 apnap.into_iter().filter(|pid| set.contains(pid)).collect()
@@ -15616,12 +16471,24 @@ fn resolve_chain_body(
         // outcome, not one token creation per iteration. Let its dedicated
         // APNAP payment coordinator own the existing UnlessPayment and
         // WardSacrificeChoice round trips before the generic fan-out clones it.
-        if crate::game::engine_payment_choices::begin_player_scope_token_unless_sacrifice(
-            state,
-            ability,
-            matching_players.clone(),
-        ) {
-            return Ok(());
+        if !matching_players.is_empty() {
+            if let Some(cost) =
+                crate::game::engine_payment_choices::player_scope_token_unless_sacrifice_cost(
+                    ability,
+                )
+            {
+                let mut aggregate = ability.clone();
+                if super::ability_utils::bind_instruction_actor(state, &mut aggregate).is_none() {
+                    return skip_instruction_and_dependents(state, ability, events, depth);
+                }
+                crate::game::engine_payment_choices::begin_player_scope_token_unless_sacrifice(
+                    state,
+                    &aggregate,
+                    matching_players.clone(),
+                    cost,
+                );
+                return Ok(());
+            }
         }
         // Inspect the original child chain before splitting it. The splitter
         // intentionally detaches a final searched-this-way shuffle, but it can
@@ -15752,6 +16619,28 @@ fn resolve_chain_body(
         // `EffectResolved` gap at that site). Repairing it means making the
         // per-clause table accumulate across continuation legs, which is
         // resume-machinery work well outside a draw-count change.
+        //
+        // When the tail is linearized after the generated legs, the clause's
+        // TRACKED SET is complete for seats whose producer publishes from its
+        // own resolution. The postlude below publishes the seats that completed,
+        // each generated leg's chain ends in the unscoped tail and so extends
+        // the chain set, and a paused seat's producer resumed under the parked
+        // continuation (a choose-one or optional answer, or a Resolution-timed
+        // recipient choice) extends it through
+        // `resolution_next_needs_tracked_set` (CR 608.2c "this way").
+        //
+        // A seat whose answer is itself the producing choice does not. An
+        // `EffectZoneChoice` answer (`publish_effect_zone_choice_tracked_set`)
+        // mints a fresh set for each paused seat, so a clause-wide detached
+        // tail read after it loses the earlier paused seats and every seat that
+        // completed before the last pause: it sees only the last paused seat's
+        // choice and the seats that complete after it. This is a known gap,
+        // filed separately.
+        //
+        // A tail that needs linked exile is not linearized: it rides the
+        // frame's `player_scope_linked_exile` sidecar, which that predicate
+        // does not read, so on that branch neither the legs nor the paused
+        // seat publish.
         let mut applied_domain_end = matching_players.len();
         // CR 608.2e: each clause's equalization minimum is fixed when that
         // clause begins; the snapshot is per `player_scope` link, captured
@@ -15912,6 +16801,58 @@ fn resolve_chain_body(
                         batch: linked_batch,
                     });
                 }
+            }
+        }
+        return Ok(());
+    }
+
+    // CR 608.2c + CR 109.5: Only an actual scope-free instruction binds its
+    // actor. Unstarted fan-out templates and descendants retain their markers.
+    let mut actor_bound = ability.clone();
+    if super::ability_utils::bind_instruction_actor(state, &mut actor_bound).is_none() {
+        return skip_instruction_and_dependents(state, ability, events, depth);
+    }
+    let ability = &actor_bound;
+
+    // CR 608.2d (override) + CR 701.9b (analogous) + CR 109.4: A random
+    // `Effect::Choose` ("choose a player at random") or `Effect::ChooseFromZone`
+    // ("choose one of them at random") is resolved here, at the chain resolution
+    // point where a mutable ability is available, so the game-selected value
+    // lands on `chosen_players` / `targets` BEFORE the chain descends to a
+    // dependent sub (Strax's reflexive Fight scoped to the chosen player; River
+    // Song's Diary's `CastFromZone { target: ParentTarget }`). No interactive
+    // `WaitingFor::NamedChoice` / `ChooseFromZoneChoice` is raised. This mirrors
+    // the resolution-point handling of `TargetSelectionMode::Random` for targets.
+    let random_choice_owned;
+    let random_is_choose = matches!(
+        &ability.effect,
+        Effect::Choose { selection, .. }
+            if matches!(selection, crate::types::ability::TargetSelectionMode::Random)
+    );
+    let random_is_choose_from_zone = matches!(
+        &ability.effect,
+        Effect::ChooseFromZone { selection, .. } if selection.is_random()
+    );
+    let (ability, random_choice_resolved) = if random_is_choose || random_is_choose_from_zone {
+        let mut owned = ability.clone();
+        if random_is_choose {
+            choose::resolve_random_in_chain(state, &mut owned, events);
+        } else {
+            choose_from_zone::resolve_random_in_chain(state, &mut owned, events);
+        }
+        random_choice_owned = owned;
+        (&random_choice_owned, true)
+    } else {
+        (ability, false)
+    };
+
+    if effect_depends_on_missing_chosen_player(ability) {
+        state.cost_payment_failed_flag = true;
+        if let Some(ref next) = ability.sub_ability {
+            if next.sub_link == SubAbilityLink::SequentialSibling {
+                let mut sibling = next.as_ref().clone();
+                apply_parent_chain_context(&mut sibling, ability, None, state);
+                resolve_ability_chain(state, &sibling, events, depth + 1)?;
             }
         }
         return Ok(());
@@ -16603,27 +17544,7 @@ fn resolve_chain_body(
     // `resolve_defined_or_targets`'s existing `resolved_object_ids_for_filter`
     // fallback in `counters.rs`; routing them through an interactive prompt
     // here would be wrong (and untested against that resolver's semantics).
-    let needs_resolution_object_choice = match &ability.effect {
-        // CR 115.10a: "no recipient chosen yet" means "no OBJECT target", not
-        // "no targets at all". A `PutCounter` reached as a `ChooseOneOf` branch
-        // carries the `TargetRef::Player` that `choose_one_of::resolve_branch`
-        // injects for the branch chooser, which is not a recipient. This is a
-        // strict superset of the former `targets.is_empty()` test (an empty
-        // target list contains no `TargetRef::Object` either), so every
-        // pre-existing `PutCounter` caller is unaffected.
-        Effect::PutCounter { .. } => !ability
-            .targets
-            .iter()
-            .any(|target| matches!(target, TargetRef::Object(_))),
-        Effect::ChooseCounterKind { target, .. } => {
-            !matches!(target, TargetFilter::SpecificObject { .. })
-        }
-        _ => false,
-    };
-    if ability.target_choice_timing == TargetChoiceTiming::Resolution
-        && needs_resolution_object_choice
-        && ability.distribution.is_none()
-    {
+    if awaits_resolution_object_choice(ability) {
         if let Effect::PutCounter { target, .. } | Effect::ChooseCounterKind { target, .. } =
             &ability.effect
         {
@@ -16706,7 +17627,7 @@ fn resolve_chain_body(
     // CR 608.2c: Snapshot event count so we can detect objects moved by this effect.
     let events_before = events.len();
     let mut immediate_effect_result = None;
-    // CR 610.3b + CR 118.12: per-call verdicts for this node's bounded zone
+    // CR 610.3a / CR 610.3b + CR 118.12: per-call verdicts for this node's bounded zone
     // move. Each `resolve_effect` call (one per repeat iteration) is judged on
     // its OWN event window by the resolver's own predicate; the node counts as
     // refused only when every bounded call was refused.
@@ -16728,7 +17649,12 @@ fn resolve_chain_body(
         // If targets don't share the required quality, skip the effect.
         let shares_quality_failed = fails_shared_quality(state, effective);
 
-        if shares_quality_failed {
+        // CR 115.10a + CR 303.4b + CR 301.5f: an instruction naming its
+        // source's host when there is no provable host does nothing —
+        // skipped here like a failed group constraint,
+        // so no resolver can re-read the description as a scan or act on a new
+        // object under a departed host's storage id.
+        if shares_quality_failed || host_effect_impossible {
             // Group constraint not met — emit EffectResolved but skip execution.
             events.push(GameEvent::EffectResolved {
                 kind: crate::types::ability::EffectKind::from(&ability.effect),
@@ -17072,6 +17998,18 @@ fn resolve_chain_body(
                             bounded_move_refusals += 1;
                         }
                     }
+                    let mut admitted_iteration = iter_effective.clone();
+                    if super::ability_utils::bind_instruction_actor(state, &mut admitted_iteration)
+                        .is_none()
+                    {
+                        return skip_instruction_and_dependents(
+                            state,
+                            iter_effective,
+                            events,
+                            depth,
+                        );
+                    }
+                    let iter_effective = &admitted_iteration;
                     let resolved = if ability.repeat_for.is_some() {
                         with_iteration_return_result_occurrence(state, iter_effective, |state| {
                             resolve_effect(state, iter_effective, events)
@@ -17253,13 +18191,20 @@ fn resolve_chain_body(
 
     // CR 608.2c: Populate last_zone_changed_ids for ZoneChangedThisWay condition evaluation.
     // Scans ZoneChanged events emitted by this effect, mirroring the forward_result pattern.
-    state.last_zone_changed_ids = events[events_before..]
+    let zone_changed_ids: Vec<ObjectId> = events[events_before..]
         .iter()
         .filter_map(|e| match e {
             GameEvent::ZoneChanged { object_id, .. } => Some(*object_id),
             _ => None,
         })
         .collect();
+    // CR 608.2c: "… this way" names the earlier instruction that moved the
+    // cards. A play permission over those cards ("You may play that card this
+    // turn") directly followed by a "this way" head is not that instruction,
+    // so it leaves the moving instruction's ledger in place for the head.
+    if !permission_node_keeps_ledger_for_this_way_head(ability) {
+        state.last_zone_changed_ids = zone_changed_ids;
+    }
     let linked_batch =
         linked_exile_batch_from_events(state, ability.source_id, &events[events_before..]);
     if let Some(scope) = state.resolving_player_scope_linked_exile.as_mut() {
@@ -17392,7 +18337,7 @@ fn resolve_chain_body(
     //   - Counter-adding effects → `CounterAdded` (CR 122.1), so "those
     //     creatures" after a mass counter instruction means the permanents that
     //     actually received counters.
-    if next_sub_needs_tracked_set(ability) {
+    if resolution_next_needs_tracked_set(state, ability) {
         publish_tracked_set_for_resolution(
             state,
             ability,
@@ -17508,7 +18453,7 @@ fn resolve_chain_body(
         });
     let amassed_army_object = amassed_army_context_from_events(state, &events[events_before..]);
 
-    // CR 610.3b + CR 118.12: a bounded zone move refused because its "until"
+    // CR 610.3a / CR 610.3b + CR 118.12: a bounded zone move refused because its "until"
     // event had already happened was not performed. That verdict is
     // authoritative for THIS node's dependent "if you do" rider even when the
     // node arrives already marked performed — an accepted "you may" or a
@@ -17706,7 +18651,8 @@ fn resolve_chain_body(
         // last slot itself when no rider is printed.
         let cast_slots = cast_from_zone::cast_slot_group(ability);
         let is_rider = |link: &ResolvedAbility| {
-            cast_from_zone::graveyard_destination_rider(&link.effect).is_some()
+            cast_from_zone::graveyard_destination_rider(&link.effect, link.condition.as_ref())
+                .is_some()
         };
         let tail_parent: Option<&ResolvedAbility> = match cast_slots.last() {
             Some(last) => Some(
@@ -17899,11 +18845,13 @@ fn resolve_chain_body(
         // (which had run such a tail for Diluvian Primordial's fanout alone,
         // #6945).
         //
-        // Scope, measured over the corpus (20 counter heads carry the exile
-        // rider, 6 of them a tail): the rider's DIRECT sequential tail, and only
-        // when its family is one an integration test drives end to end through
-        // this branch (`counter_tail_family_has_runtime_evidence`). Five of the
-        // six tails are admitted; Devious Cover-Up is named there, not here. No
+        // Scope: the rider's DIRECT sequential tail, and only when its family is
+        // one an integration test drives end to end through this branch —
+        // `counter_exile_rider_runs_tail` decides, and coverage reads the same
+        // answer, so every tail it drops is a `ResolverFeature` gap
+        // (`StructuralFeature::CounterExileRiderTailDropped`). The families it
+        // refuses are named at the allowlist
+        // (`counter_tail_family_has_runtime_evidence`), not here. No
         // separate last-link rule: a multi-link tail is admitted with its
         // evidence like any other, or not at all.
         //
@@ -17923,8 +18871,8 @@ fn resolve_chain_body(
         // A tail with a printed condition of its own is gated by
         // `resolve_chain_body`'s top-level `ability.condition` read, with the
         // tail as its own context — Delay's "If it doesn't have suspend"
-        // (`TargetMatchesFilter { WithoutKeywordKind Suspend }`, the only
-        // conditioned tail in the corpus) reads the tail's first object target,
+        // (`TargetMatchesFilter { WithoutKeywordKind Suspend }`, at #8795 the
+        // only conditioned tail in the corpus) reads the tail's first object target,
         // which is why the tail is handed its targets below.
         //
         // No park site, and none is needed. `counter::resolve` returns early on
@@ -17967,7 +18915,10 @@ fn resolve_chain_body(
         // its condition reads none and grants nothing, while the spell stays
         // on the stack (measured: `delay_leaves_an_uncounterable_spell_alone`).
         if matches!(&ability.effect, Effect::Counter { .. })
-            && cast_from_zone::is_graveyard_exile_rider_subability(&sub.effect)
+            && cast_from_zone::is_graveyard_exile_rider_subability(
+                &sub.effect,
+                sub.condition.as_ref(),
+            )
         {
             // Not pinned by a test: no printed card reaches this state
             // (measured above), and returning here preserves `main`'s
@@ -17981,8 +18932,7 @@ fn resolve_chain_body(
             let direct_sequential_tail = sub
                 .sub_ability
                 .as_deref()
-                .filter(|tail| tail.sub_link == SubAbilityLink::SequentialSibling)
-                .filter(|tail| counter_tail_family_has_runtime_evidence(&tail.effect))
+                .filter(|tail| counter_exile_rider_runs_tail(tail.sub_link, &tail.effect))
                 .cloned();
             if let Some(mut tail) = direct_sequential_tail {
                 if should_propagate_parent_targets(ability, &tail) {
@@ -19178,7 +20128,7 @@ fn bind_scoped_seat(
     seat: PlayerId,
 ) -> ResolvedAbility {
     let mut bound = template.clone();
-    bound.set_original_controller_recursive(controller);
+    bound.set_original_controller_recursive(template.original_controller.unwrap_or(controller));
     bound.set_controller_recursive(seat);
     bound.set_scoped_player_recursive(seat);
     bound
@@ -20219,10 +21169,24 @@ pub(crate) fn evaluate_condition(
             );
             comparator.evaluate(l, r)
         }
-        AbilityCondition::CastDuringPhase { phases } => ability
-            .context
-            .cast_phase
-            .is_some_and(|cast_phase| phases.contains(&cast_phase)),
+        // CR 109.5 + CR 102.1 + CR 601.2: Addendum and timing riders ("if you cast this spell
+        // during your main phase") require the spell to have been cast during the specified
+        // phase of the caster's own turn (caster == active player when cast).
+        AbilityCondition::CastDuringPhase { phases } => {
+            let was_own_phase = match (
+                ability.context.cast_controller,
+                ability.context.cast_active_player,
+            ) {
+                (Some(caster), Some(active)) => caster == active,
+                (Some(caster), None) => caster == ability.controller,
+                (None, _) => true,
+            };
+            was_own_phase
+                && ability
+                    .context
+                    .cast_phase
+                    .is_some_and(|cast_phase| phases.contains(&cast_phase))
+        }
         AbilityCondition::CastTimingPermission { permission } => state
             .objects
             .get(&ability.source_id)
@@ -20736,6 +21700,9 @@ fn scoped_player_matches_filter(
         PlayerFilter::AllExcept { exclude } => {
             !scoped_player_matches_filter(state, ability, candidate, exclude)
         }
+        PlayerFilter::AnyOf { filters } => filters
+            .iter()
+            .any(|f| scoped_player_matches_filter(state, ability, candidate, f)),
         PlayerFilter::OpponentLostLife => {
             crate::game::players::is_opponent(state, controller, candidate)
                 && state
@@ -20773,6 +21740,7 @@ fn scoped_player_matches_filter(
         | PlayerFilter::ChosenPlayer { .. }
         | PlayerFilter::ParentObjectTargetOwner
         | PlayerFilter::GrantingObjectCaster
+        | PlayerFilter::TargetPlayer
         | PlayerFilter::ControlsCount { .. }
         | PlayerFilter::TrackedSetPossessor { .. }
         | PlayerFilter::PlayerAttribute { .. } => false,
@@ -21234,7 +22202,2066 @@ fn resolve_add_pending_enters_modifications(
 mod tests {
     use super::*;
     use crate::database::synthesis::synthesize_extort;
+    use crate::game::scenario::{GameRunner, GameScenario, P0, P1};
+    use crate::types::ability::ChooseOneOfKind;
     use crate::types::ability::SpentColor;
+
+    #[test]
+    fn instruction_actor_real_instead_swap_uses_selected_nodes_actor_and_keeps_its_independent_tail(
+    ) {
+        for actor in [
+            None,
+            Some(ControllerRef::SpecificPlayer { id: P1 }),
+            Some(ControllerRef::ChosenPlayer { index: 0 }),
+        ] {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            let mut root = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::Controller,
+                },
+            );
+            root.instruction_actor = Some(ControllerRef::You);
+            let mut replacement = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 2 },
+                    player: TargetFilter::Controller,
+                },
+            );
+            replacement.instruction_actor = actor.clone();
+            replacement.condition = Some(AbilityCondition::ConditionInstead {
+                inner: Box::new(AbilityCondition::IsYourTurn),
+            });
+            let mut tail = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::OriginalController,
+                },
+            );
+            tail.sub_link = SubAbilityLink::SequentialSibling;
+            replacement.sub_ability = Some(Box::new(tail));
+            root.sub_ability = Some(Box::new(replacement));
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Selected Instead Actor", false)
+                .with_ability_definition(root)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            let outcome = runner.cast(spell).resolve();
+            let missing = matches!(actor, Some(ControllerRef::ChosenPlayer { .. }));
+            outcome.assert_life_delta(P0, if actor.is_none() { 3 } else { 1 });
+            outcome.assert_life_delta(
+                P1,
+                if actor == Some(ControllerRef::SpecificPlayer { id: P1 }) {
+                    2
+                } else {
+                    0
+                },
+            );
+            assert_eq!(outcome.events().iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)).count(), if missing { 1 } else { 2 });
+            outcome.assert_zone(&[spell], Zone::Graveyard);
+            assert!(outcome.state().stack.is_empty());
+        }
+    }
+
+    #[test]
+    fn instruction_actor_random_choose_uses_incoming_actor_before_rng_and_publication() {
+        let p2 = PlayerId(2);
+        for actor in [
+            None,
+            Some(ControllerRef::You),
+            Some(ControllerRef::ScopedPlayer),
+            Some(ControllerRef::SpecificPlayer { id: P1 }),
+        ] {
+            let mut scenario = GameScenario::new_n_player(3, 42);
+            scenario.at_phase(Phase::PreCombatMain);
+            let mut random = AbilityDefinition::new(AbilityKind::Spell, Effect::Choose {
+                choice_type: ChoiceType::Opponent { distinctness: crate::types::ability::PlayerChoiceDistinctness::DistinctFromPriorChoices, restriction: None },
+                persist: true, selection: TargetSelectionMode::Random,
+            });
+            random.instruction_actor = actor.clone();
+            if actor == Some(ControllerRef::ScopedPlayer) {
+                random.player_scope = Some(PlayerFilter::SpecificPlayer { id: P1 });
+            }
+            let mut tail = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::OriginalController,
+                },
+            );
+            tail.sub_link = SubAbilityLink::SequentialSibling;
+            random.sub_ability = Some(Box::new(tail));
+            let mut prior = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Choose {
+                    choice_type: ChoiceType::player(),
+                    persist: false,
+                    selection: TargetSelectionMode::Chosen,
+                },
+            );
+            prior.sub_ability = Some(Box::new(random));
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Incoming Random Actor", false)
+                .with_ability_definition(prior)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            let before = runner.state().rng.outcome_draws();
+            let outcome = runner.cast(spell).choose_option("2").resolve();
+            let expected = if matches!(
+                actor,
+                Some(ControllerRef::ScopedPlayer | ControllerRef::SpecificPlayer { .. })
+            ) {
+                P0
+            } else {
+                P1
+            };
+            assert_eq!(
+                outcome.state().last_named_choice,
+                Some(ChoiceValue::Player(expected))
+            );
+            assert!(outcome.state().objects[&spell]
+                .chosen_attributes
+                .contains(&ChosenAttribute::Player(expected)));
+            assert_eq!(outcome.state().rng.outcome_draws() - before, 1);
+            assert_eq!(outcome.events().iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Choose, source_id, .. } if *source_id == spell)).count(), 2);
+            outcome.assert_life_delta(P0, 1);
+            outcome.assert_zone(&[spell], Zone::Graveyard);
+            assert!(matches!(
+                outcome.final_waiting_for(),
+                WaitingFor::Priority { .. }
+            ));
+            assert_ne!(expected, p2, "the prior chosen player stays excluded");
+        }
+    }
+
+    #[test]
+    fn instruction_actor_random_resolves_a_prior_chosen_player_before_enumerating_distinct_opponents(
+    ) {
+        let mut scenario = GameScenario::new_n_player(3, 42);
+        scenario.at_phase(Phase::PreCombatMain);
+        let mut random = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Choose {
+                choice_type: ChoiceType::Opponent {
+                    distinctness:
+                        crate::types::ability::PlayerChoiceDistinctness::DistinctFromPriorChoices,
+                    restriction: None,
+                },
+                persist: true,
+                selection: TargetSelectionMode::Random,
+            },
+        );
+        random.instruction_actor = Some(ControllerRef::ChosenPlayer { index: 0 });
+        let mut second = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Choose {
+                choice_type: ChoiceType::player(),
+                persist: false,
+                selection: TargetSelectionMode::Chosen,
+            },
+        );
+        second.sub_ability = Some(Box::new(random));
+        let mut first = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Choose {
+                choice_type: ChoiceType::player(),
+                persist: false,
+                selection: TargetSelectionMode::Chosen,
+            },
+        );
+        first.sub_ability = Some(Box::new(second));
+        let spell = scenario
+            .add_spell_to_hand(P0, "Synthetic Prior Actor Random", false)
+            .with_ability_definition(first)
+            .with_mana_cost(ManaCost::zero())
+            .id();
+        let mut runner = scenario.build();
+        let before = runner.state().rng.outcome_draws();
+        let mut events = runner.cast(spell).resolve().events().to_vec();
+        for choice in ["1", "2"] {
+            assert!(matches!(
+                runner.state().waiting_for,
+                WaitingFor::NamedChoice { player: P0, .. }
+            ));
+            events.extend(
+                runner
+                    .act(GameAction::ChooseOption {
+                        choice: choice.into(),
+                    })
+                    .unwrap()
+                    .events,
+            );
+        }
+        assert_eq!(
+            runner.state().last_named_choice,
+            Some(ChoiceValue::Player(P0))
+        );
+        assert!(runner.state().objects[&spell]
+            .chosen_attributes
+            .contains(&ChosenAttribute::Player(P0)));
+        assert_eq!(runner.state().rng.outcome_draws() - before, 1);
+        assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Choose, source_id, .. } if *source_id == spell)).count(), 3);
+        assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+        assert!(runner.state().stack.is_empty());
+    }
+
+    #[test]
+    fn instruction_actor_valid_random_with_no_options_consumes_no_rng_and_publishes_no_choice() {
+        let mut scenario = GameScenario::new_n_player(3, 42);
+        scenario.at_phase(Phase::PreCombatMain);
+        let mut random = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Choose {
+                choice_type: ChoiceType::Opponent {
+                    distinctness:
+                        crate::types::ability::PlayerChoiceDistinctness::DistinctFromPriorChoices,
+                    restriction: None,
+                },
+                persist: true,
+                selection: TargetSelectionMode::Random,
+            },
+        );
+        random.instruction_actor = Some(ControllerRef::SpecificPlayer { id: P1 });
+        let mut tail = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player: TargetFilter::OriginalController,
+            },
+        );
+        tail.sub_link = SubAbilityLink::SequentialSibling;
+        let mut dependent = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 10 },
+                player: TargetFilter::OriginalController,
+            },
+        );
+        dependent.sub_ability = Some(Box::new(tail));
+        random.sub_ability = Some(Box::new(dependent));
+        random.else_ability = Some(Box::new(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 100 },
+                player: TargetFilter::OriginalController,
+            },
+        )));
+        let mut second = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Choose {
+                choice_type: ChoiceType::player(),
+                persist: false,
+                selection: TargetSelectionMode::Chosen,
+            },
+        );
+        second.sub_ability = Some(Box::new(random));
+        let mut first = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Choose {
+                choice_type: ChoiceType::player(),
+                persist: false,
+                selection: TargetSelectionMode::Chosen,
+            },
+        );
+        first.sub_ability = Some(Box::new(second));
+        let spell = scenario
+            .add_spell_to_hand(P0, "Synthetic Exhausted Random Pool", false)
+            .with_ability_definition(first)
+            .with_mana_cost(ManaCost::zero())
+            .id();
+        let mut runner = scenario.build();
+        let before = runner.state().rng.outcome_draws();
+        let mut events = runner.cast(spell).resolve().events().to_vec();
+        for choice in ["0", "2"] {
+            assert!(matches!(
+                runner.state().waiting_for,
+                WaitingFor::NamedChoice { .. }
+            ));
+            events.extend(
+                runner
+                    .act(GameAction::ChooseOption {
+                        choice: choice.into(),
+                    })
+                    .unwrap()
+                    .events,
+            );
+        }
+        assert_eq!(runner.state().rng.outcome_draws(), before);
+        assert_eq!(
+            runner.state().last_named_choice,
+            Some(ChoiceValue::Player(PlayerId(2)))
+        );
+        assert!(runner.state().objects[&spell].chosen_attributes.is_empty());
+        assert_eq!(runner.life(P0), 21);
+        assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Choose, source_id, .. } if *source_id == spell)).count(), 3, "a valid actor reaches the real exhausted-options handler");
+        assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+        assert!(runner.state().stack.is_empty());
+    }
+
+    #[test]
+    fn instruction_actor_early_reveal_all_cast_binds_before_direct_producer_dispatch() {
+        for actor in [
+            None,
+            Some(ControllerRef::SpecificPlayer { id: P1 }),
+            Some(ControllerRef::ChosenPlayer { index: 0 }),
+        ] {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            let cards = [
+                scenario.add_card_to_library_top(P0, "P0 reveal"),
+                scenario.add_card_to_library_top(P1, "P1 reveal"),
+            ];
+            let mut definition = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::RevealTop {
+                    player: TargetFilter::Player,
+                    count: 1,
+                },
+            );
+            definition.multi_target = Some(crate::types::ability::MultiTargetSpec::unlimited(0));
+            definition.instruction_actor = actor.clone();
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Early Reveal Actor", false)
+                .with_ability_definition(definition)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            let outcome = runner.cast(spell).target_players(&[P0, P1]).resolve();
+            let missing = matches!(actor, Some(ControllerRef::ChosenPlayer { .. }));
+            assert_eq!(
+                outcome
+                    .state()
+                    .last_revealed_ids
+                    .iter()
+                    .copied()
+                    .collect::<HashSet<_>>(),
+                if missing {
+                    HashSet::new()
+                } else {
+                    cards.into_iter().collect()
+                }
+            );
+            assert_eq!(outcome.events().iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::RevealTop, source_id, .. } if *source_id == spell)).count(), usize::from(!missing));
+            outcome.assert_zone(&cards, Zone::Library);
+            outcome.assert_zone(&[spell], Zone::Graveyard);
+            assert!(outcome.state().stack.is_empty());
+        }
+    }
+
+    #[test]
+    fn instruction_actor_random_choice_cannot_supply_its_own_missing_actor() {
+        for actor in [
+            ControllerRef::ChosenPlayer { index: 0 },
+            ControllerRef::Opponent,
+        ] {
+            let mut scenario = GameScenario::new_n_player(3, 42);
+            scenario.at_phase(Phase::PreCombatMain);
+            let mut random = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Choose {
+                    choice_type: ChoiceType::player(),
+                    persist: true,
+                    selection: TargetSelectionMode::Random,
+                },
+            );
+            random.instruction_actor = Some(actor);
+            let mut dependent = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 10 },
+                    player: TargetFilter::Controller,
+                },
+            );
+            let mut tail = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::Controller,
+                },
+            );
+            tail.sub_link = SubAbilityLink::SequentialSibling;
+            dependent.sub_ability = Some(Box::new(tail));
+            random.sub_ability = Some(Box::new(dependent));
+            random.else_ability = Some(Box::new(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 100 },
+                    player: TargetFilter::Controller,
+                },
+            )));
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Missing Random Actor", false)
+                .with_ability_definition(random)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            let before = runner.state().rng.outcome_draws();
+            let outcome = runner.cast(spell).resolve();
+            assert_eq!(outcome.state().rng.outcome_draws(), before);
+            assert_eq!(outcome.state().last_named_choice, None);
+            assert!(outcome.state().objects[&spell].chosen_attributes.is_empty());
+            assert!(!outcome.events().iter().any(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Choose, source_id, .. } if *source_id == spell)));
+            outcome.assert_life_delta(P0, 1);
+            assert_eq!(outcome.events().iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)).count(), 1);
+            outcome.assert_zone(&[spell], Zone::Graveyard);
+            assert!(outcome.state().stack.is_empty());
+        }
+    }
+
+    #[test]
+    fn instruction_actor_random_scoped_repeat_admits_each_actual_instruction_once() {
+        let mut scenario = GameScenario::new_n_player(3, 42);
+        scenario.at_phase(Phase::PreCombatMain);
+        let mut random = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Choose {
+                choice_type: ChoiceType::opponent(),
+                persist: false,
+                selection: TargetSelectionMode::Random,
+            },
+        );
+        random.player_scope = Some(PlayerFilter::Opponent);
+        random.instruction_actor = Some(ControllerRef::ScopedPlayer);
+        random.repeat_for = Some(QuantityExpr::Fixed { value: 2 });
+        let spell = scenario
+            .add_spell_to_hand(P0, "Synthetic Repeated Scoped Random", false)
+            .with_ability_definition(random)
+            .with_mana_cost(ManaCost::zero())
+            .id();
+        let mut runner = scenario.build();
+        let before = runner.state().rng.outcome_draws();
+        let outcome = runner.cast(spell).resolve();
+        assert_eq!(outcome.state().rng.outcome_draws() - before, 4);
+        assert_eq!(outcome.events().iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Choose, source_id, .. } if *source_id == spell)).count(), 4);
+        assert_eq!(
+            outcome.state().objects[&spell].abilities[0].instruction_actor,
+            Some(ControllerRef::ScopedPlayer)
+        );
+        assert!(matches!(
+            outcome.final_waiting_for(),
+            WaitingFor::Priority { .. }
+        ));
+    }
+
+    #[test]
+    fn instruction_actor_random_zone_choice_binds_before_controller_pool_and_skips_missing_authority(
+    ) {
+        for (actor, with_incoming, count, expected_move) in [
+            (None, false, 1, true),
+            (
+                Some(ControllerRef::SpecificPlayer { id: P1 }),
+                false,
+                1,
+                true,
+            ),
+            (Some(ControllerRef::ParentTargetOwner), true, 1, true),
+            (Some(ControllerRef::ParentTargetOwner), false, 1, false),
+            (
+                Some(ControllerRef::SpecificPlayer { id: P1 }),
+                false,
+                1,
+                false,
+            ),
+            (
+                Some(ControllerRef::SpecificPlayer { id: P1 }),
+                false,
+                0,
+                false,
+            ),
+        ] {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            let p0_card = scenario
+                .add_creature_to_graveyard(P0, "P0 Decoy", 1, 1)
+                .id();
+            let empty_pool = actor == Some(ControllerRef::SpecificPlayer { id: P1 })
+                && count == 1
+                && !expected_move;
+            let p1_card = if empty_pool {
+                scenario
+                    .add_creature_to_hand(P1, "Outside the pool", 1, 1)
+                    .id()
+            } else {
+                scenario
+                    .add_creature_to_graveyard(P1, "P1 Exact", 1, 1)
+                    .id()
+            };
+            let incoming = scenario
+                .add_creature(P1, "Incoming Owner", 2, 2)
+                .controlled_by(P0)
+                .id();
+            let mut random = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::ChooseFromZone {
+                    count,
+                    zone: Zone::Graveyard,
+                    additional_zones: vec![],
+                    zone_owner: ZoneOwner::Controller,
+                    filter: None,
+                    chooser: ZoneChoiceChooser::Controller,
+                    candidate_source: ZoneChoiceCandidateSource::Direct,
+                    reciprocal_role: None,
+                    up_to: false,
+                    constraint: None,
+                    selection: crate::types::ability::CardSelectionMode::Random,
+                },
+            );
+            random.instruction_actor = actor.clone();
+            let mut delivery = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::ChangeZone {
+                    origin: Some(Zone::Graveyard),
+                    destination: Zone::Hand,
+                    target: TargetFilter::ParentTarget,
+                    owner_library: false,
+                    enter_transformed: false,
+                    enters_under: None,
+                    enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                    enters_attacking: false,
+                    up_to: false,
+                    enter_with_counters: vec![],
+                    conditional_enter_with_counters: vec![],
+                    face_down_profile: None,
+                    enters_modified_if: None,
+                },
+            );
+            let mut tail = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::OriginalController,
+                },
+            );
+            tail.sub_link = SubAbilityLink::SequentialSibling;
+            delivery.sub_ability = Some(Box::new(tail));
+            random.sub_ability = Some(Box::new(delivery));
+            let root = if with_incoming {
+                let mut head = AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::TargetOnly {
+                        target: TargetFilter::Typed(TypedFilter::creature()),
+                    },
+                );
+                head.sub_ability = Some(Box::new(random));
+                head
+            } else {
+                random
+            };
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Random Zone Actor", false)
+                .with_ability_definition(root)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            let before = runner.state().rng.outcome_draws();
+            let cast = runner.cast(spell);
+            let outcome = if with_incoming {
+                cast.target_object(incoming).resolve()
+            } else {
+                cast.resolve()
+            };
+            let selected = if actor.is_none() { p0_card } else { p1_card };
+            outcome.assert_zone(
+                &[selected],
+                if expected_move || empty_pool {
+                    Zone::Hand
+                } else {
+                    Zone::Graveyard
+                },
+            );
+            outcome.assert_zone(
+                &[if selected == p0_card {
+                    p1_card
+                } else {
+                    p0_card
+                }],
+                Zone::Graveyard,
+            );
+            outcome.assert_zone(&[incoming], Zone::Battlefield);
+            assert_eq!(
+                outcome.state().rng.outcome_draws() - before,
+                u64::from(expected_move)
+            );
+            outcome.assert_life_delta(P0, 1);
+            outcome.assert_zone(&[spell], Zone::Graveyard);
+            assert!(matches!(
+                outcome.final_waiting_for(),
+                WaitingFor::Priority { .. }
+            ));
+        }
+    }
+
+    /// Synthetic typed metadata on the ordinary cast pipeline. Electing the
+    /// broad slot first can consume A alone; a forced-first reservation cannot.
+    #[test]
+    fn instruction_actor_sacrifice_orders_interacting_forced_slots_before_reserving() {
+        let p2 = PlayerId(2);
+        for narrow_first in [false, true] {
+            let mut scenario = GameScenario::new_n_player(3, 42);
+            scenario
+                .at_phase(Phase::PreCombatMain)
+                .with_life(P1, 20)
+                .with_life(p2, 1);
+            let a = scenario.add_creature(P1, "A", 1, 3).id();
+            let b = scenario.add_creature(P1, "B", 2, 3).id();
+            let decoy = scenario.add_creature(p2, "Scope Decoy", 1, 3).id();
+            let mut instruction = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Sacrifice {
+                    target: TargetFilter::Typed(
+                        crate::types::ability::TypedFilter::creature().properties(vec![
+                            FilterProp::PtComparison {
+                                stat: crate::types::ability::PtStat::Power,
+                                scope: crate::types::ability::PtValueScope::Current,
+                                comparator: crate::types::ability::Comparator::LE,
+                                value: QuantityExpr::Ref {
+                                    qty: QuantityRef::LifeTotal {
+                                        player: PlayerScope::ScopedPlayer,
+                                    },
+                                },
+                            },
+                        ]),
+                    ),
+                    count: QuantityExpr::Fixed { value: 1 },
+                    min_count: 1,
+                },
+            );
+            instruction.player_scope = Some(PlayerFilter::Opponent);
+            instruction.instruction_actor = Some(ControllerRef::SpecificPlayer { id: P1 });
+            let mut tail = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::OriginalController,
+                },
+            );
+            tail.sub_link = SubAbilityLink::SequentialSibling;
+            instruction.sub_ability = Some(Box::new(tail));
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Interacting Sacrifice", false)
+                .with_ability_definition(instruction)
+                .with_mana_cost(crate::types::mana::ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            runner.cast(spell).resolve();
+            let pending = runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .as_ref()
+                .expect("ordinary coordinator admitted slots");
+            assert_eq!(
+                pending.admitted_actors,
+                Some([(P1, P1), (p2, P1)].into_iter().collect())
+            );
+            assert!(pending.selections.is_empty());
+            assert!(matches!(&runner.state().waiting_for,
+                WaitingFor::ChooseFromZoneOpponentChooser { player: P1, candidates, ability, purpose: ZoneOpponentChooserPurpose::PerPlayerChoiceOrder }
+                    if candidates == &vec![P1, p2] && ability.as_ref() == pending.ability.as_ref()));
+            assert_eq!(runner.state().waiting_for.acting_player(), Some(P1));
+            for slot in [P1, p2] {
+                assert!(crate::ai_support::legal_actions(runner.state())
+                    .iter()
+                    .any(|action| matches!(action,
+                    GameAction::ChooseZoneOpponentChooser { opponent } if *opponent == slot)));
+            }
+            assert_eq!(
+                crate::game::turn_control::authorized_submitter_for_player(runner.state(), P1),
+                P1
+            );
+            let before = runner.state().pending_player_scope_sacrifice_choice.clone();
+            assert!(runner
+                .act(GameAction::ChooseZoneOpponentChooser { opponent: P0 })
+                .is_err());
+            assert_eq!(runner.state().pending_player_scope_sacrifice_choice, before);
+            let mut malformed = runner.state().clone();
+            malformed
+                .pending_player_scope_sacrifice_choice
+                .as_mut()
+                .unwrap()
+                .admitted_actors
+                .as_mut()
+                .unwrap()
+                .remove(&p2);
+            assert!(matches!(
+                crate::types::game_state::PersistedGameState::capture(malformed).into_game_state(),
+                Err(crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(_))
+            ));
+            let mut missing = runner.state().clone();
+            missing
+                .pending_player_scope_sacrifice_choice
+                .as_mut()
+                .unwrap()
+                .admitted_actors = None;
+            assert!(matches!(
+                crate::types::game_state::PersistedGameState::capture(missing).into_game_state(),
+                Err(crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(_))
+            ));
+            let mut duplicated = runner.state().clone();
+            duplicated
+                .pending_player_scope_sacrifice_choice
+                .as_mut()
+                .unwrap()
+                .remaining_players
+                .push(P1);
+            assert!(matches!(
+                crate::types::game_state::PersistedGameState::capture(duplicated).into_game_state(),
+                Err(crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(_))
+            ));
+            let mut wrong_template = runner.state().clone();
+            if let WaitingFor::ChooseFromZoneOpponentChooser { ability, .. } =
+                &mut wrong_template.waiting_for
+            {
+                ability.instruction_actor = Some(ControllerRef::You);
+            }
+            assert!(matches!(
+                crate::types::game_state::PersistedGameState::capture(wrong_template)
+                    .into_game_state(),
+                Err(crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(_))
+            ));
+            let mut subset = runner.state().clone();
+            if let WaitingFor::ChooseFromZoneOpponentChooser { candidates, .. } =
+                &mut subset.waiting_for
+            {
+                candidates.pop();
+            }
+            assert!(matches!(
+                crate::types::game_state::PersistedGameState::capture(subset.clone())
+                    .into_game_state(),
+                Err(crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(_))
+            ));
+            let mut corrupt_runner = GameRunner::from_state(subset);
+            let before = corrupt_runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .clone();
+            assert!(corrupt_runner
+                .act(GameAction::ChooseZoneOpponentChooser { opponent: P1 })
+                .is_err());
+            assert_eq!(
+                corrupt_runner.state().pending_player_scope_sacrifice_choice,
+                before
+            );
+            let mut wrong_phase = runner.state().clone();
+            let cursor = wrong_phase
+                .pending_player_scope_sacrifice_choice
+                .as_mut()
+                .unwrap();
+            cursor.remaining_players.clear();
+            cursor.admitted_actors.as_mut().unwrap().clear();
+            assert!(matches!(
+                crate::types::game_state::PersistedGameState::capture(wrong_phase)
+                    .into_game_state(),
+                Err(crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(_))
+            ));
+            let saved = serde_json::to_vec(&crate::types::game_state::PersistedGameState::capture(
+                runner.state().clone(),
+            ))
+            .unwrap();
+            let restored: crate::types::game_state::PersistedGameState =
+                serde_json::from_slice(&saved).unwrap();
+            runner = GameRunner::from_state(restored.into_game_state().unwrap());
+            let chosen_slot = if narrow_first { p2 } else { P1 };
+            let result = runner
+                .act(GameAction::ChooseZoneOpponentChooser {
+                    opponent: chosen_slot,
+                })
+                .unwrap();
+            let mut events = result.events;
+            if !narrow_first {
+                assert!(matches!(&runner.state().waiting_for,
+                    WaitingFor::EffectZoneChoice { player: P1, cards, count: 1, .. } if cards.contains(&a) && cards.contains(&b)));
+                assert_eq!(
+                    runner
+                        .state()
+                        .pending_player_scope_sacrifice_choice
+                        .as_ref()
+                        .unwrap()
+                        .remaining_players[0],
+                    P1
+                );
+                assert_eq!(runner.state().objects[&a].zone, Zone::Battlefield);
+                assert_eq!(runner.state().objects[&b].zone, Zone::Battlefield);
+                for wrong_cards in [false, true] {
+                    let mut malformed = runner.state().clone();
+                    if let WaitingFor::EffectZoneChoice { cards, count, .. } =
+                        &mut malformed.waiting_for
+                    {
+                        if wrong_cards {
+                            cards.retain(|id| *id != b);
+                        } else {
+                            *count += 1;
+                        }
+                    }
+                    assert!(matches!(
+                        crate::types::game_state::PersistedGameState::capture(malformed.clone())
+                            .into_game_state(),
+                        Err(
+                            crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(
+                                _
+                            )
+                        )
+                    ));
+                    let mut corrupt_runner = GameRunner::from_state(malformed);
+                    let before = corrupt_runner
+                        .state()
+                        .pending_player_scope_sacrifice_choice
+                        .clone();
+                    assert!(corrupt_runner
+                        .act(GameAction::SelectCards { cards: vec![a] })
+                        .is_err());
+                    assert_eq!(
+                        corrupt_runner.state().pending_player_scope_sacrifice_choice,
+                        before
+                    );
+                }
+                runner = restore_actor_prompt(runner);
+                let before_wrong_selection =
+                    runner.state().pending_player_scope_sacrifice_choice.clone();
+                assert!(runner
+                    .act(GameAction::SelectCards { cards: vec![decoy] })
+                    .is_err());
+                assert_eq!(
+                    runner.state().pending_player_scope_sacrifice_choice,
+                    before_wrong_selection
+                );
+                let selected = runner
+                    .act(GameAction::SelectCards { cards: vec![a] })
+                    .unwrap();
+                events.extend(selected.events);
+            }
+            assert_eq!(runner.state().objects[&a].zone, Zone::Graveyard);
+            assert_eq!(
+                runner.state().objects[&b].zone,
+                if narrow_first {
+                    Zone::Graveyard
+                } else {
+                    Zone::Battlefield
+                }
+            );
+            assert_eq!(runner.state().objects[&decoy].zone, Zone::Battlefield);
+            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::PermanentSacrificed { player_id: P1, object_id, .. }
+                if *object_id == a || *object_id == b)).count(), if narrow_first { 2 } else { 1 });
+            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Sacrifice, source_id, .. } if *source_id == spell)).count(), 1);
+            assert_eq!(runner.life(P0), 21, "independent tail runs exactly once");
+            assert!(runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .is_none());
+            assert!(runner.state().stack.is_empty());
+            assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+            assert!(matches!(
+                runner.state().waiting_for,
+                WaitingFor::Priority { .. }
+            ));
+        }
+    }
+
+    fn actor_sacrifice_definition(
+        actor: Option<ControllerRef>,
+        scope: PlayerFilter,
+    ) -> AbilityDefinition {
+        let mut definition = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Sacrifice {
+                target: TargetFilter::Typed(TypedFilter::creature()),
+                count: QuantityExpr::Fixed { value: 1 },
+                min_count: 1,
+            },
+        );
+        definition.player_scope = Some(scope);
+        definition.instruction_actor = actor;
+        let mut tail = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player: TargetFilter::OriginalController,
+            },
+        );
+        tail.sub_link = SubAbilityLink::SequentialSibling;
+        definition.sub_ability = Some(Box::new(tail));
+        definition
+    }
+
+    fn restore_actor_prompt(runner: GameRunner) -> GameRunner {
+        let bytes = serde_json::to_vec(&crate::types::game_state::PersistedGameState::capture(
+            runner.state().clone(),
+        ))
+        .unwrap();
+        let saved: crate::types::game_state::PersistedGameState =
+            serde_json::from_slice(&bytes).unwrap();
+        GameRunner::from_state(
+            saved
+                .into_game_state()
+                .expect("generated actor prompt restores"),
+        )
+    }
+
+    #[test]
+    fn instruction_actor_real_executioner_keeps_apnap_choices_before_simultaneous_moves() {
+        for actor in [None, Some(ControllerRef::ScopedPlayer)] {
+            let legacy_resume = actor.is_none();
+            let mut scenario = GameScenario::new_n_player(3, 42);
+            scenario.at_phase(Phase::PreCombatMain);
+            let source = scenario
+                .add_creature_to_hand_from_oracle(
+                    P0,
+                    "Merciless Executioner",
+                    3,
+                    1,
+                    "When this creature enters, each player sacrifices a creature of their choice.",
+                )
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let choices: Vec<_> = [P0, P1, PlayerId(2)]
+                .into_iter()
+                .map(|player| {
+                    [
+                        scenario.add_creature(player, "Chosen", 1, 2).id(),
+                        scenario.add_creature(player, "Decoy", 2, 2).id(),
+                    ]
+                })
+                .collect();
+            let mut runner = scenario.build();
+            {
+                // The None row explicitly models a pre-metadata definition;
+                // the ScopedPlayer row retains the newly parsed subject.
+                let object = runner.state_mut().objects.get_mut(&source).unwrap();
+                object.trigger_definitions[0]
+                    .definition
+                    .execute
+                    .as_mut()
+                    .unwrap()
+                    .instruction_actor = actor.clone();
+                std::sync::Arc::make_mut(&mut object.base_trigger_definitions)[0]
+                    .execute
+                    .as_mut()
+                    .unwrap()
+                    .instruction_actor = actor;
+            }
+            runner.cast(source).resolve();
+            let mut events = Vec::new();
+            for (index, player) in [P0, P1, PlayerId(2)].into_iter().enumerate() {
+                assert!(
+                    matches!(&runner.state().waiting_for, WaitingFor::EffectZoneChoice { player: actual, cards, .. }
+                    if *actual == player && cards.contains(&choices[index][0]) && cards.contains(&choices[index][1]))
+                );
+                let pending = runner
+                    .state()
+                    .pending_player_scope_sacrifice_choice
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(
+                    pending.admitted_actors.as_ref().unwrap().get(&player),
+                    Some(&player)
+                );
+                for choice in &choices {
+                    assert_eq!(
+                        runner.state().objects[&choice[0]].zone,
+                        Zone::Battlefield,
+                        "every choice precedes every move"
+                    );
+                }
+                if legacy_resume && index == 0 {
+                    // Explicit old actor-free cursor contract: the already
+                    // produced chooser's slot was excluded from its remainder.
+                    let pending = runner
+                        .state_mut()
+                        .pending_player_scope_sacrifice_choice
+                        .as_mut()
+                        .unwrap();
+                    pending.ability.instruction_actor = None;
+                    pending.admitted_actors = None;
+                    assert_eq!(pending.remaining_players.remove(0), player);
+                }
+                runner = restore_actor_prompt(runner);
+                events.extend(
+                    runner
+                        .act(GameAction::SelectCards {
+                            cards: vec![choices[index][0]],
+                        })
+                        .unwrap()
+                        .events,
+                );
+            }
+            for choice in &choices {
+                assert_eq!(runner.state().objects[&choice[0]].zone, Zone::Graveyard);
+                assert_eq!(runner.state().objects[&choice[1]].zone, Zone::Battlefield);
+            }
+            let departed: Vec<_> = choices.iter().map(|choice| choice[0]).collect();
+            for event in &events {
+                if let GameEvent::ZoneChanged {
+                    object_id,
+                    from: Some(Zone::Battlefield),
+                    record,
+                    ..
+                } = event
+                {
+                    if departed.contains(object_id) {
+                        assert_eq!(
+                            record.co_departed.iter().copied().collect::<HashSet<_>>(),
+                            departed
+                                .iter()
+                                .copied()
+                                .filter(|id| id != object_id)
+                                .collect()
+                        );
+                    }
+                }
+            }
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, GameEvent::PermanentSacrificed { .. }))
+                    .count(),
+                3
+            );
+            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Sacrifice, source_id, .. } if *source_id == source)).count(), 1);
+            assert_eq!(runner.state().objects[&source].zone, Zone::Battlefield);
+            assert!(runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .is_none());
+            assert!(runner.state().stack.is_empty());
+        }
+    }
+
+    #[test]
+    fn instruction_actor_sacrifice_orders_same_actor_choices_without_reusing_reserved_cards() {
+        for actor in [ControllerRef::You, ControllerRef::SpecificPlayer { id: P1 }] {
+            let actual = if actor == ControllerRef::You { P0 } else { P1 };
+            let mut scenario = GameScenario::new_n_player(3, 42);
+            scenario.at_phase(Phase::PreCombatMain);
+            let cards: Vec<_> = (0..3)
+                .map(|index| {
+                    scenario
+                        .add_creature(actual, &format!("Actor {index}"), 1, 2)
+                        .id()
+                })
+                .collect();
+            let decoy = scenario
+                .add_creature(PlayerId(2), "Scope owner decoy", 1, 2)
+                .id();
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Actor Sacrifice", false)
+                .with_ability_definition(actor_sacrifice_definition(
+                    Some(actor),
+                    PlayerFilter::Opponent,
+                ))
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            runner.cast(spell).resolve();
+            assert!(
+                matches!(&runner.state().waiting_for, WaitingFor::ChooseFromZoneOpponentChooser { player, candidates, purpose: ZoneOpponentChooserPurpose::PerPlayerChoiceOrder, .. } if *player == actual && candidates == &vec![P1, PlayerId(2)])
+            );
+            runner = restore_actor_prompt(runner);
+            runner
+                .act(GameAction::ChooseZoneOpponentChooser {
+                    opponent: PlayerId(2),
+                })
+                .unwrap();
+            assert!(
+                matches!(&runner.state().waiting_for, WaitingFor::EffectZoneChoice { player, cards: offered, .. } if *player == actual && offered == &cards)
+            );
+            runner = restore_actor_prompt(runner);
+            let mut events = runner
+                .act(GameAction::SelectCards {
+                    cards: vec![cards[0]],
+                })
+                .unwrap()
+                .events;
+            assert!(events
+                .iter()
+                .all(|event| !matches!(event, GameEvent::PermanentSacrificed { .. })));
+            assert_eq!(runner.state().objects[&cards[0]].zone, Zone::Battlefield);
+            assert!(
+                matches!(&runner.state().waiting_for, WaitingFor::EffectZoneChoice { player, cards: offered, .. }
+                if *player == actual && !offered.contains(&cards[0]) && offered.contains(&cards[1]) && offered.contains(&cards[2]))
+            );
+            assert_eq!(
+                runner
+                    .state()
+                    .pending_player_scope_sacrifice_choice
+                    .as_ref()
+                    .unwrap()
+                    .selections,
+                vec![(actual, vec![cards[0]])]
+            );
+            runner = restore_actor_prompt(runner);
+            events.extend(
+                runner
+                    .act(GameAction::SelectCards {
+                        cards: vec![cards[1]],
+                    })
+                    .unwrap()
+                    .events,
+            );
+            assert_eq!(runner.state().objects[&cards[0]].zone, Zone::Graveyard);
+            assert_eq!(runner.state().objects[&cards[1]].zone, Zone::Graveyard);
+            assert_eq!(runner.state().objects[&cards[2]].zone, Zone::Battlefield);
+            assert_eq!(runner.state().objects[&decoy].zone, Zone::Battlefield);
+            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::PermanentSacrificed { player_id, .. } if *player_id == actual)).count(), 2);
+            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Sacrifice, source_id, .. } if *source_id == spell)).count(), 1);
+            assert_eq!(runner.life(P0), 21);
+            assert!(runner.state().stack.is_empty());
+        }
+    }
+
+    #[test]
+    fn instruction_actor_sacrifice_order_keeps_scope_sensitive_counts_and_a_resolved_choice_actor()
+    {
+        let mut scenario = GameScenario::new_n_player(3, 42);
+        scenario.at_phase(Phase::PreCombatMain);
+        let counted_decoys = [
+            scenario.add_creature(P0, "Scope P0 count one", 1, 2).id(),
+            scenario
+                .add_creature(PlayerId(2), "Scope P2 first", 1, 2)
+                .id(),
+            scenario
+                .add_creature(PlayerId(2), "Scope P2 second", 1, 2)
+                .id(),
+        ];
+        let cards: Vec<_> = (0..4)
+            .map(|index| {
+                scenario
+                    .add_creature(P1, &format!("Counted {index}"), 1, 2)
+                    .id()
+            })
+            .collect();
+        let mut sacrifice = actor_sacrifice_definition(
+            Some(ControllerRef::ChosenPlayer { index: 0 }),
+            PlayerFilter::AnyOf {
+                filters: vec![
+                    PlayerFilter::SpecificPlayer { id: P0 },
+                    PlayerFilter::SpecificPlayer { id: PlayerId(2) },
+                ],
+            },
+        );
+        if let Effect::Sacrifice { count, .. } = &mut *sacrifice.effect {
+            *count = QuantityExpr::Ref {
+                qty: QuantityRef::ObjectCount {
+                    filter: TargetFilter::Typed(
+                        TypedFilter::creature().controller(ControllerRef::ScopedPlayer),
+                    ),
+                },
+            };
+        }
+        let mut prior = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Choose {
+                choice_type: ChoiceType::player(),
+                persist: false,
+                selection: TargetSelectionMode::Chosen,
+            },
+        );
+        prior.sub_ability = Some(Box::new(sacrifice));
+        let spell = scenario
+            .add_spell_to_hand(P0, "Synthetic Distinct Scope Counts", false)
+            .with_ability_definition(prior)
+            .with_mana_cost(ManaCost::zero())
+            .id();
+        let mut runner = scenario.build();
+        runner.cast(spell).choose_option("1").resolve();
+        assert!(matches!(
+            &runner.state().waiting_for,
+            WaitingFor::ChooseFromZoneOpponentChooser { player: P1, candidates, .. }
+                if candidates == &vec![P0, PlayerId(2)]
+        ));
+        assert_eq!(
+            runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .as_ref()
+                .unwrap()
+                .admitted_actors,
+            Some(BTreeMap::from([(P0, P1), (PlayerId(2), P1)]))
+        );
+        runner
+            .act(GameAction::ChooseZoneOpponentChooser {
+                opponent: PlayerId(2),
+            })
+            .unwrap();
+        assert!(
+            matches!(&runner.state().waiting_for, WaitingFor::EffectZoneChoice { player: P1, count: 2, cards: offered, .. } if offered == &cards)
+        );
+        runner = restore_actor_prompt(runner);
+        let mut events = runner
+            .act(GameAction::SelectCards {
+                cards: cards[..2].to_vec(),
+            })
+            .unwrap()
+            .events;
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, GameEvent::PermanentSacrificed { .. })));
+        assert_eq!(
+            runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .as_ref()
+                .unwrap()
+                .selections,
+            vec![(P1, cards[..2].to_vec())]
+        );
+        assert!(
+            matches!(&runner.state().waiting_for, WaitingFor::EffectZoneChoice { player: P1, count: 1, cards: offered, .. } if offered == &cards[2..])
+        );
+        assert!(cards
+            .iter()
+            .all(|id| runner.state().objects[id].zone == Zone::Battlefield));
+        events.extend(
+            runner
+                .act(GameAction::SelectCards {
+                    cards: vec![cards[2]],
+                })
+                .unwrap()
+                .events,
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    GameEvent::PermanentSacrificed { player_id: P1, .. }
+                ))
+                .count(),
+            3
+        );
+        assert_eq!(runner.state().objects[&cards[3]].zone, Zone::Battlefield);
+        assert!(counted_decoys
+            .iter()
+            .all(|id| runner.state().objects[id].zone == Zone::Battlefield));
+        assert_eq!(runner.life(P0), 21);
+        assert!(runner.state().stack.is_empty());
+    }
+
+    #[test]
+    fn instruction_actor_sacrifice_all_forced_disjoint_or_empty_slots_need_no_order_prompt() {
+        for have_second in [false, true] {
+            let mut scenario = GameScenario::new_n_player(4, 42);
+            scenario
+                .at_phase(Phase::PreCombatMain)
+                .with_life(P1, 1)
+                .with_life(PlayerId(2), 2)
+                .with_life(PlayerId(3), 3);
+            let a = scenario.add_creature(P1, "Forced power one", 1, 2).id();
+            let b = if have_second {
+                Some(scenario.add_creature(P1, "Forced power two", 2, 2).id())
+            } else {
+                None
+            };
+            let mut definition = actor_sacrifice_definition(
+                Some(ControllerRef::SpecificPlayer { id: P1 }),
+                PlayerFilter::Opponent,
+            );
+            if let Effect::Sacrifice { target, .. } = &mut *definition.effect {
+                *target = TargetFilter::Typed(TypedFilter::creature().properties(vec![
+                    FilterProp::PtComparison {
+                        stat: crate::types::ability::PtStat::Power,
+                        scope: crate::types::ability::PtValueScope::Current,
+                        comparator: crate::types::ability::Comparator::EQ,
+                        value: QuantityExpr::Ref {
+                            qty: QuantityRef::LifeTotal {
+                                player: PlayerScope::ScopedPlayer,
+                            },
+                        },
+                    },
+                ]));
+            }
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Safe Automatic Slots", false)
+                .with_ability_definition(definition)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            let outcome = runner.cast(spell).resolve();
+            outcome.assert_zone(&[a], Zone::Graveyard);
+            if let Some(b) = b {
+                outcome.assert_zone(&[b], Zone::Graveyard);
+            }
+            assert!(outcome
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .is_none());
+            assert!(matches!(
+                outcome.final_waiting_for(),
+                WaitingFor::Priority { .. }
+            ));
+            assert_eq!(
+                outcome
+                    .events()
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        GameEvent::PermanentSacrificed { player_id: P1, .. }
+                    ))
+                    .count(),
+                if have_second { 2 } else { 1 }
+            );
+            outcome.assert_life_delta(P0, 1);
+        }
+    }
+
+    /// CR 101.4: typed synthetic casts retain the existing explicit starting anchor.
+    #[test]
+    fn instruction_actor_sacrifice_keeps_starting_anchor_and_turn_direction() {
+        let p2 = PlayerId(2);
+        for actor in [None, Some(ControllerRef::ScopedPlayer)] {
+            for anchor in [ControllerRef::You, ControllerRef::SpecificPlayer { id: P1 }] {
+                for reversed in [false, true] {
+                    let mut scenario = GameScenario::new_n_player(3, 42);
+                    scenario.at_phase(Phase::PreCombatMain);
+                    let pools: Vec<_> = [P0, P1, p2]
+                        .into_iter()
+                        .map(|player| {
+                            [
+                                scenario.add_creature(player, "First option", 1, 2).id(),
+                                scenario.add_creature(player, "Second option", 1, 2).id(),
+                            ]
+                        })
+                        .collect();
+                    let mut definition =
+                        actor_sacrifice_definition(actor.clone(), PlayerFilter::All);
+                    definition.starting_with = Some(anchor.clone());
+                    let spell = scenario
+                        .add_spell_to_hand(P0, "Synthetic Anchored Sacrifice", true)
+                        .with_ability_definition(definition)
+                        .with_mana_cost(ManaCost::zero())
+                        .id();
+                    let mut runner = scenario.build();
+                    runner.state_mut().active_player = p2;
+                    if reversed {
+                        runner.state_mut().turn_direction =
+                            crate::types::phase::TurnDirection::Reversed;
+                    }
+                    let expected = match (&anchor, reversed) {
+                        (ControllerRef::You, false) => vec![P0, P1, p2],
+                        (ControllerRef::You, true) => vec![P0, p2, P1],
+                        (_, false) => vec![P1, p2, P0],
+                        (_, true) => vec![P1, P0, p2],
+                    };
+                    let mut events = runner.cast(spell).resolve().events().to_vec();
+                    for player in expected {
+                        assert!(matches!(&runner.state().waiting_for,
+                            WaitingFor::EffectZoneChoice { player: actual, cards, .. }
+                            if *actual == player && cards == &pools[player.0 as usize].to_vec()));
+                        assert!(pools
+                            .iter()
+                            .flatten()
+                            .all(|id| runner.state().objects[id].zone == Zone::Battlefield));
+                        events.extend(
+                            runner
+                                .act(GameAction::SelectCards {
+                                    cards: vec![pools[player.0 as usize][0]],
+                                })
+                                .unwrap()
+                                .events,
+                        );
+                    }
+                    assert_eq!(
+                        events
+                            .iter()
+                            .filter(|event| matches!(event, GameEvent::PermanentSacrificed { .. }))
+                            .count(),
+                        3
+                    );
+                    assert_eq!(runner.life(P0), 21);
+                    assert!(runner.state().stack.is_empty());
+                    for pool in pools {
+                        assert_eq!(runner.state().objects[&pool[0]].zone, Zone::Graveyard);
+                        assert_eq!(runner.state().objects[&pool[1]].zone, Zone::Battlefield);
+                    }
+                }
+            }
+        }
+    }
+
+    /// CR 101.3: the eligible head has only its detached independent tail in every row.
+    #[test]
+    fn instruction_actor_missing_sacrifice_coordinator_preserves_prior_result_and_tail() {
+        for actor in [
+            ControllerRef::ChosenPlayer { index: 0 },
+            ControllerRef::Opponent,
+            ControllerRef::SpecificPlayer { id: P1 },
+        ] {
+            let resolved = matches!(actor, ControllerRef::SpecificPlayer { .. });
+            let mut scenario = GameScenario::new_n_player(3, 42);
+            scenario.at_phase(Phase::PreCombatMain);
+            let sentinel = scenario
+                .add_creature(P0, "Prior sacrifice result", 1, 2)
+                .id();
+            let pools: Vec<_> = [P1, P1, P1, PlayerId(2), PlayerId(2)]
+                .into_iter()
+                .map(|player| {
+                    scenario
+                        .add_creature(player, "Nonempty coordinator pool", 1, 2)
+                        .id()
+                })
+                .collect();
+            let mut head = actor_sacrifice_definition(Some(actor), PlayerFilter::Opponent);
+            head.else_ability = Some(Box::new(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 100 },
+                    player: TargetFilter::OriginalController,
+                },
+            )));
+            let mut prior = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Sacrifice {
+                    target: TargetFilter::Typed(TypedFilter::creature()),
+                    count: QuantityExpr::Fixed { value: 1 },
+                    min_count: 1,
+                },
+            );
+            prior.sub_ability = Some(Box::new(head));
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Missing Coordinator", false)
+                .with_ability_definition(prior)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            let sentinel_set = TrackedSetId(runner.state().next_tracked_set_id);
+            runner.state_mut().next_tracked_set_id += 1;
+            runner
+                .state_mut()
+                .tracked_object_sets
+                .insert(sentinel_set, vec![sentinel]);
+            let mut events = runner.cast(spell).resolve().events().to_vec();
+            assert_eq!(runner.state().objects[&sentinel].zone, Zone::Graveyard);
+            assert_eq!(
+                runner.state().tracked_object_sets.get(&sentinel_set),
+                Some(&vec![sentinel]),
+                "prior tracked-set sentinel remains intact"
+            );
+            if resolved {
+                let pending = runner
+                    .state()
+                    .pending_player_scope_sacrifice_choice
+                    .as_ref()
+                    .unwrap();
+                assert!(
+                    pending.ability.sub_ability.is_none(),
+                    "same eligible coordinated head"
+                );
+                assert_eq!(
+                    pending.admitted_actors,
+                    Some([(P1, P1), (PlayerId(2), P1)].into_iter().collect())
+                );
+                assert!(pending.selections.is_empty());
+                assert!(matches!(
+                    runner.state().waiting_for,
+                    WaitingFor::ChooseFromZoneOpponentChooser { player: P1, .. }
+                ));
+                events.extend(
+                    runner
+                        .act(GameAction::ChooseZoneOpponentChooser { opponent: P1 })
+                        .unwrap()
+                        .events,
+                );
+                events.extend(
+                    runner
+                        .act(GameAction::SelectCards {
+                            cards: vec![pools[0]],
+                        })
+                        .unwrap()
+                        .events,
+                );
+                let mut wrong_reserved = runner.state().clone();
+                if let WaitingFor::EffectZoneChoice { cards, .. } = &mut wrong_reserved.waiting_for
+                {
+                    assert!(!cards.contains(&pools[0]));
+                    cards.push(pools[0]);
+                } else {
+                    panic!("same-shape positive must reach its second selection prompt");
+                }
+                assert!(matches!(
+                    crate::types::game_state::PersistedGameState::capture(wrong_reserved)
+                        .into_game_state(),
+                    Err(crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(_))
+                ));
+                runner = restore_actor_prompt(runner);
+                events.extend(
+                    runner
+                        .act(GameAction::SelectCards {
+                            cards: vec![pools[1]],
+                        })
+                        .unwrap()
+                        .events,
+                );
+            } else {
+                assert!(pools
+                    .iter()
+                    .all(|id| runner.state().objects[id].zone == Zone::Battlefield));
+                assert_eq!(
+                    runner.state().last_effect_count,
+                    Some(1),
+                    "missing admission preserves the real prior result"
+                );
+                assert!(
+                    !runner
+                        .state()
+                        .tracked_object_sets
+                        .values()
+                        .any(|set| set.is_empty()),
+                    "no fabricated empty sacrifice publication"
+                );
+            }
+            assert!(runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .is_none());
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, GameEvent::PermanentSacrificed { .. }))
+                    .count(),
+                if resolved { 3 } else { 1 }
+            );
+            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Sacrifice, source_id, .. } if *source_id == spell)).count(), if resolved { 2 } else { 1 });
+            assert_eq!(runner.life(P0), 21, "tail once and no else");
+            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)).count(), 1);
+            assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+            assert!(runner.state().stack.is_empty());
+            assert!(matches!(
+                runner.state().waiting_for,
+                WaitingFor::Priority { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn instruction_actor_missing_sacrifice_has_no_choice_auto_move_result_or_else() {
+        for actor in [
+            ControllerRef::ChosenPlayer { index: 0 },
+            ControllerRef::Opponent,
+        ] {
+            let mut scenario = GameScenario::new_n_player(3, 42);
+            scenario.at_phase(Phase::PreCombatMain);
+            let pools: Vec<_> = [P0, P1, PlayerId(2)]
+                .into_iter()
+                .map(|player| scenario.add_creature(player, "Nonempty pool", 1, 2).id())
+                .collect();
+            let mut definition = actor_sacrifice_definition(Some(actor), PlayerFilter::Opponent);
+            definition.else_ability = Some(Box::new(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 100 },
+                    player: TargetFilter::OriginalController,
+                },
+            )));
+            let mut dependent = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 10 },
+                    player: TargetFilter::OriginalController,
+                },
+            );
+            dependent.sub_ability = definition.sub_ability.take();
+            definition.sub_ability = Some(Box::new(dependent));
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Missing Sacrifice", false)
+                .with_ability_definition(definition)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            let outcome = runner.cast(spell).resolve();
+            outcome.assert_life_delta(P0, 1);
+            outcome.assert_zone(&pools, Zone::Battlefield);
+            assert!(outcome
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .is_none());
+            assert!(!outcome.events().iter().any(|event| matches!(
+                event,
+                GameEvent::PermanentSacrificed { .. }
+                    | GameEvent::EffectResolved {
+                        kind: EffectKind::Sacrifice,
+                        ..
+                    }
+            )));
+            assert!(matches!(
+                outcome.final_waiting_for(),
+                WaitingFor::Priority { .. }
+            ));
+            outcome.assert_zone(&[spell], Zone::Graveyard);
+        }
+    }
+
+    #[test]
+    fn instruction_actor_sacrifice_departed_scope_slot_keeps_a_surviving_admitted_actor() {
+        for departing in [P0, P1, PlayerId(2)] {
+            let mut scenario = GameScenario::new_n_player(4, 42);
+            scenario.at_phase(Phase::PreCombatMain);
+            let cards: Vec<_> = (0..3)
+                .map(|index| {
+                    scenario
+                        .add_creature(P1, &format!("Remaining {index}"), 1, 2)
+                        .id()
+                })
+                .collect();
+            let definition = actor_sacrifice_definition(
+                Some(ControllerRef::SpecificPlayer { id: P1 }),
+                PlayerFilter::AnyOf {
+                    filters: vec![
+                        PlayerFilter::SpecificPlayer { id: P1 },
+                        PlayerFilter::SpecificPlayer { id: PlayerId(2) },
+                    ],
+                },
+            );
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Frozen Population", false)
+                .with_ability_definition(definition)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            runner.cast(spell).resolve();
+            assert!(matches!(
+                runner.state().waiting_for,
+                WaitingFor::ChooseFromZoneOpponentChooser { player: P1, .. }
+            ));
+            let mut events = runner
+                .act(GameAction::Concede {
+                    player_id: departing,
+                })
+                .unwrap()
+                .events;
+            if departing == PlayerId(2) {
+                let pending = runner
+                    .state()
+                    .pending_player_scope_sacrifice_choice
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(
+                    pending.admitted_actors.as_ref().unwrap().get(&departing),
+                    Some(&P1)
+                );
+                assert!(
+                    matches!(&runner.state().waiting_for, WaitingFor::ChooseFromZoneOpponentChooser { candidates, .. } if candidates.contains(&departing))
+                );
+                runner = restore_actor_prompt(runner);
+                runner
+                    .act(GameAction::ChooseZoneOpponentChooser {
+                        opponent: departing,
+                    })
+                    .unwrap();
+                events.extend(
+                    runner
+                        .act(GameAction::SelectCards {
+                            cards: vec![cards[0]],
+                        })
+                        .unwrap()
+                        .events,
+                );
+                events.extend(
+                    runner
+                        .act(GameAction::SelectCards {
+                            cards: vec![cards[1]],
+                        })
+                        .unwrap()
+                        .events,
+                );
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| matches!(
+                            event,
+                            GameEvent::PermanentSacrificed { player_id: P1, .. }
+                        ))
+                        .count(),
+                    2
+                );
+                assert_eq!(runner.life(P0), 21);
+            } else {
+                assert!(runner
+                    .state()
+                    .pending_player_scope_sacrifice_choice
+                    .is_none());
+                assert!(!events
+                    .iter()
+                    .any(|event| matches!(event, GameEvent::PermanentSacrificed { .. })));
+                if departing == P1 {
+                    assert_eq!(
+                        runner.life(P0),
+                        21,
+                        "impossible actual actor skips its pools but leaves the tail"
+                    );
+                } else {
+                    assert!(!events.iter().any(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn instruction_actor_sacrifice_replacement_cursor_keeps_saved_actor_after_referent_leaves() {
+        for departure in [None, Some(P0), Some(P1), Some(PlayerId(2))] {
+            let mut scenario = GameScenario::new_n_player(4, 42);
+            scenario.at_phase(Phase::PreCombatMain);
+            scenario.add_enchantment_from_oracle(P0, "Rest in Peace", "When this enchantment enters, exile all graveyards.\nIf a card or token would be put into a graveyard from anywhere, exile it instead.");
+            let host = scenario.add_creature_from_oracle(P1, "Darksteel Colossus", 11, 11,
+                "Trample (This creature can deal excess combat damage to the player or planeswalker it's attacking.)\nIndestructible (Damage and effects that say \"destroy\" don't destroy this creature.)\nIf Darksteel Colossus would be put into a graveyard from anywhere, reveal Darksteel Colossus and shuffle it into its owner's library instead.").id();
+            let remaining = scenario.add_creature(P1, "Latched actor suffix", 2, 2).id();
+            let decoy = scenario.add_creature(P1, "Unselected decoy", 2, 2).id();
+            let mut sacrifice = actor_sacrifice_definition(
+                Some(ControllerRef::ParentTargetOwner),
+                PlayerFilter::AnyOf {
+                    filters: vec![
+                        PlayerFilter::SpecificPlayer { id: P1 },
+                        PlayerFilter::SpecificPlayer { id: PlayerId(2) },
+                    ],
+                },
+            );
+            sacrifice.sub_link = SubAbilityLink::ContinuationStep;
+            let mut root = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::TargetOnly {
+                    target: TargetFilter::Typed(TypedFilter::creature()),
+                },
+            );
+            root.sub_ability = Some(Box::new(sacrifice));
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Referent Sacrifice", false)
+                .with_ability_definition(root)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            runner.cast(spell).target_object(host).resolve();
+            assert!(matches!(
+                runner.state().waiting_for,
+                WaitingFor::ChooseFromZoneOpponentChooser { player: P1, .. }
+            ));
+            runner
+                .act(GameAction::ChooseZoneOpponentChooser { opponent: P1 })
+                .unwrap();
+            runner
+                .act(GameAction::SelectCards { cards: vec![host] })
+                .unwrap();
+            assert_eq!(runner.state().objects[&host].zone, Zone::Battlefield);
+            runner
+                .act(GameAction::SelectCards {
+                    cards: vec![remaining],
+                })
+                .unwrap();
+            assert!(matches!(
+                runner.state().waiting_for,
+                WaitingFor::ReplacementChoice { player: P1, .. }
+            ));
+            let pending = runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .as_ref()
+                .unwrap();
+            assert_eq!(pending.admitted_actors, Some(BTreeMap::new()));
+            assert!(pending.remaining_players.is_empty());
+            assert_eq!(pending.selections, vec![(P1, vec![remaining])]);
+            assert!(pending.completion.spans_replacement_pause);
+            assert!(
+                pending.completion.announced.contains(&host)
+                    && pending.completion.announced.contains(&remaining)
+            );
+            runner = restore_actor_prompt(runner);
+            let mut events = Vec::new();
+            if let Some(player_id) = departure {
+                let before = runner.state().pending_player_scope_sacrifice_choice.clone();
+                events.extend(
+                    runner
+                        .act(GameAction::Concede { player_id })
+                        .unwrap()
+                        .events,
+                );
+                if player_id == PlayerId(2) {
+                    assert_eq!(runner.state().pending_player_scope_sacrifice_choice, before);
+                    assert!(matches!(
+                        runner.state().waiting_for,
+                        WaitingFor::ReplacementChoice { player: P1, .. }
+                    ));
+                }
+            }
+            if departure.is_none() || departure == Some(PlayerId(2)) {
+                let index = runner
+                    .state()
+                    .pending_replacement
+                    .as_ref()
+                    .unwrap()
+                    .candidates
+                    .iter()
+                    .position(|candidate| {
+                        runner.state().objects[&candidate.source].name == "Rest in Peace"
+                    })
+                    .expect("the real Rest in Peace replacement remains available");
+                events.extend(
+                    runner
+                        .act(GameAction::ChooseReplacement { index })
+                        .unwrap()
+                        .events,
+                );
+                assert_eq!(runner.state().objects[&host].zone, Zone::Exile);
+                assert_eq!(runner.state().objects[&remaining].zone, Zone::Exile);
+                assert_eq!(runner.state().objects[&decoy].zone, Zone::Battlefield);
+                assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::PermanentSacrificed { player_id: P1, object_id } if *object_id == host || *object_id == remaining)).count(), 2);
+                assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Sacrifice, source_id, .. } if *source_id == spell)).count(), 1);
+                let records: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        GameEvent::ZoneChanged {
+                            object_id,
+                            record,
+                            from: Some(Zone::Battlefield),
+                            ..
+                        } if *object_id == host || *object_id == remaining => {
+                            Some((*object_id, record))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(records.len(), 2);
+                for (id, record) in records {
+                    assert_eq!(
+                        record.co_departed,
+                        vec![if id == host { remaining } else { host }]
+                    );
+                }
+                assert_eq!(runner.life(P0), 21);
+            } else {
+                assert!(runner.state().pending_replacement.is_none());
+                assert!(!runner.state().has_active_post_replacement_drain());
+                if departure == Some(P0) {
+                    assert!(!events.iter().any(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)));
+                } else {
+                    assert_eq!(runner.life(P0), 21);
+                }
+            }
+            assert!(runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn instruction_actor_dormant_sacrifice_cursor_does_not_own_the_real_zone_order_or_departure() {
+        let mut scenario = GameScenario::new_n_player(4, 42);
+        scenario.at_phase(Phase::PreCombatMain);
+        let a = scenario.add_creature(P1, "P1 zone choice", 1, 2).id();
+        let b = scenario
+            .add_creature(PlayerId(2), "P2 zone choice", 1, 2)
+            .id();
+        let definition = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::ChooseFromZone {
+                count: 1,
+                zone: Zone::Battlefield,
+                additional_zones: vec![],
+                zone_owner: ZoneOwner::Each(crate::types::ability::PerPlayerScope::Opponents),
+                filter: None,
+                chooser: ZoneChoiceChooser::Controller,
+                candidate_source: ZoneChoiceCandidateSource::Legacy,
+                reciprocal_role: None,
+                up_to: false,
+                constraint: None,
+                selection: crate::types::ability::CardSelectionMode::Chosen,
+            },
+        );
+        let spell = scenario
+            .add_spell_to_hand(P0, "Synthetic Ordinary Zone Order", false)
+            .with_ability_definition(definition)
+            .with_mana_cost(ManaCost::zero())
+            .id();
+        let mut runner = scenario.build();
+        runner.cast(spell).resolve();
+        assert!(
+            matches!(&runner.state().waiting_for, WaitingFor::ChooseFromZoneOpponentChooser { player: P0, purpose: ZoneOpponentChooserPurpose::PerPlayerChoiceOrder, ability, candidates }
+            if matches!(ability.effect, Effect::ChooseFromZone { .. }) && candidates.contains(&P1) && candidates.contains(&PlayerId(2)))
+        );
+        let mut dormant_ability = ResolvedAbility::new(
+            Effect::Sacrifice {
+                target: TargetFilter::Typed(TypedFilter::creature()),
+                count: QuantityExpr::Fixed { value: 1 },
+                min_count: 1,
+            },
+            vec![],
+            spell,
+            P0,
+        );
+        dormant_ability.instruction_actor = Some(ControllerRef::You);
+        let dormant = PendingPlayerScopeSacrificeChoice {
+            ability: Box::new(dormant_ability),
+            admitted_actors: Some([(P1, P0)].into_iter().collect()),
+            remaining_players: vec![P1],
+            selections: vec![],
+            completion: Default::default(),
+        };
+        runner.state_mut().pending_player_scope_sacrifice_choice = Some(dormant.clone());
+        assert!(!player_scope_sacrifice_owns_live_work(runner.state()));
+        runner
+            .act(GameAction::Concede {
+                player_id: PlayerId(3),
+            })
+            .unwrap();
+        assert_eq!(
+            runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .as_ref(),
+            Some(&dormant)
+        );
+        runner
+            .act(GameAction::ChooseZoneOpponentChooser {
+                opponent: PlayerId(2),
+            })
+            .unwrap();
+        assert!(
+            matches!(&runner.state().waiting_for, WaitingFor::EffectZoneChoice { player: P0, effect_kind: EffectKind::ChooseFromZone, cards, .. } if cards.contains(&b))
+        );
+        runner
+            .act(GameAction::SelectCards { cards: vec![b] })
+            .unwrap();
+        assert_eq!(
+            runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .as_ref(),
+            Some(&dormant)
+        );
+        assert!(
+            matches!(&runner.state().waiting_for, WaitingFor::EffectZoneChoice { player: P0, effect_kind: EffectKind::ChooseFromZone, cards, .. } if cards.contains(&a))
+        );
+        let events = runner
+            .act(GameAction::SelectCards { cards: vec![a] })
+            .unwrap()
+            .events;
+        assert_eq!(
+            runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .as_ref(),
+            Some(&dormant)
+        );
+        assert_eq!(runner.state().objects[&a].zone, Zone::Battlefield);
+        assert_eq!(runner.state().objects[&b].zone, Zone::Battlefield);
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, GameEvent::PermanentSacrificed { .. })));
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::Priority { .. }
+        ));
+    }
+
+    #[test]
+    fn instruction_actor_sacrifice_terminal_replacement_keeps_completed_observations_without_tail()
+    {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.add_enchantment_from_oracle(P0, "Rest in Peace", "When this enchantment enters, exile all graveyards.\nIf a card or token would be put into a graveyard from anywhere, exile it instead.");
+        let first = scenario.add_creature(P1, "Completed sacrifice", 1, 2).id();
+        let host = scenario.add_creature_from_oracle(P1, "Darksteel Colossus", 11, 11,
+            "Trample (This creature can deal excess combat damage to the player or planeswalker it's attacking.)\nIndestructible (Damage and effects that say \"destroy\" don't destroy this creature.)\nIf Darksteel Colossus would be put into a graveyard from anywhere, reveal Darksteel Colossus and shuffle it into its owner's library instead.").id();
+        scenario.add_creature(P1, "Unselected", 1, 2);
+        let mut definition = actor_sacrifice_definition(
+            Some(ControllerRef::SpecificPlayer { id: P1 }),
+            PlayerFilter::Opponent,
+        );
+        if let Effect::Sacrifice { count, .. } = &mut *definition.effect {
+            *count = QuantityExpr::Fixed { value: 2 };
+        }
+        let spell = scenario
+            .add_spell_to_hand(P0, "Synthetic Terminal Deferred Batch", false)
+            .with_ability_definition(definition)
+            .with_mana_cost(ManaCost::zero())
+            .id();
+        let mut runner = scenario.build();
+        runner.cast(spell).resolve();
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::EffectZoneChoice {
+                player: P1,
+                count: 2,
+                ..
+            }
+        ));
+        let choice_events = runner
+            .act(GameAction::SelectCards {
+                cards: vec![first, host],
+            })
+            .unwrap()
+            .events;
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::ReplacementChoice { player: P1, .. }
+        ));
+        assert_eq!(runner.state().objects[&first].zone, Zone::Exile);
+        let pending = runner
+            .state()
+            .pending_player_scope_sacrifice_choice
+            .as_ref()
+            .unwrap();
+        assert!(pending.completion.deferred_events.iter().any(|event| matches!(event, GameEvent::PermanentSacrificed { object_id, player_id: P1 } if *object_id == first)));
+        assert!(!choice_events
+            .iter()
+            .any(|event| matches!(event, GameEvent::PermanentSacrificed { .. })));
+        runner = restore_actor_prompt(runner);
+        let events = runner
+            .act(GameAction::Concede { player_id: P0 })
+            .unwrap()
+            .events;
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::GameOver { .. }
+        ));
+        assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::PermanentSacrificed { object_id, player_id: P1 } if *object_id == first)).count(), 1);
+        assert!(!events.iter().any(|event| matches!(event, GameEvent::PermanentSacrificed { object_id, .. } if *object_id == host)));
+        assert!(!events.iter().any(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)));
+        assert!(runner
+            .state()
+            .pending_player_scope_sacrifice_choice
+            .is_none());
+        assert!(runner.state().pending_replacement.is_none());
+        assert!(!runner.state().has_active_post_replacement_drain());
+    }
+
+    #[test]
+    fn instruction_actor_sacrifice_terminal_departure_disposes_cursor_without_tail() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.add_creature(P1, "Choice A", 1, 1);
+        scenario.add_creature(P1, "Choice B", 1, 1);
+        let spell = scenario
+            .add_spell_to_hand(P0, "Synthetic Terminal Sacrifice", false)
+            .with_ability_definition(actor_sacrifice_definition(
+                Some(ControllerRef::SpecificPlayer { id: P1 }),
+                PlayerFilter::Opponent,
+            ))
+            .with_mana_cost(ManaCost::zero())
+            .id();
+        let mut runner = scenario.build();
+        runner.cast(spell).resolve();
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::EffectZoneChoice { player: P1, .. }
+        ));
+        let events = runner
+            .act(GameAction::Concede { player_id: P1 })
+            .unwrap()
+            .events;
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::GameOver { .. }
+        ));
+        assert!(runner
+            .state()
+            .pending_player_scope_sacrifice_choice
+            .is_none());
+        assert_eq!(runner.life(P0), 20);
+        assert!(!events.iter().any(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)));
+    }
 
     /// CR 608.2c: the pile placement after a reveal-only until-loop is bound to the
     /// exact cards that reveal looked at, on the continuation itself — so an
@@ -21629,6 +24656,20 @@ mod tests {
                 r#"{{"type":"GenericEffect","static_abilities":[{{"mode":{{"MustBeBlocked":{{"by":null}}}},"affected":{affected},"modifications":[{{"type":"AddStaticMode","mode":{{"MustBeBlocked":{{"by":null}}}}}}]}}],"duration":"UntilEndOfTurn","target":null}}"#
             )
         }
+        let life = r#"{"type":"GainLife","amount":{"type":"Fixed","value":2},"player":{"type":"Controller"}}"#;
+        assert!(survives(DRAW, life), "legacy None survival positive");
+        for actor in crate::types::ability::instruction_actor_test_refs() {
+            let mut later = sentence(life);
+            later.instruction_actor = Some(actor.clone());
+            assert_eq!(
+                !declined_gate_surviving_instructions(&gated(DRAW, vec![later])).is_empty(),
+                matches!(
+                    actor,
+                    ControllerRef::You | ControllerRef::SpecificPlayer { .. }
+                ),
+                "{actor:?}"
+            );
+        }
         let parent_target = must_be_blocked(r#"{"type":"ParentTarget"}"#);
 
         // GenericEffect: a declared, unmoved target survives (Neyith).
@@ -22013,6 +25054,100 @@ mod tests {
         );
     }
 
+    #[test]
+    fn instruction_actor_declined_producer_retains_fixed_actors_drops_referential_body_and_keeps_tail(
+    ) {
+        for fixed_actor in [
+            None,
+            Some(ControllerRef::You),
+            Some(ControllerRef::SpecificPlayer { id: P1 }),
+        ] {
+            for accept in [false, true] {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let gain = |value| {
+                    AbilityDefinition::new(
+                        AbilityKind::Spell,
+                        Effect::GainLife {
+                            amount: QuantityExpr::Fixed { value },
+                            player: TargetFilter::Controller,
+                        },
+                    )
+                };
+                let mut tail = gain(1);
+                tail.effect = Box::new(Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::OriginalController,
+                });
+                tail.sub_link = SubAbilityLink::SequentialSibling;
+                let mut referential = gain(4);
+                referential.instruction_actor = Some(ControllerRef::ChosenPlayer { index: 0 });
+                referential.sub_link = SubAbilityLink::SequentialSibling;
+                referential.sub_ability = Some(Box::new(tail));
+                let mut fixed = gain(2);
+                fixed.instruction_actor = fixed_actor.clone();
+                fixed.sub_link = SubAbilityLink::SequentialSibling;
+                fixed.sub_ability = Some(Box::new(referential));
+                let mut gate = gain(10);
+                gate.condition = Some(AbilityCondition::effect_performed());
+                gate.sub_ability = Some(Box::new(fixed));
+                let mut producer = AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::Choose {
+                        choice_type: ChoiceType::player(),
+                        persist: false,
+                        selection: TargetSelectionMode::Chosen,
+                    },
+                );
+                producer.optional = true;
+                producer.sub_ability = Some(Box::new(gate));
+                let spell = scenario
+                    .add_spell_to_hand(P0, "Synthetic Declined Actor Survival", false)
+                    .with_ability_definition(producer)
+                    .with_mana_cost(ManaCost::zero())
+                    .id();
+                let mut runner = scenario.build();
+                runner.cast(spell).resolve();
+                assert!(matches!(
+                    runner.state().waiting_for,
+                    WaitingFor::OptionalEffectChoice { player: P0, .. }
+                ));
+                let mut events = runner
+                    .act(GameAction::DecideOptionalEffect { accept })
+                    .unwrap()
+                    .events;
+                if accept {
+                    assert!(matches!(
+                        runner.state().waiting_for,
+                        WaitingFor::NamedChoice { .. }
+                    ));
+                    events.extend(
+                        runner
+                            .act(GameAction::ChooseOption { choice: "1".into() })
+                            .unwrap()
+                            .events,
+                    );
+                }
+                let fixed_p1 = fixed_actor == Some(ControllerRef::SpecificPlayer { id: P1 });
+                assert_eq!(
+                    runner.life(P0),
+                    20 + if accept { 10 } else { 0 } + if fixed_p1 { 0 } else { 2 } + 1
+                );
+                assert_eq!(
+                    runner.life(P1),
+                    20 + if accept { 4 } else { 0 } + if fixed_p1 { 2 } else { 0 }
+                );
+                assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)).count(), if accept { 4 } else { 2 });
+                assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+                assert!(runner.state().stack.is_empty());
+                assert!(matches!(
+                    runner.state().waiting_for,
+                    WaitingFor::Priority { .. }
+                ));
+            }
+        }
+    }
+
     /// Phase 7F, JF-3 (the building block): a declined "if you do" gate whose
     /// repeat would repeat or re-prompt the instructions printed after it is not
     /// reduced, so it keeps no later instruction: a `repeat_until` in each of its
@@ -22150,6 +25285,57 @@ mod tests {
             "ChangeZone has no test that fails when the branch is reverted — admitting it \
              would change Devious Cover-Up on an unmeasured path"
         );
+    }
+
+    /// Issue #8762: the counter rider branch runs a tail only when it is a
+    /// `SequentialSibling` link of an admitted family — both axes, so coverage
+    /// (which reads the same authority) reports exactly the tails the branch
+    /// drops. Effects lifted from `client/public/card-data.json`; Transcendent
+    /// Dragon's tail is its ", then you may cast it" `CastFromZone`.
+    #[test]
+    fn counter_exile_rider_runs_only_an_admitted_sequential_tail() {
+        fn effect(json: &str) -> Effect {
+            serde_json::from_str(json).expect("tail effect lifted from card-data.json must parse")
+        }
+        // Transcendent Dragon.
+        let cast = effect(
+            r#"{"type":"CastFromZone","target":{"type":"ParentTarget"},"without_paying_mana_cost":true,"mode":"Cast","driver":"DuringResolution"}"#,
+        );
+        // No Escape.
+        let scry = effect(
+            r#"{"type":"Scry","count":{"type":"Fixed","value":1},"target":{"type":"Controller"}}"#,
+        );
+        // Delay.
+        let generic = effect(
+            r#"{"type":"GenericEffect","static_abilities":[],"duration":"Permanent","target":{"type":"ParentTarget"}}"#,
+        );
+        // Devious Cover-Up — the first link of its two-link tail.
+        let change_zone = effect(
+            r#"{"type":"ChangeZone","origin":"Graveyard","destination":"Library","target":{"type":"Typed","type_filters":["Card"],"controller":"You","properties":[{"type":"InZone","zone":"Graveyard"}]}}"#,
+        );
+
+        for (family, admitted) in [
+            ("CastFromZone", &cast),
+            ("Scry", &scry),
+            ("GenericEffect", &generic),
+        ] {
+            assert!(
+                counter_exile_rider_runs_tail(SubAbilityLink::SequentialSibling, admitted),
+                "a sequential {family} tail runs"
+            );
+            assert!(
+                !counter_exile_rider_runs_tail(SubAbilityLink::ContinuationStep, admitted),
+                "a continuation-step {family} tail is dropped"
+            );
+        }
+        assert!(
+            !counter_exile_rider_runs_tail(SubAbilityLink::SequentialSibling, &change_zone),
+            "an unadmitted family is dropped even as a sequential sibling"
+        );
+        assert!(!counter_exile_rider_runs_tail(
+            SubAbilityLink::ContinuationStep,
+            &change_zone
+        ));
     }
 
     /// Issue #8762: a counter that carries the exile rider stamps its countered
@@ -22627,6 +25813,36 @@ mod tests {
         assert!(ability_with_event_context_targets(&state, &ability)
             .targets
             .is_empty());
+    }
+
+    /// CR 608.2k + CR 707.10: a copy's `ParentTarget` ("copy that ability")
+    /// names the copied stack object, so resolution hydration must not bind it;
+    /// every other event-context copy filter and `ParentTarget` effect still
+    /// hydrates.
+    #[test]
+    fn extract_event_context_filter_skips_a_copy_referent_parent_target() {
+        let copy = |target| Effect::CopySpell {
+            target,
+            retarget: CopyRetargetPermission::MayChooseNewTargets,
+            copier: None,
+            additional_modifications: vec![],
+            starting_loyalty_from_casualty_sacrifice: false,
+        };
+        assert_eq!(
+            extract_event_context_filter(&copy(TargetFilter::ParentTarget)),
+            None
+        );
+        assert_eq!(
+            extract_event_context_filter(&copy(TargetFilter::TriggeringSource)),
+            Some(&TargetFilter::TriggeringSource)
+        );
+        assert_eq!(
+            extract_event_context_filter(&Effect::Destroy {
+                target: TargetFilter::ParentTarget,
+                cant_regenerate: false,
+            }),
+            Some(&TargetFilter::ParentTarget)
+        );
     }
     use crate::game::ability_utils::build_resolved_from_def;
     use crate::game::zones::create_object;
@@ -23317,12 +26533,60 @@ mod tests {
         let outcome = runner.cast(volcanic).target_objects(&[bolt]).resolve();
 
         outcome.assert_zone(&[bolt], Zone::Hand);
-        assert_eq!(
-            outcome.damage_marked(goblin),
-            3,
-            "each opponent creature must take the returned card's mana value (3)"
-        );
-        assert_eq!(outcome.damage_marked(ogre), 3);
+        // CR 608.2c: the selected instant returns to hand before damage is dealt.
+        let returned_at = outcome
+            .events()
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    GameEvent::ZoneChanged {
+                        object_id,
+                        from: Some(Zone::Graveyard),
+                        to: Zone::Hand,
+                        ..
+                    } if *object_id == bolt
+                )
+            })
+            .expect("the selected instant must actually return from the graveyard to hand");
+        for victim in [goblin, ogre] {
+            // CR 202.3: the returned instant's generic mana cost gives mana value three.
+            let damage: Vec<_> = outcome
+                .events()
+                .iter()
+                .filter_map(|event| match event {
+                    GameEvent::DamageDealt {
+                        target: TargetRef::Object(id),
+                        amount,
+                        is_combat,
+                        ..
+                    } if *id == victim => Some((*amount, *is_combat)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                damage,
+                vec![(3, false)],
+                "each opponent creature must take the returned card's mana value (3)"
+            );
+            let damaged_at = outcome
+                .events()
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        GameEvent::DamageDealt { target: TargetRef::Object(id), .. } if *id == victim
+                    )
+                })
+                .expect("each opponent creature must actually receive damage");
+            assert!(
+                returned_at < damaged_at,
+                "return must precede each damage event"
+            );
+            // CR 704.5g + CR 400.7: each lethal hit leaves a new, unmarked graveyard object.
+            outcome.assert_zone(&[victim], Zone::Graveyard);
+            assert_eq!(outcome.damage_marked(victim), 0);
+        }
         outcome.assert_zone(&[volcanic], Zone::Exile);
     }
 
@@ -24615,6 +27879,138 @@ mod tests {
             ability_or_branch_references_tracked_set(&ability),
             "repeat_for: TrackedSetSize must mark the ability as referencing the tracked set"
         );
+    }
+
+    /// CR 608.2c + CR 608.2e: a producer at the end of a chain resumed under a
+    /// parked same-source continuation reads that continuation as its following
+    /// text; its own consumer, a mode boundary in its own chain, or a different
+    /// source decide otherwise.
+    #[test]
+    fn resolution_next_needs_tracked_set_reads_a_parked_same_source_continuation() {
+        let source = ObjectId(1);
+        let draw = |count: QuantityExpr, src: ObjectId| {
+            ResolvedAbility::new(
+                Effect::Draw {
+                    target: TargetFilter::Controller,
+                    count,
+                },
+                vec![],
+                src,
+                PlayerId(0),
+            )
+        };
+        let producer = |src| draw(QuantityExpr::Fixed { value: 1 }, src);
+        let non_consumer = |src| draw(QuantityExpr::Fixed { value: 2 }, src);
+        let consumer = |src| {
+            draw(
+                QuantityExpr::Ref {
+                    qty: QuantityRef::TrackedSetSize,
+                },
+                src,
+            )
+        };
+        let mut state = GameState::new_two_player(7);
+        // Nothing parked and no consumer of its own.
+        assert!(!resolution_next_needs_tracked_set(
+            &state,
+            &producer(source)
+        ));
+        // Its own consumer, nothing parked: the existing rule.
+        assert!(resolution_next_needs_tracked_set(
+            &state,
+            &producer(source).sub_ability(consumer(source))
+        ));
+        // A parked same-source continuation that consumes nothing.
+        append_to_pending_continuation(&mut state, Some(Box::new(non_consumer(source))));
+        assert!(!resolution_next_needs_tracked_set(
+            &state,
+            &producer(source)
+        ));
+        state
+            .take_active_ability_continuation()
+            .expect("the parked non-consumer is the active frame");
+        // A parked same-source consumer: the producer's chain end hands off.
+        append_to_pending_continuation(&mut state, Some(Box::new(consumer(source))));
+        assert!(resolution_next_needs_tracked_set(&state, &producer(source)));
+        // A non-consuming own chain still ends in the parked consumer.
+        assert!(resolution_next_needs_tracked_set(
+            &state,
+            &producer(source).sub_ability(non_consumer(source))
+        ));
+        // CR 700.2: a mode boundary inside the producer's own chain stops it.
+        let mut next_mode = non_consumer(source);
+        next_mode.modal_instruction_ordinal = Some(1);
+        assert!(!resolution_next_needs_tracked_set(
+            &state,
+            &producer(source).sub_ability(next_mode)
+        ));
+        // CR 614.1: another object's chain resolving during the pause.
+        assert!(!resolution_next_needs_tracked_set(
+            &state,
+            &producer(ObjectId(2))
+        ));
+    }
+
+    /// CR 608.2c + CR 608.2d: only a Resolution-timed recipient choice whose own
+    /// chain reads the set publishes on resume; a declared object, a head whose
+    /// chain reads nothing, or a head that is not a counter instruction leaves
+    /// the choice answer's publication in place.
+    #[test]
+    fn resolution_choice_head_publishes_on_resume_only_for_its_own_reader() {
+        let reader = || {
+            ResolvedAbility::new(
+                Effect::Draw {
+                    target: TargetFilter::Controller,
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::TrackedSetSize,
+                    },
+                },
+                vec![],
+                ObjectId(1),
+                PlayerId(0),
+            )
+        };
+        let non_reader = || {
+            ResolvedAbility::new(
+                Effect::Draw {
+                    target: TargetFilter::Controller,
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
+                vec![],
+                ObjectId(1),
+                PlayerId(0),
+            )
+        };
+        let head = |effect: Effect, timing: TargetChoiceTiming| {
+            let mut head = ResolvedAbility::new(effect, vec![], ObjectId(1), PlayerId(0));
+            head.target_choice_timing = timing;
+            head
+        };
+        let put_counter = || Effect::PutCounter {
+            counter_type: CounterType::Plus1Plus1,
+            count: QuantityExpr::Fixed { value: 2 },
+            target: TargetFilter::Typed(TypedFilter::creature()),
+        };
+        let resolution = TargetChoiceTiming::Resolution;
+
+        let recipient = head(put_counter(), resolution).sub_ability(reader());
+        assert!(awaits_resolution_object_choice(&recipient));
+        assert!(resolution_choice_head_publishes_on_resume(&recipient));
+        // Its own chain reads nothing.
+        assert!(!resolution_choice_head_publishes_on_resume(
+            &head(put_counter(), resolution).sub_ability(non_reader())
+        ));
+        // The object was declared with the ability, not chosen while resolving.
+        assert!(!resolution_choice_head_publishes_on_resume(
+            &head(put_counter(), TargetChoiceTiming::Stack).sub_ability(reader())
+        ));
+        let mut bound = head(put_counter(), resolution).sub_ability(reader());
+        bound.targets = vec![TargetRef::Object(ObjectId(5))];
+        assert!(!resolution_choice_head_publishes_on_resume(&bound));
+        // Not a counter instruction: the choice is the producer of the set.
+        assert!(!resolution_choice_head_publishes_on_resume(
+            &head(non_reader().effect, resolution).sub_ability(reader())
+        ));
     }
 
     /// CR 601.2c + CR 608.2c: a node that declares a single optional object target
@@ -34584,6 +37980,7 @@ mod tests {
                     single_use: false,
                     cast_cost_modifier: None,
                     alt_ability_cost: None,
+                    without_paying_mana_cost: false,
                     land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                 },
                 target: TargetFilter::TrackedSet {
@@ -35167,6 +38564,395 @@ mod tests {
             state.players[1].hand.len(),
             1,
             "opponent should have drawn a card"
+        );
+    }
+
+    /// CR 608.2c + CR 115.1 + CR 101.4: an `AnyOf[Controller, TargetPlayer]`
+    /// player scope fans the instruction out to each member seat — the
+    /// declared player target included — through the ability-aware resolver,
+    /// in APNAP order regardless of member order.
+    #[test]
+    fn player_scope_any_of_controller_and_declared_target_fans_out_to_each_seat() {
+        let resolve = |controller: PlayerId, targets: Vec<TargetRef>| {
+            let mut state = GameState::new_two_player(42);
+            for i in 0..2 {
+                create_object(
+                    &mut state,
+                    CardId(10 + i),
+                    PlayerId(0),
+                    format!("P0 Library {i}"),
+                    Zone::Library,
+                );
+                create_object(
+                    &mut state,
+                    CardId(20 + i),
+                    PlayerId(1),
+                    format!("P1 Library {i}"),
+                    Zone::Library,
+                );
+            }
+            let mut ability = ResolvedAbility::new(
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+                targets,
+                ObjectId(100),
+                controller,
+            );
+            ability.player_scope = Some(PlayerFilter::AnyOf {
+                filters: vec![PlayerFilter::Controller, PlayerFilter::TargetPlayer],
+            });
+            let mut events = Vec::new();
+            resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+            let drawn: Vec<PlayerId> = events
+                .iter()
+                .filter_map(|event| match event {
+                    GameEvent::CardDrawn { player_id, .. } => Some(*player_id),
+                    _ => None,
+                })
+                .collect();
+            (
+                state.players[0].hand.len(),
+                state.players[1].hand.len(),
+                drawn,
+            )
+        };
+
+        // (a) Controller P0, declared target P1: both seats draw.
+        let (p0, p1, _) = resolve(PlayerId(0), vec![TargetRef::Player(PlayerId(1))]);
+        assert_eq!(p0, 1, "reach guard: the controller member draws");
+        assert_eq!(p1, 1, "the declared player target draws too");
+
+        // (b) Controller P1 (non-active), declared target P0: member order is
+        // [P1, P0], but the draws follow APNAP from the active player P0.
+        let (p0, p1, drawn) = resolve(PlayerId(1), vec![TargetRef::Player(PlayerId(0))]);
+        assert_eq!((p0, p1), (1, 1));
+        assert_eq!(drawn, vec![PlayerId(0), PlayerId(1)]);
+
+        // (c) No declared player target: `TargetPlayer` names nobody.
+        let (p0, p1, _) = resolve(PlayerId(0), Vec::new());
+        assert_eq!((p0, p1), (1, 0));
+
+        // (d) The controller is the declared target: one seat, one iteration.
+        let (p0, p1, drawn) = resolve(PlayerId(0), vec![TargetRef::Player(PlayerId(0))]);
+        assert_eq!((p0, p1), (1, 0));
+        assert_eq!(drawn, vec![PlayerId(0)]);
+    }
+
+    /// CR 102.1 + CR 608.2c + CR 115.1: the generic predicate answers `AnyOf`
+    /// by any member, and `TargetPlayer` never (it needs the resolving
+    /// ability, which only the ability-aware resolver carries).
+    #[test]
+    fn matches_player_scope_any_of_is_any_member_and_target_player_is_ability_aware_only() {
+        let state = GameState::new_two_player(42);
+        let controller = PlayerId(0);
+        let matches = |player: PlayerId, scope: &PlayerFilter| {
+            matches_player_scope(&state, player, scope, controller, ObjectId(100))
+        };
+        let controller_only = PlayerFilter::AnyOf {
+            filters: vec![PlayerFilter::Controller],
+        };
+        assert!(matches(PlayerId(0), &controller_only), "reach guard");
+        assert!(!matches(PlayerId(1), &controller_only));
+
+        let controller_or_opponent = PlayerFilter::AnyOf {
+            filters: vec![PlayerFilter::Controller, PlayerFilter::Opponent],
+        };
+        assert!(matches(PlayerId(0), &controller_or_opponent));
+        assert!(matches(PlayerId(1), &controller_or_opponent));
+
+        assert!(!matches(PlayerId(0), &PlayerFilter::TargetPlayer));
+        assert!(!matches(PlayerId(1), &PlayerFilter::TargetPlayer));
+    }
+
+    /// CR 608.2b + CR 115.1: resolved from the stack, an `AnyOf[Controller,
+    /// TargetPlayer]` scope does not name a declared player target that became
+    /// illegal before resolution. A legal creature target keeps the ability
+    /// resolving, so the scoped node falls back to the stack carrier for its
+    /// player target, and that fallback must honour the carrier's legality stamp.
+    #[test]
+    fn player_scope_target_player_skips_a_player_target_illegal_at_resolution() {
+        let resolve = |target_player_has_hexproof: bool| {
+            let mut state = GameState::new_two_player(42);
+            for i in 0..2 {
+                create_object(
+                    &mut state,
+                    CardId(10 + i),
+                    PlayerId(0),
+                    format!("P0 Library {i}"),
+                    Zone::Library,
+                );
+                create_object(
+                    &mut state,
+                    CardId(20 + i),
+                    PlayerId(1),
+                    format!("P1 Library {i}"),
+                    Zone::Library,
+                );
+            }
+            let source = create_object(
+                &mut state,
+                CardId(1),
+                PlayerId(0),
+                "Ability Source".to_string(),
+                Zone::Battlefield,
+            );
+            let creature = create_object(
+                &mut state,
+                CardId(2),
+                PlayerId(0),
+                "Targeted Creature".to_string(),
+                Zone::Battlefield,
+            );
+            state
+                .objects
+                .get_mut(&creature)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Creature);
+            if target_player_has_hexproof {
+                // "You have hexproof" on a permanent P1 controls: P1 is no longer
+                // a legal target of P0's ability.
+                let grantor = create_object(
+                    &mut state,
+                    CardId(3),
+                    PlayerId(1),
+                    "You Have Hexproof Source".to_string(),
+                    Zone::Battlefield,
+                );
+                state.objects.get_mut(&grantor).unwrap().static_definitions =
+                    vec![StaticDefinition::new(StaticMode::Hexproof).affected(
+                        TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You)),
+                    )]
+                    .into();
+                crate::game::layers::flush_layers(&mut state);
+                assert!(
+                    crate::game::static_abilities::player_has_hexproof(&state, PlayerId(1)),
+                    "reach guard: the grant lands on P1"
+                );
+            }
+
+            let mut draw = ResolvedAbility::new(
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+                Vec::new(),
+                source,
+                PlayerId(0),
+            );
+            draw.player_scope = Some(PlayerFilter::AnyOf {
+                filters: vec![PlayerFilter::Controller, PlayerFilter::TargetPlayer],
+            });
+            // Declared slots: [Player(1), Object(creature)]. The damage node's
+            // player filter is rechecked as the ability resolves.
+            let root = ResolvedAbility::new(
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Player,
+                    damage_source: None,
+                    excess: None,
+                },
+                vec![TargetRef::Player(PlayerId(1))],
+                source,
+                PlayerId(0),
+            )
+            .sub_ability(
+                ResolvedAbility::new(
+                    Effect::TargetOnly {
+                        target: TargetFilter::Any,
+                    },
+                    vec![TargetRef::Object(creature)],
+                    source,
+                    PlayerId(0),
+                )
+                .sub_ability(draw),
+            );
+            state.stack.push_back(StackEntry {
+                id: ObjectId(500),
+                source_id: source,
+                controller: PlayerId(0),
+                kind: StackEntryKind::ActivatedAbility {
+                    source_id: source,
+                    ability: Box::new(root),
+                },
+            });
+
+            let mut events = Vec::new();
+            crate::game::stack::resolve_top(&mut state, &mut events);
+            (
+                state.players[0].hand.len(),
+                state.players[1].hand.len(),
+                state.players[1].life,
+            )
+        };
+
+        // Reach guard: with P1 a legal target, P1 is dealt damage, and both the
+        // controller and the declared player target draw.
+        assert_eq!(resolve(false), (1, 1, 19));
+        // P1 became an illegal target; the creature target keeps the ability
+        // resolving, and only the controller draws.
+        let (p0, p1, p1_life) = resolve(true);
+        assert_eq!(
+            p0, 1,
+            "reach guard: the ability resolved for the controller"
+        );
+        assert_eq!(
+            p1_life, 20,
+            "reach guard: P1 was pruned as an illegal target at resolution"
+        );
+        assert_eq!(
+            p1, 0,
+            "an illegal player target is not named by TargetPlayer"
+        );
+    }
+
+    /// CR 608.2b + CR 603.2: an enters trigger shaped like Assassin Gauntlet's
+    /// ("When this Equipment enters, attach it to up to one target creature you
+    /// control. Tap all creatures target opponent controls."), resolved from the
+    /// stack. When the opponent became an illegal target and the creature target
+    /// keeps the trigger resolving, "creatures target opponent controls" names
+    /// nobody: it does not fall back to the enters event's player, the trigger's
+    /// own controller.
+    #[test]
+    fn target_opponent_mass_tap_taps_nobody_when_the_opponent_target_is_illegal() {
+        let resolve = |opponent_has_hexproof: bool| {
+            let mut state = GameState::new_two_player(42);
+            let source = create_object(
+                &mut state,
+                CardId(1),
+                PlayerId(0),
+                "Entering Equipment".to_string(),
+                Zone::Battlefield,
+            );
+            let mut creature = |card: u64, controller: PlayerId| {
+                let id = create_object(
+                    &mut state,
+                    CardId(card),
+                    controller,
+                    format!("Creature {card}"),
+                    Zone::Battlefield,
+                );
+                state
+                    .objects
+                    .get_mut(&id)
+                    .unwrap()
+                    .card_types
+                    .core_types
+                    .push(CoreType::Creature);
+                id
+            };
+            let targeted = creature(2, PlayerId(0));
+            let yours = creature(3, PlayerId(0));
+            let theirs = creature(4, PlayerId(1));
+            if opponent_has_hexproof {
+                // "You have hexproof" on a permanent P1 controls: P1 is no longer
+                // a legal target of P0's trigger.
+                let grantor = create_object(
+                    &mut state,
+                    CardId(5),
+                    PlayerId(1),
+                    "You Have Hexproof Source".to_string(),
+                    Zone::Battlefield,
+                );
+                state.objects.get_mut(&grantor).unwrap().static_definitions =
+                    vec![StaticDefinition::new(StaticMode::Hexproof).affected(
+                        TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You)),
+                    )]
+                    .into();
+                crate::game::layers::flush_layers(&mut state);
+                assert!(
+                    crate::game::static_abilities::player_has_hexproof(&state, PlayerId(1)),
+                    "reach guard: the grant lands on P1"
+                );
+            }
+
+            // Declared slots: [Object(targeted), Player(1)]. The opponent is the
+            // mass tap's companion player slot.
+            let root = ResolvedAbility::new(
+                Effect::PutCounter {
+                    counter_type: CounterType::Plus1Plus1,
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Typed(
+                        TypedFilter::creature().controller(ControllerRef::You),
+                    ),
+                },
+                vec![TargetRef::Object(targeted)],
+                source,
+                PlayerId(0),
+            )
+            .sub_ability(ResolvedAbility::new(
+                Effect::SetTapState {
+                    target: TargetFilter::Typed(
+                        TypedFilter::creature().controller(ControllerRef::TargetOpponent),
+                    ),
+                    scope: EffectScope::All,
+                    state: TapStateChange::Tap,
+                },
+                vec![TargetRef::Player(PlayerId(1))],
+                source,
+                PlayerId(0),
+            ));
+            state.stack.push_back(StackEntry {
+                id: ObjectId(500),
+                source_id: source,
+                controller: PlayerId(0),
+                kind: StackEntryKind::TriggeredAbility {
+                    source_id: source,
+                    ability: Box::new(root),
+                    condition: None,
+                    trigger_event: Some(GameEvent::ZoneChanged {
+                        object_id: source,
+                        from: Some(Zone::Hand),
+                        to: Zone::Battlefield,
+                        record: Box::new(ZoneChangeRecord::test_minimal(
+                            source,
+                            Some(Zone::Hand),
+                            Zone::Battlefield,
+                        )),
+                    }),
+                    description: None,
+                    source_name: String::new(),
+                    subject_match_count: None,
+                    die_result: None,
+                    provenance: None,
+                },
+            });
+
+            let mut events = Vec::new();
+            crate::game::stack::resolve_top(&mut state, &mut events);
+            let tapped = |id: ObjectId| state.objects[&id].tapped;
+            (
+                state.objects[&targeted]
+                    .counters
+                    .get(&CounterType::Plus1Plus1)
+                    .copied()
+                    .unwrap_or(0),
+                [tapped(targeted), tapped(yours)],
+                tapped(theirs),
+            )
+        };
+
+        // Reach guard: with P1 a legal target, P1's creature is tapped and the
+        // controller's are not.
+        assert_eq!(resolve(false), (1, [false, false], true));
+        // P1 became an illegal target; the creature target keeps the trigger
+        // resolving.
+        let (counters, yours, theirs) = resolve(true);
+        assert_eq!(
+            counters, 1,
+            "reach guard: the trigger resolved through its legal creature target"
+        );
+        assert_eq!(
+            yours,
+            [false, false],
+            "an illegal target opponent does not become the enters event's player"
+        );
+        assert!(
+            !theirs,
+            "an illegal target opponent's creatures are not tapped"
         );
     }
 
@@ -37179,16 +40965,19 @@ mod tests {
                         exiled_id: exiled_a,
                         owner: PlayerId(0),
                         mana_value: 2,
+                        incarnation: state.objects[&exiled_a].incarnation,
                     },
                     LinkedExileSnapshot {
                         exiled_id: exiled_b,
                         owner: PlayerId(0),
                         mana_value: 3,
+                        incarnation: state.objects[&exiled_b].incarnation,
                     },
                     LinkedExileSnapshot {
                         exiled_id: exiled_c,
                         owner: PlayerId(1),
                         mana_value: 4,
+                        incarnation: state.objects[&exiled_c].incarnation,
                     },
                 ],
                 ..crate::types::game_state::ZoneChangeRecord::test_minimal(
@@ -38708,6 +42497,8 @@ mod tests {
             ObjectId(1),
             PlayerId(0),
         );
+        ability.context.cast_controller = Some(PlayerId(0));
+        ability.context.cast_active_player = Some(PlayerId(0));
         ability.context.cast_phase = Some(Phase::PreCombatMain);
 
         assert!(evaluate_condition(
@@ -38727,9 +42518,22 @@ mod tests {
             &ability
         ));
 
+        // CR 109.5 + CR 601.2: Resolution-time active player changes to PlayerId(1), but casting-time
+        // cast_controller == cast_active_player was PlayerId(0): condition holds.
         ability.context.cast_phase = Some(Phase::PostCombatMain);
         state.active_player = PlayerId(1);
         assert!(evaluate_condition(
+            &AbilityCondition::CastDuringPhase {
+                phases: vec![Phase::PreCombatMain, Phase::PostCombatMain],
+            },
+            &state,
+            &ability
+        ));
+
+        // Casting-time active player was PlayerId(1) (opponent's turn) while caster was PlayerId(0):
+        // condition fails even if cast during a main phase.
+        ability.context.cast_active_player = Some(PlayerId(1));
+        assert!(!evaluate_condition(
             &AbilityCondition::CastDuringPhase {
                 phases: vec![Phase::PreCombatMain, Phase::PostCombatMain],
             },
@@ -38895,6 +42699,7 @@ mod tests {
                     single_use: false,
                     cast_cost_modifier: None,
                     alt_ability_cost: None,
+                    without_paying_mana_cost: false,
                     land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
                 },
                 target: TargetFilter::TrackedSet {
@@ -40948,6 +44753,7 @@ mod tests {
             Effect::ChooseOneOf {
                 chooser: crate::types::ability::PlayerFilter::Controller,
                 branches: vec![fixed_branch, dynamic_branch],
+                kind: ChooseOneOfKind::Ordinary,
             },
             vec![],
             source,
@@ -41085,6 +44891,7 @@ mod tests {
             Effect::ChooseOneOf {
                 chooser: crate::types::ability::PlayerFilter::Controller,
                 branches: vec![dynamic_branch],
+                kind: ChooseOneOfKind::Ordinary,
             },
             vec![],
             source,
@@ -41185,6 +44992,7 @@ mod tests {
             Effect::ChooseOneOf {
                 chooser: PlayerFilter::Controller,
                 branches: vec![add_branch, remove_branch],
+                kind: ChooseOneOfKind::Ordinary,
             },
             vec![TargetRef::Object(target)],
             source,
@@ -42348,9 +46156,10 @@ mod tests {
     /// resolver (`resolve_ability_chain`) with the crewing creature as the chosen
     /// target.
     ///
-    /// The placement head is an explicit parser gap (no filter expresses "that
-    /// crewed it this turn"), so this resolves the parsed conditional-doubling
-    /// sentence on its own. `counters_after_placement` is the crewer's +1/+1
+    /// The placement head targets a crewer through `FilterProp::CrewedThisTurn`
+    /// (covered end to end in `tests/integration/balthier_and_fran_crew_history.rs`);
+    /// this resolves the parsed conditional-doubling sentence on its own.
+    /// `counters_after_placement` is the crewer's +1/+1
     /// count once the head's counter is on it. Returns the final +1/+1 total;
     /// `subtype` selects whether the conditional doubling fires.
     fn run_turtle_van_chain(subtype: &str, counters_after_placement: u32) -> u32 {
@@ -43851,6 +47660,10 @@ mod tests {
                 }),
                 caused_by: None,
             },
+            PlayerFilter::AnyOf {
+                filters: vec![PlayerFilter::Controller, PlayerFilter::Opponent],
+            },
+            PlayerFilter::TargetPlayer,
         ] {
             assert!(
                 is_player_scope_local_continuation(&scoped_move, &scoped_shuffle, &scope),
@@ -43913,12 +47726,26 @@ mod tests {
 
     const DAYS_UNDOING_ORACLE: &str = "Each player shuffles their hand and graveyard into their library, then draws seven cards. If it's your turn, end the turn.";
 
-    fn days_undoing_ability() -> ResolvedAbility {
+    fn legacy_none_days_undoing_ability() -> ResolvedAbility {
         let definition = crate::parser::oracle_effect::parse_effect_chain(
             DAYS_UNDOING_ORACLE,
             AbilityKind::Spell,
         );
-        build_resolved_from_def(&definition, ObjectId(100), PlayerId(0))
+        // Explicit legacy fixture: field-absent saved definitions predate
+        // instruction actors. Keep every old shape/order assertion on that
+        // None population; freshly parsed metadata is tested separately below.
+        let mut legacy = build_resolved_from_def(&definition, ObjectId(100), PlayerId(0));
+        let mut cursor = Some(&mut legacy);
+        while let Some(node) = cursor {
+            node.instruction_actor = None;
+            cursor = node.sub_ability.as_deref_mut();
+        }
+        let mut cursor = Some(&legacy);
+        while let Some(node) = cursor {
+            assert_eq!(node.instruction_actor, None, "explicit legacy-None fixture");
+            cursor = node.sub_ability.as_deref();
+        }
+        legacy
     }
 
     fn dandan_state() -> GameState {
@@ -43943,7 +47770,7 @@ mod tests {
     /// re-tagged link, so the draw reaches the dealer as its own scoped clause.
     #[test]
     fn shared_library_wheel_split_retags_only_the_shuffle() {
-        let ability = days_undoing_ability();
+        let ability = legacy_none_days_undoing_ability();
         let scope = ability
             .player_scope
             .clone()
@@ -43985,12 +47812,237 @@ mod tests {
         );
     }
 
+    #[test]
+    fn instruction_actor_freshly_parsed_wheel_is_marked_and_refuses_the_legacy_split() {
+        let definition = crate::parser::oracle_effect::parse_effect_chain(
+            DAYS_UNDOING_ORACLE,
+            AbilityKind::Spell,
+        );
+        let parsed = build_resolved_from_def(&definition, ObjectId(100), P0);
+        assert_eq!(parsed.instruction_actor, Some(ControllerRef::ScopedPlayer));
+        assert!(shared_library_wheel_split(
+            &dandan_state(),
+            &parsed,
+            parsed.player_scope.as_ref().unwrap()
+        )
+        .is_none());
+        let legacy = legacy_none_days_undoing_ability();
+        assert!(shared_library_wheel_split(
+            &dandan_state(),
+            &legacy,
+            legacy.player_scope.as_ref().unwrap()
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn instruction_actor_wheel_cast_preserves_legacy_phase_order_and_marked_fallback() {
+        for (marked_node, actor, prior_choice) in [
+            (None, None, false),
+            (Some(0), Some(ControllerRef::ScopedPlayer), false),
+            (Some(1), Some(ControllerRef::ScopedPlayer), false),
+            (Some(2), Some(ControllerRef::ScopedPlayer), false),
+            (Some(3), Some(ControllerRef::ScopedPlayer), false),
+            (
+                Some(3),
+                Some(ControllerRef::ChosenPlayer { index: 0 }),
+                false,
+            ),
+            (
+                Some(3),
+                Some(ControllerRef::ChosenPlayer { index: 0 }),
+                true,
+            ),
+        ] {
+            let referential = matches!(actor, Some(ControllerRef::ChosenPlayer { .. }));
+            let missing = referential && !prior_choice;
+            let mut scenario = GameScenario::new_with_format(FormatConfig::dandan(), 2, 42);
+            scenario.at_phase(Phase::PreCombatMain);
+            let hands = [
+                scenario.add_card_to_hand(P0, "P0 returned hand"),
+                scenario.add_card_to_hand(P1, "P1 returned hand"),
+            ];
+            scenario
+                .with_graveyard(P0, &["P0 grave"])
+                .with_graveyard(P1, &["P1 grave"]);
+            for index in 0..12 {
+                scenario.add_card_to_library_top(P0, &format!("Wheel pile {index}"));
+            }
+            scenario.add_creature_from_oracle(
+                P0,
+                "Obstinate Familiar",
+                1,
+                1,
+                "If you would draw a card, you may skip that draw instead.",
+            );
+            let mut tail = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::OriginalController,
+                },
+            );
+            tail.sub_link = SubAbilityLink::SequentialSibling;
+            let mut draw = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 2 },
+                    target: TargetFilter::ScopedPlayer,
+                },
+            );
+            draw.player_scope = Some(PlayerFilter::All);
+            draw.sub_ability = Some(Box::new(tail));
+            if referential {
+                let mut dependent = AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::GainLife {
+                        amount: QuantityExpr::Fixed { value: 10 },
+                        player: TargetFilter::ScopedPlayer,
+                    },
+                );
+                dependent.sub_ability = draw.sub_ability.take();
+                draw.sub_ability = Some(Box::new(dependent));
+                draw.else_ability = Some(Box::new(AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::GainLife {
+                        amount: QuantityExpr::Fixed { value: 100 },
+                        player: TargetFilter::OriginalController,
+                    },
+                )));
+            }
+            let mut shuffle = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Shuffle {
+                    target: TargetFilter::ScopedPlayer,
+                },
+            );
+            shuffle.sub_ability = Some(Box::new(draw));
+            let mut grave = AbilityDefinition::new(
+                AbilityKind::Spell,
+                zone_to_library_effect(Zone::Graveyard, TargetFilter::ScopedPlayer),
+            );
+            if let Effect::ChangeZoneAll {
+                library_shuffle, ..
+            } = &mut *grave.effect
+            {
+                *library_shuffle = MassLibraryShuffleMode::TerminalShuffle;
+            }
+            grave.sub_ability = Some(Box::new(shuffle));
+            let mut root = AbilityDefinition::new(
+                AbilityKind::Spell,
+                hand_to_library_effect(TargetFilter::ScopedPlayer),
+            );
+            if let Effect::ChangeZoneAll {
+                library_shuffle, ..
+            } = &mut *root.effect
+            {
+                *library_shuffle = MassLibraryShuffleMode::TerminalShuffle;
+            }
+            root.player_scope = Some(PlayerFilter::All);
+            root.sub_ability = Some(Box::new(grave));
+            if let Some(depth) = marked_node {
+                let mut node = &mut root;
+                for _ in 0..depth {
+                    node = node.sub_ability.as_deref_mut().unwrap();
+                }
+                node.instruction_actor = actor;
+            }
+            if prior_choice {
+                let mut prior = AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::Choose {
+                        choice_type: ChoiceType::player(),
+                        persist: false,
+                        selection: TargetSelectionMode::Chosen,
+                    },
+                );
+                prior.sub_ability = Some(Box::new(root));
+                root = prior;
+            }
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Typed Legacy Wheel", false)
+                .with_ability_definition(root)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            let bound =
+                build_resolved_from_def(&runner.state().objects[&spell].abilities[0], spell, P0);
+            assert_eq!(
+                shared_library_wheel_split(runner.state(), &bound, &PlayerFilter::All).is_some(),
+                marked_node.is_none()
+            );
+            let cast = runner.cast(spell);
+            let cast = if prior_choice {
+                cast.choose_option("1")
+            } else {
+                cast
+            };
+            let mut events = cast.resolve().events().to_vec();
+            if !missing {
+                assert!(matches!(
+                    runner.state().waiting_for,
+                    WaitingFor::ReplacementChoice { player: P0, .. }
+                ));
+            }
+            if marked_node.is_none() {
+                assert!(runner
+                    .state()
+                    .active_draw_sequence()
+                    .unwrap()
+                    .dealer
+                    .is_some());
+                assert!(
+                    hands
+                        .iter()
+                        .all(|id| runner.state().objects[id].zone == Zone::Library),
+                    "the entire all-player move phase precedes dealing"
+                );
+                assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Shuffle, source_id, .. } if *source_id == spell)).count(), 1);
+            }
+            while matches!(
+                runner.state().waiting_for,
+                WaitingFor::ReplacementChoice { .. }
+            ) {
+                events.extend(
+                    runner
+                        .act(GameAction::ChooseReplacement { index: 1 })
+                        .unwrap()
+                        .events,
+                );
+            }
+            for player in [P0, P1] {
+                assert_eq!(
+                    runner.state().players[player.0 as usize].hand.len(),
+                    if missing { 0 } else { 2 }
+                );
+            }
+            assert_eq!(
+                runner.life(P0),
+                if referential && !missing { 31 } else { 21 }
+            );
+            assert_eq!(
+                runner.life(P1),
+                if referential && !missing { 30 } else { 20 }
+            );
+            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)).count(), if referential && !missing { 3 } else { 1 });
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, GameEvent::CardDrawn { .. }))
+                    .count(),
+                if missing { 0 } else { 4 }
+            );
+            assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+            assert!(runner.state().stack.is_empty());
+        }
+    }
+
     /// CR 608.2c: a wheel that follows an earlier instruction (Time Spiral's
     /// exile) is the class whichever link the head carries; a mid-chain link
     /// that is not a continuation still ends the class.
     #[test]
     fn shared_library_wheel_split_ignores_the_heads_own_link() {
-        let mut ability = days_undoing_ability();
+        let mut ability = legacy_none_days_undoing_ability();
         let scope = ability.player_scope.clone().unwrap();
         let state = dandan_state();
         assert!(
@@ -44011,7 +48063,7 @@ mod tests {
 
     #[test]
     fn shared_library_wheel_split_leaves_separate_libraries_unchanged() {
-        let ability = days_undoing_ability();
+        let ability = legacy_none_days_undoing_ability();
         let scope = ability.player_scope.clone().unwrap();
         assert!(
             shared_library_wheel_split(&GameState::new_two_player(42), &ability, &scope).is_none()
@@ -44020,7 +48072,7 @@ mod tests {
 
     #[test]
     fn shared_library_wheel_split_refuses_every_other_shape() {
-        let base = days_undoing_ability();
+        let base = legacy_none_days_undoing_ability();
         let scope = base.player_scope.clone().unwrap();
         let state = dandan_state();
         assert!(

@@ -342,15 +342,28 @@ fn lightning_strike_does_not_resolve_when_its_target_leaves_the_any_target_domai
 
     let (mut runner, strike, golem) = golem_fixture("Lightning Strike", LIGHTNING_STRIKE);
     let cast = runner.cast(strike).target_objects(&[golem]).resolve();
+    let damage: Vec<_> = cast
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::DamageDealt {
+                source_id,
+                target: TargetRef::Object(id),
+                amount,
+                is_combat,
+                ..
+            } if *id == golem => Some((*source_id, *amount, *is_combat)),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        cast.state().objects[&golem].damage_marked,
-        3,
+        damage,
+        vec![(strike, 3, false)],
         "paired positive: a legal artifact-creature target takes 3"
     );
-    assert!(cast.events().iter().any(|event| matches!(
-        event,
-        GameEvent::DamageDealt { target: TargetRef::Object(id), amount: 3, .. } if *id == golem
-    )));
+    // CR 400.7: the lethal legal target has no marked damage in its new zone.
+    assert_eq!(cast.zone_of(golem), Zone::Graveyard);
+    assert_eq!(cast.state().objects[&golem].damage_marked, 0);
 }
 
 /// T2 — CR 609.7a: a spell on the stack is a source of your choice. P1 casts

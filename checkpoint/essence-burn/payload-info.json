@@ -1,0 +1,105 @@
+{
+  "archive_bytes": 458347496,
+  "archive_sha256": "4a8802b1987118eef1c8a15c890f1444ac5a86e549ce0c22eb860c9248a822c2",
+  "manifest_sha256": "387cd3729df0d694f2ea168133b8cdd164923a4095c9962afe29d5deaed27d91",
+  "file_count": 3456,
+  "part_count": 19,
+  "parts": [
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-000",
+      "bytes": 25165824,
+      "sha256": "8dd8fee396a8d1108ddce14d161b0f44af09ac408b8f2985235247dec2a5e36f"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-001",
+      "bytes": 25165824,
+      "sha256": "d58b0c015cab3a031638c3f8a210dae997c7b4b19536bc149da51920996df540"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-002",
+      "bytes": 25165824,
+      "sha256": "9c4aa6044dfd7bb8eb8635f3f68a98de15aed152fde442169f435d89e71ea83c"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-003",
+      "bytes": 25165824,
+      "sha256": "9fc5d7727c8f5dba87be784e5db86930c643416fe19d6c3793dbfeac71553bea"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-004",
+      "bytes": 25165824,
+      "sha256": "6c6f4950da128a8eb7435cca3bd6091ad84582efbd84cc6fb41104e54ee7d227"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-005",
+      "bytes": 25165824,
+      "sha256": "2697b5bfe96d10144c9a9a417b4860767a4f853d71b15934871b1fd2c77301fb"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-006",
+      "bytes": 25165824,
+      "sha256": "6b33eae56e0312a174709c3d8d8bdf98ef343607a79abac61f7e53f709c39d07"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-007",
+      "bytes": 25165824,
+      "sha256": "6abc0a2c2e696d4e2e13df9964bd928697d79e10c138c2ca1c6e8080aa134c56"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-008",
+      "bytes": 25165824,
+      "sha256": "c3579fafbed4baa87acc49bbb9b19b56d4cbcc02b181ff9ccc2323be331c2f99"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-009",
+      "bytes": 25165824,
+      "sha256": "764257a1a9505ce9b07484372fdb16e56a0db12d717a7eefe57f5cf74fefd42f"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-010",
+      "bytes": 25165824,
+      "sha256": "1cb6634d4f0645d1d8295c3a042c3f56bb6b589bb5c491adf33f4c88ce530bb4"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-011",
+      "bytes": 25165824,
+      "sha256": "78a0c68c569f0eeac241176ae4d219426f8c771b9d56bb920207801654bc0bb4"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-012",
+      "bytes": 25165824,
+      "sha256": "42d0060092d31cb13e44705f60ca14584b5e85b568ccd8735219d66a81b5ca37"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-013",
+      "bytes": 25165824,
+      "sha256": "36b29beb39167a6e44df43dba0336810d408711b85070c62d6705685df298fce"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-014",
+      "bytes": 25165824,
+      "sha256": "49572ebc231523bfbe7d3ed30fc714d8deac22137149ee0aa14efcd463b5c0dd"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-015",
+      "bytes": 25165824,
+      "sha256": "501bf11e71b5aa3c524672288ff2f07ea956fdf3d606917001506fa8e74d5249"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-016",
+      "bytes": 25165824,
+      "sha256": "cf294cf54b05bad8b7ec4233b6e57495df7225fecb7ad55a8abbda905eaf4056"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-017",
+      "bytes": 25165824,
+      "sha256": "0bdea8406010790bc032f3dd8b862954a38f081db442d08b5be15e5f2a158b82"
+    },
+    {
+      "path": "/workspace/essence-recovery/remote-payload/mtgjson-cr.tar.gz.part-018",
+      "bytes": 5362664,
+      "sha256": "3a4ca5758169912725451485b29efd2a018aca4b26ca47d726024ac50ba1d0c6"
+    }
+  ],
+  "members_verified": true
+}

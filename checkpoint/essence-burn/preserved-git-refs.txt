@@ -1,0 +1,11 @@
+refs/heads/essence-cloud-resume a4152edf586e7bd353fd88b73414466350f66c0f
+refs/heads/essence-plan7-phase3-source ff218687de3a589d50442836f8cb75b0651ccdde
+refs/heads/proof/essence-phase3-generation-case743 957faf230e692d528ba261914f1e9822e535c77d
+refs/heads/proof/essence-phase3-verification-case743 92a04a29034040362949ccae9203610d8e6c163e
+refs/heads/work 95903f815f3ae6ed4155eb30dee88e4519611843
+refs/remotes/origin/HEAD 95903f815f3ae6ed4155eb30dee88e4519611843
+refs/remotes/origin/card/hive-of-the-eye-tyrant 8be28ec8e0d9d29a6e3d3aefebc1ce855bb8d061
+refs/remotes/origin/card/molten-lavamancer-2 8f538252ffe1d3bf906bf63b112d3a84f714c9f5
+refs/remotes/origin/proof/essence-phase3-generation-case743 957faf230e692d528ba261914f1e9822e535c77d
+refs/remotes/origin/proof/essence-phase3-verification-case743 92a04a29034040362949ccae9203610d8e6c163e
+refs/remotes/origin/work 95903f815f3ae6ed4155eb30dee88e4519611843

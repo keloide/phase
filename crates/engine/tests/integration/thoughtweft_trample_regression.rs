@@ -19,15 +19,17 @@
 //! real combat. This isolates the layered-P/T + granted-keyword combat behavior
 //! the bug report exercised without depending on card-data being loaded.
 
+use engine::game::combat::{AttackTarget, TrampleKind};
 use engine::game::layers::evaluate_layers;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
-use engine::types::ability::{ContinuousModification, Duration, TargetFilter};
+use engine::types::ability::{ContinuousModification, Duration, TargetFilter, TargetRef};
+use engine::types::actions::GameAction;
+use engine::types::events::GameEvent;
+use engine::types::game_state::{CombatDamageAssignmentMode, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
-
-use super::rules::run_combat;
 
 /// Install the same continuous effect Thoughtweft Lieutenant's trigger creates
 /// on its chosen target: +1/+1 and trample until end of turn, scoped to a single
@@ -116,22 +118,116 @@ fn thoughtweft_buffed_trample_excess_reaches_player() {
     assert_eq!(attacker_life_before, 20, "precondition: P1 starts at 20");
 
     // Declare the 3/3 trampler as attacker; P1 blocks with the 2/2.
-    run_combat(&mut runner, vec![attacker], vec![(blocker, attacker)]);
+    runner.advance_to_combat();
+    let mut events = runner
+        .declare_attackers(&[(attacker, AttackTarget::Player(P1))])
+        .expect("attack")
+        .events;
+    for _ in 0..10 {
+        if matches!(
+            runner.state().waiting_for,
+            WaitingFor::DeclareBlockers { .. }
+        ) {
+            break;
+        }
+        events.extend(
+            runner
+                .act(GameAction::PassPriority)
+                .expect("reach blockers")
+                .events,
+        );
+    }
+    events.extend(
+        runner
+            .declare_blockers(&[(blocker, attacker)])
+            .expect("block the trampler")
+            .events,
+    );
+    // CR 510.1a/c/d + CR 510.2 + CR 702.19b: submit the actual normal
+    // assignment, including its closing action's simultaneous damage events.
+    for _ in 0..32 {
+        if matches!(
+            runner.state().phase,
+            Phase::EndCombat | Phase::PostCombatMain
+        ) && matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
+        {
+            break;
+        }
+        let action = match runner.state().waiting_for.clone() {
+            WaitingFor::Priority { .. } => GameAction::PassPriority,
+            WaitingFor::AssignCombatDamage {
+                player,
+                attacker_id,
+                total_damage,
+                blockers,
+                assignment_modes,
+                trample,
+                defending_player,
+                attack_target,
+                ..
+            } => {
+                assert_eq!(player, P0, "attacker's controller assigns combat damage");
+                assert_eq!(attacker_id, attacker);
+                assert_eq!(total_damage, 3, "assignment reads layered power");
+                assert_eq!(blockers.len(), 1);
+                assert_eq!(blockers[0].blocker_id, blocker);
+                assert_eq!(blockers[0].lethal_minimum, 2);
+                assert_eq!(trample, Some(TrampleKind::Standard));
+                assert_eq!(defending_player, P1);
+                assert_eq!(attack_target, AttackTarget::Player(P1));
+                assert!(assignment_modes.contains(&CombatDamageAssignmentMode::Normal));
+                GameAction::AssignCombatDamage {
+                    mode: CombatDamageAssignmentMode::Normal,
+                    assignments: vec![(blocker, 2)],
+                    trample_damage: 1,
+                    controller_damage: 0,
+                }
+            }
+            unexpected => panic!(
+                "unexpected combat prompt: {unexpected:?}; state: {:?}",
+                runner.state()
+            ),
+        };
+        events.extend(runner.act(action).expect("complete normal combat").events);
+    }
+    assert!(
+        matches!(
+            runner.state().phase,
+            Phase::EndCombat | Phase::PostCombatMain
+        ) && matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "combat action bound exhausted before normal end-combat priority: {:?}",
+        runner.state()
+    );
 
     // CR 510.1c: the trample attacker assigns lethal (2 = the blocker's
     // toughness) to its single blocker before any excess is assigned. This is the
     // discriminating signal that the 3-power trampler split its damage correctly:
-    // it marked the blocker with exactly lethal and pushed the remainder onward.
-    let blocker_damage = runner
-        .state()
-        .objects
-        .get(&blocker)
-        .map(|b| b.damage_marked)
-        .expect("blocker present immediately after the combat damage step");
-    assert_eq!(
-        blocker_damage, 2,
-        "CR 510.1c: exactly lethal (2 = blocker toughness) is assigned to the 2/2 blocker"
-    );
+    // it dealt exactly lethal to the blocker and pushed the remainder onward.
+    for (recipient, dealer, amount) in [
+        (TargetRef::Object(blocker), attacker, 2),
+        (TargetRef::Player(P1), attacker, 1),
+        (TargetRef::Object(attacker), blocker, 2),
+    ] {
+        let damage: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target,
+                    amount,
+                    is_combat,
+                    ..
+                } if *target == recipient => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(damage, vec![(dealer, amount, true)],
+            "CR 510.1c: exactly lethal (2 = blocker toughness) is assigned to the 2/2 blocker, with one excess to P1");
+    }
+    // CR 400.7: only the dead blocker's new zone clears its marked damage.
+    assert_eq!(runner.state().objects[&blocker].damage_marked, 0);
+    assert_eq!(runner.state().objects[&attacker].zone, Zone::Battlefield);
+    assert_eq!(runner.state().objects[&attacker].damage_marked, 2);
 
     // CR 702.19b: the buffed excess (3 power − 2 lethal = 1) tramples over to the
     // defending player. 20 → 19.

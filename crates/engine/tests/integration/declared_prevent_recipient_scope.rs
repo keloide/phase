@@ -13,7 +13,7 @@ use engine::game::game_object::AttachTarget;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::trigger_index::reindex_object_triggers;
 use engine::parser::oracle::parse_oracle_text;
-use engine::types::ability::{Effect, EffectKind, EffectScope};
+use engine::types::ability::{Effect, EffectKind, EffectScope, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::counter::{parse_counter_type, CounterType};
 use engine::types::events::GameEvent;
@@ -407,7 +407,11 @@ fn defend_the_hearth_mints_no_target_slot_and_shields_players() {
         .id();
     let mut runner = scenario.build();
 
-    cast_untargeted(&mut runner, defend);
+    let prevention_events = cast_untargeted(&mut runner, defend);
+    assert!(
+        prevention_resolved(&prevention_events),
+        "the players-only prevention effect resolves"
+    );
     runner.advance_to_combat();
     runner
         .declare_attackers(&[
@@ -428,10 +432,32 @@ fn defend_the_hearth_mints_no_target_slot_and_shields_players() {
     let life_before = runner.state().players[1].life;
     let outcome = runner.combat_damage();
 
-    assert!(
-        outcome.state().objects[&z].damage_marked > 0,
-        "reach guard: combat damage to a creature is not prevented"
-    );
+    // CR 510.2: both blocked creatures deal their combat damage simultaneously.
+    for (target_id, dealer) in [(z, y), (y, z)] {
+        let damage: Vec<_> = outcome
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target: TargetRef::Object(id),
+                    amount,
+                    is_combat,
+                    ..
+                } if *id == target_id => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            damage,
+            vec![(dealer, 2, true)],
+            "reach guard: combat damage to a creature is not prevented"
+        );
+        // CR 400.7: lethal damage does not remain on the new graveyard object.
+        assert_eq!(outcome.state().objects[&target_id].zone, Zone::Graveyard);
+        assert_eq!(outcome.state().objects[&target_id].damage_marked, 0);
+    }
+    assert_eq!(outcome.state().objects[&x].zone, Zone::Battlefield);
     assert_eq!(
         outcome.state().players[1].life,
         life_before,

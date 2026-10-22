@@ -2891,8 +2891,27 @@ mod tests {
         let mut events = Vec::new();
         resolve_combat_damage(&mut state, &mut events);
 
-        assert_eq!(state.objects[&attacker].damage_marked, 2);
-        assert_eq!(state.objects[&blocker].damage_marked, 2);
+        // CR 510.2: both creatures deal their assigned damage simultaneously.
+        for (target_id, source) in [(attacker, blocker), (blocker, attacker)] {
+            let damage: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    GameEvent::DamageDealt {
+                        source_id,
+                        target: TargetRef::Object(id),
+                        amount,
+                        is_combat,
+                        ..
+                    } if *id == target_id => Some((*source_id, *amount, *is_combat)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(damage, vec![(source, 2, true)]);
+            // CR 704.5g + CR 400.7: lethal damage destroys each permanent;
+            // its new graveyard object no longer has that marked damage.
+            assert_eq!(state.objects[&target_id].zone, Zone::Graveyard);
+            assert_eq!(state.objects[&target_id].damage_marked, 0);
+        }
     }
 
     #[test]
@@ -3071,9 +3090,41 @@ mod tests {
         let result = resolve_combat_damage(&mut state, &mut events);
         assert!(result.is_none(), "All damage should be resolved");
 
-        // With deathtouch, 1 to each blocker is lethal; 3 excess tramples to player
-        assert_eq!(state.objects[&blocker1].damage_marked, 1);
-        assert_eq!(state.objects[&blocker2].damage_marked, 1);
+        // CR 702.2b + CR 702.19b: one deathtouch damage kills each blocker,
+        // leaving three assigned trample damage for the defending player.
+        for blocker in [blocker1, blocker2] {
+            let damage: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    GameEvent::DamageDealt {
+                        source_id,
+                        target: TargetRef::Object(id),
+                        amount,
+                        is_combat,
+                        ..
+                    } if *id == blocker => Some((*source_id, *amount, *is_combat)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(damage, vec![(attacker, 1, true)]);
+            // CR 704.5h + CR 400.7: death creates a new graveyard object.
+            assert_eq!(state.objects[&blocker].zone, Zone::Graveyard);
+            assert_eq!(state.objects[&blocker].damage_marked, 0);
+        }
+        let player_damage: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target: TargetRef::Player(id),
+                    amount,
+                    is_combat,
+                    ..
+                } if *id == PlayerId(1) => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(player_damage, vec![(attacker, 3, true)]);
         assert_eq!(state.players[1].life, 17);
     }
 
@@ -3454,8 +3505,31 @@ mod tests {
         let result = resolve_combat_damage(&mut state, &mut events);
         assert!(result.is_none(), "All damage should be resolved");
 
-        // All 5 to blocker1, none to blocker2
-        assert_eq!(state.objects[&blocker1].damage_marked, 5);
+        // CR 510.1c: all five assigned damage goes to the first blocker.
+        let damage: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::DamageDealt {
+                    source_id,
+                    target: TargetRef::Object(id),
+                    amount,
+                    is_combat,
+                    ..
+                } if *id == blocker1 => Some((*source_id, *amount, *is_combat)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(damage, vec![(attacker, 5, true)]);
+        // CR 704.5g + CR 400.7: the dead blocker's new object has no marked damage.
+        assert_eq!(state.objects[&blocker1].zone, Zone::Graveyard);
+        assert_eq!(state.objects[&blocker1].damage_marked, 0);
+        assert_eq!(state.objects[&blocker2].zone, Zone::Battlefield);
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event,
+                GameEvent::DamageDealt { target: TargetRef::Object(id), .. } if *id == blocker2
+            )
+        }));
         assert_eq!(state.objects[&blocker2].damage_marked, 0);
         // No damage to player
         assert_eq!(state.players[1].life, 20);

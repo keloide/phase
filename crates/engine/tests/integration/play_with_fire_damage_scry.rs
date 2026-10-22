@@ -9,6 +9,7 @@ use engine::types::ability::{
     PreventionScope, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef, TypeFilter,
 };
 use engine::types::actions::GameAction;
+use engine::types::events::GameEvent;
 use engine::types::game_state::{CastPaymentMode, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
@@ -113,48 +114,113 @@ fn cast_play_with_fire(at_player: bool, prevent_player_damage: bool) -> (bool, i
             .expect("installing the player-damage prevention shield must succeed");
     }
     let card_id = runner.state().objects[&spell].card_id;
-    runner
+    let mut events = runner
         .act(GameAction::CastSpell {
             object_id: spell,
             card_id,
             targets: vec![],
             payment_mode: CastPaymentMode::Auto,
         })
-        .expect("casting Play with Fire must succeed");
+        .expect("casting Play with Fire must succeed")
+        .events;
 
     for _ in 0..24 {
+        // Preserve both return boundaries: observe a scry prompt without answering it,
+        // or ordinary priority after the spell has finished resolving.
+        let scried = matches!(runner.state().waiting_for, WaitingFor::ScryChoice { .. });
+        if scried
+            || (matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
+                && runner.state().stack.is_empty())
+        {
+            let creature_damage: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    GameEvent::DamageDealt {
+                        source_id,
+                        target: TargetRef::Object(id),
+                        amount,
+                        is_combat,
+                        ..
+                    } if *id == creature => Some((*source_id, *amount, *is_combat)),
+                    _ => None,
+                })
+                .collect();
+            let player_damage: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    GameEvent::DamageDealt {
+                        source_id,
+                        target: TargetRef::Player(id),
+                        amount,
+                        is_combat,
+                        ..
+                    } if *id == P1 => Some((*source_id, *amount, *is_combat)),
+                    _ => None,
+                })
+                .collect();
+            let damage = if at_player {
+                assert!(
+                    creature_damage.is_empty(),
+                    "the player target does not damage the creature"
+                );
+                assert_eq!(runner.state().objects[&creature].zone, Zone::Battlefield);
+                assert_eq!(runner.state().objects[&creature].damage_marked, 0);
+                if prevent_player_damage {
+                    assert!(
+                        player_damage.is_empty(),
+                        "fully prevented damage is not dealt"
+                    );
+                    assert!(events.iter().any(|event| matches!(event,
+                        GameEvent::DamagePrevented { source_id, target: TargetRef::Player(id), amount: 2 }
+                            if *source_id == spell && *id == P1
+                    )), "the real spell reaches the player prevention shield");
+                } else {
+                    assert_eq!(
+                        player_damage,
+                        vec![(spell, 2, false)],
+                        "the player is actually dealt 2"
+                    );
+                }
+                0
+            } else {
+                assert_eq!(
+                    creature_damage,
+                    vec![(spell, 2, false)],
+                    "the targeted creature must take 2 damage"
+                );
+                assert!(
+                    player_damage.is_empty(),
+                    "the creature target does not damage the player"
+                );
+                // CR 400.7: the completed damage event survives the lethal target's zone change.
+                assert_eq!(runner.state().objects[&creature].zone, Zone::Graveyard);
+                assert_eq!(runner.state().objects[&creature].damage_marked, 0);
+                creature_damage[0].1
+            };
+            return (scried, runner.state().players[P1.0 as usize].life, damage);
+        }
         match runner.state().waiting_for.clone() {
             WaitingFor::TargetSelection { .. } => {
-                runner
-                    .act(GameAction::SelectTargets {
-                        targets: vec![if at_player {
-                            TargetRef::Player(P1)
-                        } else {
-                            TargetRef::Object(creature)
-                        }],
-                    })
-                    .expect("selecting Play with Fire's target must succeed");
-            }
-            WaitingFor::ScryChoice { .. } => {
-                let damage = runner
-                    .state()
-                    .objects
-                    .get(&creature)
-                    .map_or(2, |object| object.damage_marked);
-                return (true, runner.state().players[P1.0 as usize].life, damage);
-            }
-            WaitingFor::Priority { .. } if runner.state().stack.is_empty() => {
-                let damage = runner
-                    .state()
-                    .objects
-                    .get(&creature)
-                    .map_or(2, |object| object.damage_marked);
-                return (false, runner.state().players[P1.0 as usize].life, damage);
+                events.extend(
+                    runner
+                        .act(GameAction::SelectTargets {
+                            targets: vec![if at_player {
+                                TargetRef::Player(P1)
+                            } else {
+                                TargetRef::Object(creature)
+                            }],
+                        })
+                        .expect("selecting Play with Fire's target must succeed")
+                        .events,
+                );
             }
             WaitingFor::Priority { .. } => {
-                runner
-                    .act(GameAction::PassPriority)
-                    .expect("passing priority must succeed");
+                events.extend(
+                    runner
+                        .act(GameAction::PassPriority)
+                        .expect("passing priority must succeed")
+                        .events,
+                );
             }
             other => panic!("unexpected Play with Fire prompt: {other:?}"),
         }

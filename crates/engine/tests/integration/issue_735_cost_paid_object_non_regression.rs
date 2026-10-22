@@ -1,9 +1,8 @@
-//! Non-regression for issue #735 (Edit B) — cards whose "if its power is …"
-//! clause has a TARGET or ENTERING-REFERENT subject must KEEP
-//! `ObjectScope::CostPaidObject`. Edit B only flips player/phase-subject
-//! triggers (Amalia, Lily) to `Source`; everything else is unchanged, so "its"
-//! still binds the clause-local object (the entering creature / the target),
-//! not the ability source.
+//! Non-regression for issue #735 — distinguish chosen-target power from a
+//! genuine entering-object referent. Ent's Fury's own announced target binds
+//! `ObjectScope::Target`; Tribute's entering creature keeps
+//! `ObjectScope::CostPaidObject`. Genuine source/phase-subject references
+//! (Amalia, Lily) retain `Source`.
 //!
 //! Cards covered:
 //!   - Tribute to the World Tree: "Whenever a creature you control enters, draw
@@ -12,16 +11,21 @@
 //!     power is 4 or greater. …" — "its" = the TARGET creature.
 //!
 //! CR references (verified against docs/MagicCompRules.txt):
+//!   - CR 115.1a + CR 601.2c: Ent's Fury's targets are chosen as it is cast.
 //!   - CR 608.2h: the power comparison reads the referenced object's current
 //!     info once, when the effect is applied.
 //!   - CR 608.2k: an effect referring to an untargeted object previously named
-//!     by the ability (the entering/cost-paid object) still affects that object.
+//!     by its cost or trigger condition still affects that object.
 
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::triggers::{drain_order_triggers_with_identity, process_triggers};
 use engine::game::zones::{create_object, move_to_zone};
+use engine::types::ability::EffectKind;
+use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::counter::CounterType;
+use engine::types::events::GameEvent;
+use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
@@ -124,22 +128,16 @@ fn tribute_entering_power_2_puts_counters_not_draw() {
     );
 }
 
-/// NON-REGRESSION (Ent's Fury): the fix must NOT perturb Ent's Fury's
-/// resolution. Its "if its power is 4 or greater" clause has no trigger subject
-/// (None), so Edit B's `_ => CostPaidObject` fall-through leaves the condition
-/// as `Power{CostPaidObject} GE 4` — exactly the pre-fix parse (locked in the
-/// parser SHAPE test `ents_fury_keeps_cost_paid_object_scope`). This runtime
-/// test proves the spell still resolves cleanly with its behavior unchanged:
-/// the pump sub-ability applies (4/4 → 5/5) and the target survives its own
-/// fight against a 3/3.
-///
-/// Note: `Power{CostPaidObject}` binds the ability's cost/sacrifice referent,
-/// not a spell's target (see `game/quantity.rs` — `CostPaidObject` is
-/// deliberately NOT a "maybe the target" fallback). So the counter clause is
-/// gated on an empty cost referent both before AND after this fix — the point
-/// of this non-regression test is that the fix changes nothing here.
+/// REGRESSION (Ent's Fury): "its power" reads the own announced target via
+/// `Power{Target}`, while genuine cost/entering references retain CostPaidObject.
+/// CR 608.2c + CR 608.2h: the first instruction reads the ally's current power 4,
+/// so it receives one counter before the independent pump instruction.
+/// CR 122.1a + CR 611.2a + CR 613.4c: counter +1/+1 and EOT pump +1/+1 make it 6/6.
+/// CR 701.14a + CR 701.14d: it then fights the 3/3 with current powers as noncombat
+/// damage. CostPaidObject remains a cost/trigger/effect referent, with no target
+/// fallback.
 #[test]
-fn ents_fury_resolves_unchanged_pump_applies() {
+fn ents_fury_own_target_gets_counter_then_pump() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     // P0's own creature (the counter/pump/fight subject) at power 4.
@@ -163,17 +161,715 @@ fn ents_fury_resolves_unchanged_pump_applies() {
     // opponent (a creature you don't control).
     let outcome = runner.cast(spell).target_objects(&[ally, enemy]).resolve();
 
-    // The pump sub-ability (unconditional +1/+1 until end of turn) applies,
-    // proving Ent's Fury resolved through its chain unchanged by the fix.
+    // CR 608.2c + CR 608.2h: the own target's initial power 4 satisfies the gate.
+    assert_eq!(
+        p1p1(&runner, ally),
+        1,
+        "Ent's Fury must put one +1/+1 counter on its own 4-power target"
+    );
+    // CR 122.1a + CR 611.2a + CR 613.4c: the counter and separate pump each add 1.
     assert_eq!(
         outcome.state().objects[&ally].power,
-        Some(5),
-        "Ent's Fury's +1/+1 pump must still apply to the target (4 -> 5)"
+        Some(6),
+        "Ent's Fury's counter and independent +1/+1 pump must both apply (4 -> 6)"
     );
-    // The target survives the fight (5/5 after pump vs a 3/3 dealing 3).
+    // CR 701.14a + CR 704.5g: the 6/6 target survives the 3/3's fight damage.
     assert_eq!(
         outcome.state().objects[&ally].zone,
         Zone::Battlefield,
-        "the pumped 5/5 target survives fighting a 3/3"
+        "the countered and pumped 6/6 target survives fighting a 3/3"
     );
+}
+
+/// Synthetic accepted grammar, not a printed card: the decline consequence
+/// and its own target's property are independent gates.
+/// CR 118.12 + CR 608.2h: accepting the draw defeats the decline gate even
+/// when the target qualifies; declining still requires current target power.
+#[test]
+fn synthetic_optional_decline_preserves_target_power_gate_when_cast() {
+    const ORACLE: &str = "Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter on target creature you control if its power is 4 or greater.";
+    for (power, accept, expected_counters) in
+        [(4, true, 0), (4, false, 1), (3, true, 0), (3, false, 0)]
+    {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let ally = scenario.add_creature(P0, "Chosen Ally", power, 6).id();
+        let decoy = scenario.add_creature(P0, "Unchosen Ally", 6, 6).id();
+        let spell = scenario
+            .add_spell_to_hand_from_oracle(P0, "Synthetic Decline Grammar", false, ORACLE)
+            .with_mana_cost(engine::types::mana::ManaCost::zero())
+            .id();
+        for _ in 0..4 {
+            scenario.add_card_to_library_top(P1, "Forest");
+        }
+        let mut runner = scenario.build();
+        let source = &runner.state().objects[&spell];
+        assert!(
+            source.power.is_none(),
+            "the spell cannot satisfy the power gate"
+        );
+        assert!(
+            std::iter::successors(source.abilities.first(), |def| def.sub_ability.as_deref())
+                .all(|def| def.effect.unimplemented_description().is_none()),
+            "the complete synthetic chain must parse"
+        );
+
+        let mut committed = runner.cast(spell).target_object(ally).commit();
+        // Keep the harness's cast baseline and observe the actual decision
+        // boundary before its ordinary accept/decline driver answers it.
+        for _ in 0..4 {
+            if !matches!(committed.state().waiting_for, WaitingFor::Priority { .. }) {
+                break;
+            }
+            committed
+                .act(GameAction::PassPriority)
+                .expect("pass to optional draw");
+        }
+        assert!(
+            matches!(committed.state().waiting_for,
+            WaitingFor::OptionalEffectChoice { player: P1, source_id, .. } if source_id == spell),
+            "P1 must actually receive this spell's optional draw decision: {:?}",
+            committed.state().waiting_for
+        );
+        let outcome = if accept {
+            committed.accept_optional().resolve()
+        } else {
+            committed.decline_optional().resolve()
+        };
+        outcome.assert_hand_drawn(P1, i64::from(accept));
+        outcome.assert_zone(&[spell], Zone::Graveyard);
+        assert!(outcome.state().stack.is_empty());
+        assert!(matches!(
+            outcome.final_waiting_for(),
+            WaitingFor::Priority { .. }
+        ));
+        assert_eq!(
+            outcome.state().objects[&ally]
+                .counters
+                .get(&CounterType::Plus1Plus1)
+                .copied()
+                .unwrap_or(0),
+            expected_counters,
+            "power {power}, accept {accept}: both independent gates must hold"
+        );
+        assert_eq!(
+            outcome.state().objects[&decoy]
+                .counters
+                .get(&CounterType::Plus1Plus1)
+                .copied()
+                .unwrap_or(0),
+            0,
+            "only the announced target can receive the counter"
+        );
+        assert_eq!(outcome.events().iter().filter(|event| matches!(event,
+            GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: P0 } if *object_id == ally)).count(),
+            expected_counters as usize, "the counter event must name the target and spell controller");
+        assert_eq!(outcome.events().iter().filter(|event| matches!(event,
+            GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == spell)).count(),
+            expected_counters as usize, "the counter instruction must resolve from this spell");
+        if accept {
+            assert!(outcome.events().iter().any(|event| matches!(event,
+                GameEvent::EffectResolved { kind: EffectKind::Draw, source_id, .. } if *source_id == spell)),
+                "accepted draw must resolve from the same spell");
+        }
+    }
+}
+
+/// CR 608.2c + CR 608.2h: Ent's independent pump and fight still run when its
+/// own target starts below the counter threshold.
+#[test]
+fn ents_fury_below_threshold_still_pumps_and_fights() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let ally = scenario.add_creature(P0, "Small Ally", 3, 5).id();
+    let enemy = scenario.add_creature(P1, "Fight Enemy", 2, 4).id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Ent's Fury", false, ENTS_FURY_ORACLE)
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+    let outcome = runner.cast(spell).target_objects(&[ally, enemy]).resolve();
+    assert_eq!(p1p1(&runner, ally), 0);
+    assert_eq!(outcome.state().objects[&ally].power, Some(4));
+    outcome.assert_zone(&[ally], Zone::Battlefield);
+    // CR 701.14a + CR 704.5g: the pumped ally's four damage kills the 2/4.
+    outcome.assert_zone(&[enemy, spell], Zone::Graveyard);
+    assert!(outcome.events().iter().any(|event| matches!(event,
+        GameEvent::EffectResolved { kind: EffectKind::Fight, source_id, .. } if *source_id == spell)));
+}
+
+#[test]
+fn synthetic_decline_actor_survives_a_real_saved_optional_prompt() {
+    const ORACLE: &str = "Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter on target creature you control if its power is 4 or greater.";
+    for (power, accept, counters) in [(4, true, 0), (4, false, 1), (3, true, 0), (3, false, 0)] {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let ally = scenario.add_creature(P0, "Saved Target", power, 6).id();
+        let decoy = scenario.add_creature(P0, "Saved Decoy", 8, 8).id();
+        let spell = scenario
+            .add_spell_to_hand_from_oracle(P0, "Synthetic Saved Decline", false, ORACLE)
+            .with_mana_cost(engine::types::mana::ManaCost::zero())
+            .id();
+        for _ in 0..4 {
+            scenario.add_card_to_library_top(P1, "Forest");
+        }
+        let mut runner = scenario.build();
+        let mut committed = runner.cast(spell).target_object(ally).commit();
+        for _ in 0..4 {
+            if !matches!(committed.state().waiting_for, WaitingFor::Priority { .. }) {
+                break;
+            }
+            committed.act(GameAction::PassPriority).unwrap();
+        }
+        assert!(matches!(committed.state().waiting_for,
+            WaitingFor::OptionalEffectChoice { player: P1, source_id, .. } if source_id == spell));
+        let frame = committed
+            .state()
+            .active_optional_effect_frame()
+            .expect("real optional frame");
+        assert_eq!(frame.ability.original_controller, Some(P0));
+        assert_eq!(frame.ability.scoped_player, Some(P1));
+        let saved = serde_json::to_vec(committed.state()).unwrap();
+        drop(committed);
+        let mut runner = GameRunner::from_state(serde_json::from_slice(&saved).unwrap());
+        let hand_before = hand_size(&runner, P1);
+        let result = runner
+            .act(GameAction::DecideOptionalEffect { accept })
+            .expect("restore resumes the real owned decision");
+        assert_eq!(hand_size(&runner, P1), hand_before + usize::from(accept));
+        assert_eq!(p1p1(&runner, ally), counters);
+        assert_eq!(p1p1(&runner, decoy), 0);
+        assert_eq!(result.events.iter().filter(|event| matches!(event,
+            GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: P0 }
+                if *object_id == ally)).count(), counters as usize);
+        assert_eq!(result.events.iter().filter(|event| matches!(event,
+            GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == spell)).count(), counters as usize);
+        if accept {
+            assert!(result.events.iter().any(|event| matches!(event,
+            GameEvent::EffectResolved { kind: EffectKind::Draw, source_id, .. } if *source_id == spell)));
+        }
+        assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+        assert!(runner.state().stack.is_empty());
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::Priority { .. }
+        ));
+    }
+}
+
+/// Synthetic admitted list body: both intrinsic counter placements keep the
+/// controller imperative actor through the real declined optional instruction.
+#[test]
+fn synthetic_decline_compound_counter_children_keep_their_actor() {
+    const ORACLE: &str = "Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter and a lifelink counter on target creature you control.";
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let ally = scenario.add_creature(P0, "Compound Target", 4, 6).id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Synthetic Compound Actor", false, ORACLE)
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    scenario.add_card_to_library_top(P1, "Forest");
+    let mut runner = scenario.build();
+    assert!(
+        std::iter::successors(runner.state().objects[&spell].abilities.first(), |d| d
+            .sub_ability
+            .as_deref())
+        .all(|d| d.effect.unimplemented_description().is_none()),
+        "the full synthetic list must be admitted"
+    );
+    let outcome = runner
+        .cast(spell)
+        .target_object(ally)
+        .decline_optional()
+        .resolve();
+    assert_eq!(p1p1(&runner, ally), 1);
+    assert_eq!(
+        outcome
+            .events()
+            .iter()
+            .filter(|event| matches!(event,
+        GameEvent::CounterAdded { object_id, count: 1, actor: P0, .. } if *object_id == ally))
+            .count(),
+        2
+    );
+    assert_eq!(outcome.events().iter().filter(|event| matches!(event,
+        GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == spell)).count(), 2);
+    outcome.assert_hand_drawn(P1, 0);
+    outcome.assert_zone(&[spell], Zone::Graveyard);
+    assert!(outcome.state().stack.is_empty());
+}
+
+#[test]
+fn synthetic_decline_owned_body_preserves_a_later_explicit_player_actor() {
+    const ORACLE: &str = "Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter and a lifelink counter on target creature you control, then that player puts a +1/+1 counter on a creature they control.";
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let ally = scenario
+        .add_creature(P0, "Printed Controller Target", 3, 6)
+        .id();
+    let other = scenario.add_creature(P1, "Scoped Actor Target", 3, 6).id();
+    let decoy = scenario.add_creature(P1, "Scoped Actor Decoy", 3, 6).id();
+    scenario.add_card_to_library_top(P1, "Forest");
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Synthetic Distinct Subjects", false, ORACLE)
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+    assert!(
+        std::iter::successors(runner.state().objects[&spell].abilities.first(), |d| d
+            .sub_ability
+            .as_deref())
+        .all(|d| d.effect.unimplemented_description().is_none()),
+        "both printed subjects must parse"
+    );
+    let outcome = runner
+        .cast(spell)
+        .target_object(ally)
+        .decline_optional()
+        .resolve();
+    let mut events = outcome.events().to_vec();
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::ChooseFromZoneChoice { player: P1, cards, .. }
+        if cards.contains(&other) && cards.contains(&decoy))
+    );
+    events.extend(
+        runner
+            .act(GameAction::SelectCards { cards: vec![other] })
+            .unwrap()
+            .events,
+    );
+    assert_eq!(p1p1(&runner, ally), 1);
+    assert_eq!(p1p1(&runner, other), 1);
+    assert_eq!(p1p1(&runner, decoy), 0);
+    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::CounterAdded { object_id, count: 1, actor: P0, .. } if *object_id == ally)).count(), 2);
+    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: P1 } if *object_id == other)).count(), 1);
+    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == spell)).count(), 3);
+    assert!(runner.state().stack.is_empty());
+    assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+}
+
+#[test]
+fn synthetic_decline_remaining_seat_and_independent_tail_keep_distinct_authorities() {
+    const ORACLE: &str = "Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter on target creature you control if its power is 4 or greater. You gain 1 life.";
+    let p2 = engine::types::player::PlayerId(2);
+    let mut scenario = GameScenario::new_n_player(3, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let ally = scenario
+        .add_creature(P0, "Remaining Seat Target", 4, 6)
+        .id();
+    for player in [P1, p2] {
+        for _ in 0..3 {
+            scenario.add_card_to_library_top(player, "Forest");
+        }
+    }
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Synthetic Remaining Actor", false, ORACLE)
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+    let mut committed = runner.cast(spell).target_object(ally).commit();
+    for _ in 0..6 {
+        if !matches!(committed.state().waiting_for, WaitingFor::Priority { .. }) {
+            break;
+        }
+        committed.act(GameAction::PassPriority).unwrap();
+    }
+    assert!(
+        matches!(committed.state().waiting_for, WaitingFor::OptionalEffectChoice { player: P1, source_id, .. } if source_id == spell)
+    );
+    let first = committed
+        .act(GameAction::DecideOptionalEffect { accept: true })
+        .unwrap();
+    assert!(
+        matches!(committed.state().waiting_for, WaitingFor::OptionalEffectChoice { player, source_id, .. } if player == p2 && source_id == spell)
+    );
+    let frame = committed.state().active_optional_effect_frame().unwrap();
+    assert_eq!(frame.ability.original_controller, Some(P0));
+    assert_eq!(frame.ability.scoped_player, Some(p2));
+    let saved = serde_json::to_vec(committed.state()).unwrap();
+    drop(committed);
+    let mut runner = GameRunner::from_state(serde_json::from_slice(&saved).unwrap());
+    let second = runner
+        .act(GameAction::DecideOptionalEffect { accept: false })
+        .unwrap();
+    let events: Vec<_> = first.events.into_iter().chain(second.events).collect();
+    assert_eq!(hand_size(&runner, P1), 1);
+    assert_eq!(hand_size(&runner, p2), 0);
+    assert_eq!(p1p1(&runner, ally), 1);
+    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: P0 } if *object_id == ally)).count(), 1);
+    assert_eq!(runner.life(P0), 21);
+    assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)).count(), 1);
+    assert!(runner.state().stack.is_empty());
+    assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+}
+
+#[test]
+fn synthetic_decline_printed_controller_survives_source_exit_or_control_change() {
+    const ABILITY: &str = "{T}: Each opponent may draw a card. For each opponent who doesn't, put a +1/+1 counter on target creature you control if its power is 4 or greater.";
+    for change_control in [false, true] {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let ally = scenario.add_creature(P0, "Captured Target", 4, 6).id();
+        let source = scenario
+            .add_creature_from_oracle(P0, "Synthetic Captured Actor", 0, 3, ABILITY)
+            .id();
+        scenario.add_card_to_library_top(P1, "Forest");
+        let response = if change_control {
+            let mut def = engine::types::ability::AbilityDefinition::new(
+                engine::types::ability::AbilityKind::Spell,
+                engine::types::ability::Effect::GainControl {
+                    target: engine::types::ability::TargetFilter::Typed(
+                        engine::types::ability::TypedFilter::creature(),
+                    ),
+                },
+            );
+            def.instruction_actor =
+                Some(engine::types::ability::ControllerRef::SpecificPlayer { id: P1 });
+            scenario
+                .add_spell_to_hand(P0, "Synthetic Transfer Response", true)
+                .with_ability_definition(def)
+                .with_mana_cost(engine::types::mana::ManaCost::zero())
+                .id()
+        } else {
+            scenario
+                .add_spell_to_hand_from_oracle(
+                    P0,
+                    "Unsummon",
+                    true,
+                    "Return target creature to its owner's hand.",
+                )
+                .with_mana_cost(engine::types::mana::ManaCost::zero())
+                .id()
+        };
+        let mut runner = scenario.build();
+        runner
+            .act(GameAction::ActivateAbility {
+                source_id: source,
+                ability_index: 0,
+            })
+            .unwrap();
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::TargetSelection { .. }
+        ));
+        runner
+            .act(GameAction::ChooseTarget {
+                target: Some(engine::types::ability::TargetRef::Object(ally)),
+            })
+            .unwrap();
+        assert!(
+            !runner.state().stack.is_empty(),
+            "the P0 ability was queued before the response"
+        );
+        runner.cast(response).target_object(source).resolve();
+        if change_control {
+            assert_eq!(runner.state().objects[&source].controller, P1);
+        } else {
+            assert_eq!(runner.state().objects[&source].zone, Zone::Hand);
+        }
+        assert!(
+            matches!(runner.state().waiting_for, WaitingFor::OptionalEffectChoice { player: P1, source_id, .. } if source_id == source)
+        );
+        let result = runner
+            .act(GameAction::DecideOptionalEffect { accept: false })
+            .unwrap();
+        assert_eq!(p1p1(&runner, ally), 1);
+        assert!(result.events.iter().any(|event| matches!(event, GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: P0 } if *object_id == ally)));
+        assert!(result.events.iter().any(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == source)));
+        assert!(runner.state().stack.is_empty());
+    }
+}
+
+/// Synthetic admitted possessive subjects: the wrapper's object, its owner,
+/// its controller and the printed spell controller are separate authorities.
+/// CR 608.2c: both intrinsic placements belong to the explicit player subject.
+#[test]
+fn synthetic_explicit_subject_wrapper_defaults_its_owned_counter_body() {
+    use engine::types::player::PlayerId;
+    let p2 = PlayerId(2);
+    for (subject, actor) in [("controller", P1), ("owner", p2)] {
+        let mut scenario = GameScenario::new_n_player(3, 42);
+        scenario.at_phase(Phase::PreCombatMain);
+        let recipient = scenario
+            .add_creature(p2, "Borrowed Counter Recipient", 3, 6)
+            .controlled_by(P1)
+            .id();
+        let oracle = format!(
+            "Target creature's {subject} puts a +1/+1 counter and a lifelink counter on it."
+        );
+        let spell = scenario
+            .add_spell_to_hand_from_oracle(P0, "Synthetic Possessive Counter Actor", false, &oracle)
+            .with_mana_cost(engine::types::mana::ManaCost::zero())
+            .id();
+        let mut runner = scenario.build();
+        let outcome = runner.cast(spell).target_object(recipient).resolve();
+        assert_eq!(outcome.state().objects[&recipient].owner, p2);
+        assert_eq!(outcome.state().objects[&recipient].controller, P1);
+        for counter_type in [
+            CounterType::Plus1Plus1,
+            CounterType::Keyword(engine::types::keywords::KeywordKind::Lifelink),
+        ] {
+            assert_eq!(
+                outcome.state().objects[&recipient]
+                    .counters
+                    .get(&counter_type),
+                Some(&1)
+            );
+            assert_eq!(outcome.events().iter().filter(|event| matches!(event,
+                GameEvent::CounterAdded { object_id, counter_type: actual_type, count: 1, actor: actual_actor }
+                if *object_id == recipient && *actual_type == counter_type && *actual_actor == actor)).count(), 1);
+        }
+        assert_eq!(outcome.events().iter().filter(|event| matches!(event,
+            GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == spell)).count(), 2);
+        outcome.assert_zone(&[spell], Zone::Graveyard);
+        assert!(outcome.state().stack.is_empty());
+    }
+}
+
+/// Synthetic possessive subject with a real resolution-time chooser.
+/// CR 608.2d: the named actor chooses the legal creature, independently of P0.
+#[test]
+fn synthetic_explicit_controller_subject_owns_its_counter_choice() {
+    let mut scenario = GameScenario::new_n_player(3, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let owner = engine::types::player::PlayerId(2);
+    let anchor = scenario
+        .add_creature(owner, "Possessive Target", 3, 6)
+        .controlled_by(P1)
+        .id();
+    let recipient = scenario.add_creature(P1, "Chosen Recipient", 3, 6).id();
+    let decoy = scenario
+        .add_creature(P0, "Printed Controller Decoy", 3, 6)
+        .id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Synthetic Possessive Chooser",
+            false,
+            "Target creature's controller puts a +1/+1 counter on a creature they control.",
+        )
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+    let mut events = runner
+        .cast(spell)
+        .target_object(anchor)
+        .resolve()
+        .events()
+        .to_vec();
+    assert!(matches!(&runner.state().waiting_for,
+        WaitingFor::ChooseFromZoneChoice { player: P1, cards, .. }
+        if cards.contains(&anchor) && cards.contains(&recipient) && !cards.contains(&decoy)));
+    events.extend(
+        runner
+            .act(GameAction::SelectCards {
+                cards: vec![recipient],
+            })
+            .unwrap()
+            .events,
+    );
+    assert_eq!(p1p1(&runner, recipient), 1);
+    assert_eq!(p1p1(&runner, anchor), 0);
+    assert_eq!(p1p1(&runner, decoy), 0);
+    assert_eq!(events.iter().filter(|event| matches!(event,
+        GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: P1 }
+        if *object_id == recipient)).count(), 1);
+    assert_eq!(events.iter().filter(|event| matches!(event,
+        GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == spell)).count(), 1);
+    assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+    assert!(runner.state().stack.is_empty());
+}
+
+/// Synthetic decline grammar retains the independent possessive subject;
+/// contextual "that player" is covered by the existing scoped-player positive.
+/// CR 608.2c: the decline's seat is not the controller/owner of its object.
+#[test]
+fn synthetic_decline_preserves_explicit_controller_and_owner_actors() {
+    use engine::types::player::PlayerId;
+    let p2 = PlayerId(2);
+    let p3 = PlayerId(3);
+    for (subject, actor) in [("controller", p2), ("owner", p3)] {
+        let mut scenario = GameScenario::new_n_player(4, 42);
+        scenario.at_phase(Phase::PreCombatMain);
+        let recipient = scenario
+            .add_creature(p3, "Independent Possessive Recipient", 3, 6)
+            .controlled_by(p2)
+            .id();
+        for player in [P1, p2, p3] {
+            scenario.add_card_to_library_top(player, "Forest");
+        }
+        let oracle = format!("Each opponent may draw a card. For each opponent who doesn't, target creature's {subject} puts a +1/+1 counter on it.");
+        let spell = scenario
+            .add_spell_to_hand_from_oracle(
+                P0,
+                "Synthetic Independent Decline Subject",
+                false,
+                &oracle,
+            )
+            .with_mana_cost(engine::types::mana::ManaCost::zero())
+            .id();
+        let mut runner = scenario.build();
+        let outcome = runner
+            .cast(spell)
+            .target_object(recipient)
+            .decline_optional()
+            .resolve();
+        assert_eq!(
+            outcome.state().objects[&recipient]
+                .counters
+                .get(&CounterType::Plus1Plus1),
+            Some(&3)
+        );
+        assert_eq!(outcome.events().iter().filter(|event| matches!(event,
+            GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: actual }
+            if *object_id == recipient && *actual == actor)).count(), 3);
+        assert_eq!(outcome.events().iter().filter(|event| matches!(event,
+            GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == spell)).count(), 3);
+        outcome.assert_zone(&[spell], Zone::Graveyard);
+        assert!(outcome.state().stack.is_empty());
+    }
+}
+
+/// Synthetic attack trigger: the event player P3 differs from scope P1,
+/// printed controller P0 and the counter recipient's controller P2.
+/// CR 608.2c: an explicit event subject is independent of the decline anaphor.
+#[test]
+fn synthetic_decline_preserves_an_explicit_attacking_player_actor() {
+    use engine::types::ability::TargetRef;
+    use engine::types::player::PlayerId;
+    let p2 = PlayerId(2);
+    let p3 = PlayerId(3);
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario.add_creature_from_oracle(P0, "Synthetic Event Subject", 1, 6,
+        "Whenever a creature attacks, each opponent may draw a card. For each opponent who doesn't, that attacking player puts a +1/+1 counter on target creature.").id();
+    let recipient = scenario
+        .add_creature(p2, "Independent Event Recipient", 3, 6)
+        .id();
+    let attacker = scenario.add_creature(p3, "Event Actor Attacker", 1, 6).id();
+    for player in [P1, p2, p3] {
+        scenario.add_card_to_library_top(player, "Forest");
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().active_player = p3;
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&attacker)
+        .unwrap()
+        .summoning_sick = false;
+    runner.advance_to_combat();
+    let mut events = runner
+        .declare_attackers(&[(attacker, engine::game::combat::AttackTarget::Player(P1))])
+        .unwrap()
+        .events;
+    let mut offers = Vec::new();
+    for _ in 0..96 {
+        let action = match runner.state().waiting_for.clone() {
+            WaitingFor::TargetSelection { .. } | WaitingFor::TriggerTargetSelection { .. } => {
+                GameAction::ChooseTarget {
+                    target: Some(TargetRef::Object(recipient)),
+                }
+            }
+            WaitingFor::OptionalEffectChoice {
+                player, source_id, ..
+            } => {
+                assert_eq!(source_id, source);
+                offers.push(player);
+                GameAction::DecideOptionalEffect { accept: false }
+            }
+            WaitingFor::Priority { .. } if runner.state().stack.is_empty() => break,
+            WaitingFor::Priority { .. } => GameAction::PassPriority,
+            other => panic!("unexpected synthetic event-subject prompt: {other:?}"),
+        };
+        events.extend(runner.act(action).unwrap().events);
+    }
+    assert_eq!(offers.len(), 3);
+    assert!(offers.contains(&P1) && offers.contains(&p2) && offers.contains(&p3));
+    assert_eq!(p1p1(&runner, recipient), 3);
+    assert_eq!(events.iter().filter(|event| matches!(event,
+        GameEvent::CounterAdded { object_id, counter_type: CounterType::Plus1Plus1, count: 1, actor: actual }
+        if *object_id == recipient && *actual == p3)).count(), 3);
+    assert_eq!(events.iter().filter(|event| matches!(event,
+        GameEvent::EffectResolved { kind: EffectKind::PutCounter, source_id, .. } if *source_id == source)).count(), 3);
+    assert!(runner.state().stack.is_empty());
+}
+
+/// Synthetic admitted player-target zone wrapper, distinct from the possessive
+/// object wrapper above. CR 608.2c/d: P1 both chooses and performs its exile.
+#[test]
+fn synthetic_target_player_wrapper_owns_its_zone_choice_and_move() {
+    use engine::types::ability::{
+        AbilityDefinition, AbilityKind, Effect, ReplacementDefinition, ReplacementMode,
+    };
+    use engine::types::player::PlayerId;
+    use engine::types::proposed_event::ProposedEvent;
+    use engine::types::replacements::ReplacementEvent;
+    let p2 = PlayerId(2);
+    let mut scenario = GameScenario::new_n_player(3, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let recipient = scenario
+        .add_creature(p2, "Borrowed Exile Recipient", 3, 6)
+        .controlled_by(P1)
+        .id();
+    let decoy = scenario.add_creature(P1, "Exile Choice Decoy", 3, 6).id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Synthetic Player Zone Actor",
+            false,
+            "Target player exiles a creature they control.",
+        )
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    scenario
+        .add_enchantment_from_oracle(P0, "Synthetic Optional Exile Observer", "")
+        .with_replacement_definition(
+            ReplacementDefinition::new(ReplacementEvent::Moved)
+                .mode(ReplacementMode::Optional { decline: None })
+                .destination_zone(Zone::Exile)
+                .execute(AbilityDefinition::new(AbilityKind::Spell, Effect::NoOp)),
+        );
+    let mut runner = scenario.build();
+    let mut events = runner
+        .cast(spell)
+        .target_player(P1)
+        .resolve()
+        .events()
+        .to_vec();
+    assert!(
+        matches!(&runner.state().waiting_for, WaitingFor::ChooseFromZoneChoice { player: P1, cards, .. }
+        if cards.contains(&recipient) && cards.contains(&decoy))
+    );
+    events.extend(
+        runner
+            .act(GameAction::SelectCards {
+                cards: vec![recipient],
+            })
+            .unwrap()
+            .events,
+    );
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert!(
+        matches!(&runner.state().pending_replacement.as_ref().unwrap().proposed,
+        ProposedEvent::ZoneChange { object_id, performed_by: Some(P1), from: Zone::Battlefield, to: Zone::Exile, .. }
+        if *object_id == recipient)
+    );
+    events.extend(
+        runner
+            .act(GameAction::ChooseReplacement { index: 1 })
+            .unwrap()
+            .events,
+    );
+    assert_eq!(runner.state().objects[&recipient].zone, Zone::Exile);
+    assert_eq!(runner.state().objects[&recipient].owner, p2);
+    assert_eq!(runner.state().objects[&decoy].zone, Zone::Battlefield);
+    assert_eq!(events.iter().filter(|event| matches!(event,
+        GameEvent::EffectResolved { kind: EffectKind::ChangeZone, source_id, .. } if *source_id == spell)).count(), 1);
+    assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+    assert!(runner.state().stack.is_empty());
 }

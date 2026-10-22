@@ -1571,12 +1571,13 @@ pub struct GameObject {
 
     /// CR 614.1a + CR 608.2n + CR 607.2b + CR 406.6: While present, this spell
     /// is exiled instead of being put into its owner's graveyard as it resolves,
-    /// and the resulting exile is recorded as "exiled with" the stored source.
+    /// and the resulting exile is recorded as "exiled with" the stored source
+    /// incarnation, the object whose ability stamped the rider (CR 400.7).
     /// Set by `Effect::ExileResolvingSpellInsteadOfGraveyard` (Rod of
     /// Absorption's "exile it instead of putting it into a graveyard as it
     /// resolves" rider); consumed by the stack-resolution router.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exile_from_stack_linked_source: Option<ObjectId>,
+    pub exile_from_stack_linked_source: Option<ObjectIncarnationRef>,
 
     /// CR 603.7a + CR 614.1a + CR 702.170c: While set alongside the
     /// exile-instead rider, the stack-resolution router applies the "If you do,
@@ -2042,10 +2043,9 @@ impl GameObject {
     pub(crate) fn install_resolution_replacement(&mut self, mut def: ReplacementDefinition) {
         // CR 611.2a: a `Resolution`-origin def is carried across every CR 613.1
         // reset, so its SCHEDULED removal paths are an expiry prune (`turns.rs`, all
-        // three of which key on `expiry` alone) and a zone change. (Three face
-        // rewrites — transform/specialize, flip, morph — also drop it in place; see
-        // `reseed_replacements_carrying_resolution_effects`. Those are unscheduled
-        // shield-loss and cannot be relied on to end anything.) A def with no expiry
+        // three of which key on `expiry` alone) and a zone change. Same-object
+        // face rewrites carry the existing live state through
+        // `reseed_replacements_carrying_resolution_effects`. A def with no expiry
         // has no scheduled end at all — carrying it would make it immortal. Fail
         // CLOSED:
         // install it live-only, exactly as this call site behaved before the
@@ -2069,7 +2069,7 @@ impl GameObject {
         // stamp is applied below — against base by full structural equality, so it
         // fired on a legitimate shape: a turn-bound rider installed through this arm
         // onto an object that already carries a structurally identical rider written
-        // to base by `add_target_replacement`'s `install_to_base` trio (two Auras or
+        // to base by `add_target_replacement`'s legacy base exception (two Auras or
         // two triggers granting the same rider). That is legal and harmless, and it
         // would have aborted debug and test builds.
         //
@@ -2202,7 +2202,9 @@ impl GameObject {
         modification: &crate::types::ability::PerpetualModification,
         all_creature_types: &[String],
     ) {
-        use crate::types::ability::{PerpetualGrantModification, PerpetualModification};
+        use crate::types::ability::{
+            PerpetualGrantModification, PerpetualModification, QuantityExpr,
+        };
         use crate::types::card_type::CoreType;
         match modification {
             PerpetualModification::SetBasePowerToughness { power, toughness } => {
@@ -2215,9 +2217,31 @@ impl GameObject {
                 self.layer_base_toughness = Some(*toughness);
             }
             PerpetualModification::ModifyPowerToughness {
-                power_delta,
-                toughness_delta,
+                power,
+                toughness,
+                keywords,
             } => {
+                // Digital-only Alchemy (no CR entry): live (non-`Fixed`)
+                // exprs cannot be installed — this installer has no game
+                // state to evaluate against. `effects/perpetual.rs` (the
+                // single caller) freezes exprs to `Fixed` first. A live
+                // expr reaching here is a bug: refuse to install AND refuse
+                // to record (the post-match `perpetual_mods` push must never
+                // persist an uninstalled mod — cf. the `GrantAbility`
+                // wildcard note below).
+                let (
+                    QuantityExpr::Fixed { value: power_delta },
+                    QuantityExpr::Fixed {
+                        value: toughness_delta,
+                    },
+                ) = (power, toughness)
+                else {
+                    debug_assert!(
+                        false,
+                        "live P/T exprs must be frozen by effects/perpetual.rs"
+                    );
+                    return;
+                };
                 let base_power = self
                     .base_power
                     .or(self.power)
@@ -2232,6 +2256,16 @@ impl GameObject {
                 self.base_toughness = Some(base_toughness);
                 self.layer_base_power = Some(base_power);
                 self.layer_base_toughness = Some(base_toughness);
+                // Mixed "perpetually gets +N/+M and gains [keywords]" (Jaheira):
+                // same live+base grant as the standalone GrantKeywords arm.
+                for keyword in keywords {
+                    if !self.keywords.contains(keyword) {
+                        self.keywords.push(keyword.clone());
+                    }
+                    if !self.base_keywords.contains(keyword) {
+                        self.base_keywords.push(keyword.clone());
+                    }
+                }
             }
             PerpetualModification::GrantKeywords { keywords } => {
                 for keyword in keywords {
@@ -3490,6 +3524,9 @@ impl GameObject {
     /// Separate from entry reset because some state (counters, transform) is already handled
     /// by `apply_zone_exit_cleanup` in zones.rs.
     pub fn reset_for_battlefield_exit(&mut self) {
+        // CR 400.7 + CR 120.6: the new off-battlefield object does not retain
+        // the departing permanent's marked damage; exit snapshots precede this reset.
+        self.damage_marked = 0;
         self.base_controller = Some(self.owner);
         // CR 701.37b: Monstrous designation clears when a permanent leaves the battlefield.
         self.monstrous = false;
@@ -3596,6 +3633,18 @@ impl GameObject {
         self.mana_spent_to_cast_amount = 0;
         self.phyrexian_life_paid = 0;
         self.mana_spent_source_snapshots.clear();
+    }
+
+    /// True when at least one cast-payment stamp holds a non-default value,
+    /// i.e. exactly when [`Self::clear_cast_payment_stamps`] would change this
+    /// object. Sweeps use it to skip objects the clear would not touch; the
+    /// two functions must name the same fields.
+    pub fn has_cast_payment_stamps(&self) -> bool {
+        self.mana_spent_to_cast
+            || self.colors_spent_to_cast != ColoredManaCount::default()
+            || self.mana_spent_to_cast_amount != 0
+            || self.phyrexian_life_paid != 0
+            || !self.mana_spent_source_snapshots.is_empty()
     }
 
     /// Check if this object has a specific keyword, using discriminant-based matching.
@@ -4168,7 +4217,7 @@ pub(crate) fn source_chosen_player(state: &GameState, source_id: ObjectId) -> Op
 /// IDEMPOTENT under that re-entry: `reseed(reseed(live, X), Y) == reseed(live, Y)`
 /// for any baselines X, Y, because the carried set is exactly the
 /// `Resolution`-origin members of `live` in order, and NO baseline ever contains
-/// a `Resolution`-origin member. THREE legs make that unconditional:
+/// a `Resolution`-origin member. Four preconditions make that unconditional:
 ///   1. `GameObject::install_resolution_replacement`'s `debug_assert!` pins that a
 ///      `Resolution` def is never also in `base_replacement_definitions` at
 ///      install time.
@@ -4198,17 +4247,13 @@ pub(crate) fn source_chosen_player(state: &GameState, source_id: ObjectId) -> Op
 /// REMOVAL PATHS, stated accurately. The expiry prunes (`turns.rs`: cleanup,
 /// end-of-combat teardown, untap step) and a zone change
 /// (`revert_layered_characteristics_to_base`, CR 400.7) are the SCHEDULED ends. They
-/// are not the only ones: three in-place face rewrites also drop a carried shield,
-/// because each wholesale-assigns the live store from a face snapshot —
-/// `printed_cards::apply_back_face_to_object` (transform / specialize),
-/// `flip.rs` (CR 710.1b), and `morph.rs` (turn face down, CR 708.2a). Those three
-/// are shield-LOSS, not duplication, and are a known limitation rather than a
-/// correctness hazard; CR 611.2a argues the shield should survive them, and this
-/// comment is that limitation's only record. Do not restate the old "removed ONLY
-/// by an expiry prune or a zone change" claim — it is false.
+/// also govern resolution effects carried by same-object face rewrites:
+/// printed-face/back-face application, flip (CR 710.1c), and face-down application
+/// (CR 708.2/708.8) use this helper with their incoming intrinsic baseline.
+/// CR 611.2a: those rewrites do not end an external effect's stated duration.
 ///
 /// The carried set is therefore invariant across all three IN-PASS rewrites, for
-/// every baseline the two callers can supply. That is why this function takes the
+/// every intrinsic baseline the layer and face writers supply. That is why this function takes the
 /// baseline as a PARAMETER rather than reading `obj.base_replacement_definitions`
 /// itself.
 ///
@@ -4263,6 +4308,65 @@ mod tests {
             });
     }
 
+    /// `has_cast_payment_stamps` is the exact "would change something"
+    /// predicate of `clear_cast_payment_stamps`: true for each stamp field set
+    /// alone, false on a fresh object and after the clear.
+    #[test]
+    fn has_cast_payment_stamps_tracks_every_field_the_clear_resets() {
+        let fresh = || {
+            GameObject::new(
+                ObjectId(1),
+                CardId(1),
+                PlayerId(0),
+                "Stamped".to_string(),
+                Zone::Stack,
+            )
+        };
+        assert!(!fresh().has_cast_payment_stamps());
+
+        /// Sets one payment stamp on an object.
+        type Stamper = fn(&mut GameObject);
+        let stampers: Vec<(&str, Stamper)> = vec![
+            ("mana_spent_to_cast", |obj| obj.mana_spent_to_cast = true),
+            ("colors_spent_to_cast", |obj| {
+                obj.colors_spent_to_cast
+                    .add(crate::types::mana::ManaColor::Green, 1)
+            }),
+            ("mana_spent_to_cast_amount", |obj| {
+                obj.mana_spent_to_cast_amount = 3
+            }),
+            ("phyrexian_life_paid", |obj| obj.phyrexian_life_paid = 2),
+            ("mana_spent_source_snapshots", |obj| {
+                let lki = obj.snapshot_for_mana_spent();
+                obj.mana_spent_source_snapshots.push(
+                    crate::types::game_state::ManaSpentSourceSnapshot {
+                        source_id: obj.id,
+                        lki,
+                    },
+                );
+            }),
+        ];
+        assert_eq!(stampers.len(), 5);
+        for (field, stamp) in stampers {
+            let mut obj = fresh();
+            stamp(&mut obj);
+            assert!(obj.has_cast_payment_stamps(), "{field} alone must count");
+            obj.clear_cast_payment_stamps();
+            assert!(
+                !obj.has_cast_payment_stamps(),
+                "{field} must be reset by the clear"
+            );
+            assert_cast_payment_stamps_default(&obj, field);
+        }
+
+        let mut all = fresh();
+        stamp_cast_payment(&mut all);
+        assert!(all.has_cast_payment_stamps());
+        all.clear_cast_payment_stamps();
+        assert!(!all.has_cast_payment_stamps());
+    }
+
+    /// Asserts every cast-payment stamp of `obj` holds its default value.
     fn assert_cast_payment_stamps_default(obj: &GameObject, context: &str) {
         assert!(!obj.mana_spent_to_cast, "{context}: bool must be default");
         assert!(
@@ -4381,6 +4485,29 @@ mod tests {
         assert!(
             obj.cast_from_zone.is_none(),
             "cast_from_zone exit-clear pin (CR 400.7 + CR 603.4)"
+        );
+    }
+
+    #[test]
+    fn reset_for_battlefield_exit_clears_marked_damage() {
+        let mut obj = GameObject::new(
+            ObjectId(1),
+            CardId(1),
+            PlayerId(0),
+            "Damaged permanent".to_string(),
+            Zone::Battlefield,
+        );
+        obj.damage_marked = 5;
+        assert_eq!(obj.damage_marked, 5);
+        obj.reset_for_battlefield_exit();
+        assert_eq!(
+            obj.damage_marked, 0,
+            "battlefield-exit owner must clear five marked damage"
+        );
+        obj.reset_for_battlefield_exit();
+        assert_eq!(
+            obj.damage_marked, 0,
+            "repeated exit reset remains damage-free"
         );
     }
 
@@ -5470,6 +5597,46 @@ mod tests {
         assert!(obj2.replacement_definitions[0].is_resolution_installed());
     }
 
+    /// CR 611.2a/c + CR 614.5: carry the exact ordered mutable live state,
+    /// including spent prevention capacity and consumed entries, without dedup.
+    #[test]
+    fn reseed_carrying_resolution_effects_preserves_zero_one_multiple_mutable_entries() {
+        use crate::types::ability::{PreventionAmount, ReplacementOrigin, ShieldKind};
+        let intrinsic =
+            ReplacementDefinition::new(crate::types::replacements::ReplacementEvent::GainLife);
+        let baseline = Arc::new(vec![intrinsic.clone()]);
+        let empty = Arc::new(Vec::new());
+        for count in 0..=2 {
+            let mut external = Vec::new();
+            for index in 0..count {
+                let mut def = eot_shield();
+                def.origin = ReplacementOrigin::Resolution;
+                def.shield_kind = ShieldKind::Prevention {
+                    amount: PreventionAmount::Next(if index == 0 { 0 } else { 2 }),
+                };
+                def.is_consumed = index == 0;
+                external.push(def);
+            }
+            let mut entries = vec![intrinsic.clone()];
+            entries.extend(external.clone());
+            let live: Definitions<ReplacementDefinition> = entries.into();
+            let once = reseed_replacements_carrying_resolution_effects(&live, &baseline);
+            let mut expected = vec![intrinsic.clone()];
+            expected.extend(external.clone());
+            assert_eq!(once.as_slice(), expected.as_slice());
+            let without_intrinsic = reseed_replacements_carrying_resolution_effects(&once, &empty);
+            assert_eq!(without_intrinsic.as_slice(), external.as_slice());
+            let repeated =
+                reseed_replacements_carrying_resolution_effects(&without_intrinsic, &baseline);
+            assert_eq!(repeated.as_slice(), expected.as_slice());
+            if count == 0 {
+                assert!(Arc::ptr_eq(&once.0, &baseline));
+                assert!(Arc::ptr_eq(&without_intrinsic.0, &empty));
+            }
+            assert!(baseline.iter().all(|def| !def.is_resolution_installed()));
+        }
+    }
+
     /// The MG2 idempotence contract as an executable assertion, not prose:
     /// `reseed(reseed(live, X), Y) == reseed(live, Y)` for any baselines X, Y.
     /// This is what makes the carry-over safe under the up-to-three wholesale live
@@ -5516,6 +5683,7 @@ mod tests {
         .into();
         let reseeded = reseed_replacements_carrying_resolution_effects(&plain, &base_y);
         assert_eq!(reseeded.as_slice(), base_y.as_slice());
+        assert!(Arc::ptr_eq(&reseeded.0, &base_y));
     }
 
     /// CR 611.2c: the base back-fill on an uninitialized fixture must never capture
