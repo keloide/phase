@@ -11241,15 +11241,21 @@ pub(crate) fn strip_trailing_where_x<'a>(tp: TextPair<'a>) -> (TextPair<'a>, Opt
 /// The general helper bounds the definition at the first instruction that
 /// follows it (CR 608.2c), which is right for callers that keep parsing the
 /// remainder. A caller that discards the remainder instead would silently drop
-/// every instruction written after the definition while still reporting the
-/// clause as lowered. Require the definition to be the sentence's own suffix —
-/// a single trailing period allowed — so that shape fails closed.
+/// that instruction while still reporting the clause as lowered. This form
+/// accepts the strip only when the extracted definition ends the input text
+/// (trailing periods ignored), so a definition the general helper bounded at a
+/// later comma — a parseable one — is rejected here.
+///
+/// It is not a totality check. A definition the quantity grammar cannot parse
+/// (the demonstrative this helper exists for) comes back whole, continuation
+/// included; the caller's definition-level pass then binds it or reports it as a
+/// `where_x_binding` gap, so nothing is dropped silently.
 pub(crate) fn strip_terminal_where_x<'a>(tp: TextPair<'a>) -> Option<(TextPair<'a>, String)> {
     let (stripped, expression) = strip_trailing_where_x(tp);
     let expression = expression?;
     // `expression` was extracted from this same text, so a suffix match holds
-    // exactly when the definition runs to the sentence's end. A definition that
-    // the general helper bounded at a later instruction's comma leaves that
+    // exactly when the definition runs to the end of the input. A definition the
+    // general helper bounded at a later instruction's comma leaves that
     // instruction in the text and fails here.
     let sentence = tp.trim_end().trim_end_matches('.');
     // allow-noncombinator: TextPair dual-string suffix test, not parse-branch dispatch.
@@ -15286,11 +15292,13 @@ mod tests {
         assert_eq!(expr.as_deref(), Some("the number of creatures you control"));
     }
 
-    /// The terminal form accepts only a definition that ends the sentence, so a
+    /// The terminal form accepts only a definition that ends the input text, so a
     /// caller that lowers nothing after it cannot drop a following instruction.
-    /// Paired negatives: both continuations the general helper bounds at.
+    /// Paired negatives: a comma continuation the general helper bounds at, and a
+    /// following sentence. (A definition the quantity grammar cannot parse is
+    /// returned whole instead; the definition-level totality guard owns that case.)
     #[test]
-    fn strip_terminal_where_x_requires_the_definition_to_end_the_sentence() {
+    fn strip_terminal_where_x_requires_the_definition_to_end_the_input() {
         let text = "empower jace x, where x is that excess damage";
         let lower = text.to_ascii_lowercase();
         let (stripped, expr) = strip_terminal_where_x(TextPair::new(text, &lower))

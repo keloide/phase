@@ -12776,12 +12776,13 @@ fn parse_empower_jace(text: &str, lower: &str) -> Option<Effect> {
     // clause IR records the same tail for that pass (`mod.rs`), so no
     // definition is dropped here.
     let (stripped, where_x) = strip_terminal_where_x(TextPair::new(text, lower))?;
-    // CR 107.3c: a comparator is a constraint on a value someone else chooses,
-    // not a definition — "where X is less than or equal to 3" leaves the shared
-    // grammar with a bare `Variable("X")` that resolves to 0. A keyword action
-    // has no announced X for the comparator to constrain, so keep the clause
-    // fail-closed instead of lowering a definition this production cannot honour.
-    if parse_comparator_prefix(&where_x).is_some() {
+    // CR 107.3f: an X the text does not define is chosen by the spell's or the
+    // ability's controller. A comparator ("where X is less than or equal to 3")
+    // constrains that choice instead of defining it, and this keyword action has
+    // no announcement step where such a choice could be made — the shared grammar
+    // would leave a bare `Variable("X")` that resolves to 0. Keep the clause
+    // fail-closed rather than lowering a quantity this production cannot honour.
+    if parse_comparator_prefix(&where_x.to_lowercase()).is_some() {
         return None;
     }
     parse_empower_jace_phrase(stripped.original, stripped.lower)
@@ -28993,14 +28994,20 @@ mod tests {
         assert_eq!(parse_empower_jace(text, &lower), None);
     }
 
-    /// CR 107.3c: a comparator constrains a value the controller announces; a
-    /// keyword action announces none, so the shared grammar's `Variable("X")`
-    /// would resolve to 0. Keep the clause fail-closed instead.
+    /// CR 107.3f: a comparator constrains the controller's choice of an undefined
+    /// X instead of defining it, and a keyword action has no announcement step
+    /// for that choice; the shared grammar's `Variable("X")` would resolve to 0.
+    /// Keep the clause fail-closed instead. The mixed-case input pins the guard's
+    /// lowercasing, since the definition is extracted original-cased.
     #[test]
     fn parse_empower_jace_rejects_a_comparator_definition() {
-        let text = "Empower Jace X, where X is less than or equal to 3";
-        let lower = text.to_lowercase();
-        assert_eq!(parse_empower_jace(text, &lower), None);
+        for text in [
+            "Empower Jace X, where X is less than or equal to 3",
+            "Empower Jace X, where X is Less Than Or Equal To 3",
+        ] {
+            let lower = text.to_lowercase();
+            assert_eq!(parse_empower_jace(text, &lower), None, "{text:?}");
+        }
     }
 
     /// CR 701.71a: the anchored grammar rejects a longer verb, another walker,
