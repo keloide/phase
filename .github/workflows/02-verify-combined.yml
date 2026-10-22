@@ -1,5 +1,5 @@
-# Remaining phase3 native gates after run39824691926; its failed full-DB parity remains unresolved.
-name: Essence phase3 remaining native gates case 769
+# Diagnostic only: reproduce the candidate full-DB parity failure at the unchanged adopted phase base.
+name: Essence phase3 baseline parity control case 772
 on:
   push:
     branches:
@@ -8,7 +8,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: essence-phase3-combined-verification-case743
+  group: essence-phase3-baseline-parity-case772
   cancel-in-progress: false
 env:
   RTK_DISABLED: "1"
@@ -19,8 +19,8 @@ env:
   MTGJSON_SKIP_REFRESH: "1"
   PHASE_REFRESH_MTGJSON: "0"
   TEST_FEATURES: phase-engine/test-support,phase-engine/cli,phase-engine/proptest
-  SOURCE_SHA: ff218687de3a589d50442836f8cb75b0651ccdde
-  GENERATED_FROM_SHA: 9d0f1189616c52098d886271b1b1f04635df600d
+  SOURCE_SHA: 3a6f43de2baf86794975743ee67c3019ec705919
+  GENERATED_FROM_SHA: 3a6f43de2baf86794975743ee67c3019ec705919
   BASE_SHA: 3a6f43de2baf86794975743ee67c3019ec705919
   GENERATION_RUN_ID: "39737072941"
   PAYLOAD_HASH: 4a8802b1987118eef1c8a15c890f1444ac5a86e549ce0c22eb860c9248a822c2
@@ -29,7 +29,7 @@ jobs:
   native:
     if: github.repository == 'keloide/phase' && github.event_name == 'push' && github.ref == 'refs/heads/proof/essence-phase3-verification-case743'
     runs-on: ubuntu-24.04
-    timeout-minutes: 330
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
@@ -142,7 +142,7 @@ jobs:
           path: source
           fetch-depth: 0
           persist-credentials: false
-      - name: Check exact combined head and generated-only intervening diff
+      - name: Check exact adopted phase base and unchanged source
         working-directory: source
         run: |
           set -euo pipefail
@@ -172,49 +172,37 @@ jobs:
           jq -e '.id == 39737072941 and .head_sha == "957faf230e692d528ba261914f1e9822e535c77d" and .conclusion == "failure" and .event == "push" and .head_branch == "proof/essence-phase3-generation-case743" and .name == "Essence phase3 proof generation case 743" and .path == ".github/workflows/01-generate.yml" and .repository.full_name == "keloide/phase"' "$RUNNER_TEMP/generation-run.json"
       - uses: actions/download-artifact@v4
         with:
-          name: candidate-card-data-pin20261013-asof20261014-source${{ env.GENERATED_FROM_SHA }}
+          name: base-card-data-pin20261013-asof20261014-source${{ env.GENERATED_FROM_SHA }}
           path: downloads/card-data
           repository: keloide/phase
           run-id: ${{ env.GENERATION_RUN_ID }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: candidate-generated-pin20261013-asof20261014-source${{ env.GENERATED_FROM_SHA }}
-          path: downloads/generated
-          repository: keloide/phase
-          run-id: ${{ env.GENERATION_RUN_ID }}
-          github-token: ${{ github.token }}
-      - name: Install and verify returned generation inputs without regeneration
+      - name: Install complete returned BASE export with exact byte hash
         working-directory: source
         run: |
           set -euo pipefail
           gzip -dc ../downloads/card-data/card-data.json.gz > data/card-data.json
-          gzip -dc ../downloads/generated/client/public/card-data-meta.json.gz > "$RUNNER_TEMP/card-data-meta.json"
-          jq -e --arg source "$GENERATED_FROM_SHA" '.commit == $source and .mtgjson_date == "2026-10-13" and .mtgjson_version == "5.3.0+20261013"' "$RUNNER_TEMP/card-data-meta.json"
-          data_hash=$(sha256sum data/card-data.json | cut -c1-16)
-          jq -e --arg hash "$data_hash" '.data_hash == $hash' "$RUNNER_TEMP/card-data-meta.json"
-          cmp crates/engine/tests/fixtures/integration_cards.json.gz ../downloads/generated/crates/engine/tests/fixtures/integration_cards.json.gz
+          printf '%s  %s\n' bcdd9126bcf79cdf076cd1208cdce11676c862daf84b5b8951de8f45f19ee6d1 data/card-data.json | sha256sum --check --strict
           cp data/card-data.json client/public/card-data.json
-          python3 scripts/gen-test-fixture.py --check
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
         with:
           toolchain: nightly-2026-04-19
           components: rustfmt, clippy, rustc-codegen-cranelift-preview
           cache: false
           rustflags: ""
-      - name: Interaction bindings and exact-source schema validation
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
+        with:
+          tool: cargo-nextest
+      - name: Required scanner and RW full database ordering parity
         working-directory: source
+        env:
+          FORGE_TEST_FULL_DB: "1"
         run: |
           set -euo pipefail
-          ./scripts/check-interaction-bindings.sh --check 2>&1 | tee ../outputs/reports/interaction-bindings.log
-          cargo run --locked --profile tool --features cli --bin card-data-validate -- data/card-data.json 2>&1 | tee ../outputs/reports/card-data-validate.log
-          python3 scripts/gen-test-fixture.py --check 2>&1 | tee ../outputs/reports/canonical-fixture-check.log
-      - name: Existing quick AI gate against the same returned export
-        working-directory: source
-        run: |
-          set -euo pipefail
-          cargo ai-gate --games 10 --seed 10573729 --difficulty medium --current-output ../outputs/reports/ai-gate-current.json 2>&1 | tee ../outputs/reports/ai-gate.log
+          cargo nextest run --locked -p phase-engine --features "$TEST_FEATURES" --profile ci --test-threads 2 --no-capture -E 'test(/ordering_parity_sweep/)' 2>&1 | tee ../outputs/reports/full-db-ordering-parity.log
+          # Read actual full-db counts/class deltas; no allowlist or policy-baseline edits.
       - name: Require tracked source unchanged by checks
+        if: always()
         working-directory: source
         run: |
           set -euo pipefail
@@ -242,7 +230,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always() && steps.native_results_size.outcome == 'success'
         with:
-          name: remaining-native-results-pin20261013-asof20261014-head${{ env.SOURCE_SHA }}-base${{ env.BASE_SHA }}
+          name: baseline-parity-results-pin20261013-asof20261014-head${{ env.SOURCE_SHA }}-base${{ env.BASE_SHA }}
           path: |
             outputs/reports
             source/crates/engine/src/parser/**/*.snap.new
