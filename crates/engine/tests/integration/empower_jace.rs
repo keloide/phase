@@ -1080,6 +1080,7 @@ fn a2_13_violent_echoes_empowers_for_the_resolution_excess() {
 /// excess is dealt, the "If" is false, and no empower instruction runs.
 #[test]
 fn a2_13b_no_excess_skips_the_empower() {
+    assert_violent_echoes_consequent_is_bound_and_nested();
     let mut scenario = main_phase_scenario();
     let victim = scenario.add_creature(P1, "Lethal Victim", 0, 6).id();
     let spell = scenario
