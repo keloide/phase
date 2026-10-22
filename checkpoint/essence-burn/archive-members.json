@@ -1,0 +1,2870 @@
+[
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-checkpoint-head.txt",
+    "bytes": 41
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-complete-preprotocol-20261020.patch",
+    "bytes": 406876
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-fix1-preplan7-20261020.patch",
+    "bytes": 57534
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-interrupted-20261019-1236.json",
+    "bytes": 7677
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-interrupted-20261019-1236.patch",
+    "bytes": 223682
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-interrupted-20261019-1850.json",
+    "bytes": 7677
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-interrupted-20261019-1850.patch",
+    "bytes": 336365
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-preparatory-source-20261020/cr-anchors.log",
+    "bytes": 1253
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-preparatory-source-20261020/engine-authorities.log",
+    "bytes": 6868
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-preparatory-source-20261020/prelowered.log",
+    "bytes": 62
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-preparatory-source-20261020/resolution-frame.log",
+    "bytes": 37
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/actor-preparatory-source-20261020/test-card-data-load.log",
+    "bytes": 0
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/addenda/phase-1",
+    "bytes": 0
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/addenda/phase-2",
+    "bytes": 8202
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/addenda/phase-3",
+    "bytes": 588
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/addenda/phase-4",
+    "bytes": 1067
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/charter-plan-7.md",
+    "bytes": 35099
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/charter-reassessment-2.md",
+    "bytes": 30208
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/charter-reassessment-3.md",
+    "bytes": 33881
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/feasibility-stingerquill.md",
+    "bytes": 14508
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-1.md",
+    "bytes": 27928
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-2.md",
+    "bytes": 27966
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-3.md",
+    "bytes": 27014
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-4.md",
+    "bytes": 33581
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-5.md",
+    "bytes": 24298
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-phase-1-6.md",
+    "bytes": 60647
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-phase-2-7.md",
+    "bytes": 39788
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-phase-2-fix-10.md",
+    "bytes": 63110
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-phase-2-fix-11.md",
+    "bytes": 49455
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-phase-2-fix-12.md",
+    "bytes": 69597
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-phase-2-fix-13.md",
+    "bytes": 91730
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-phase-2-fix-14.md",
+    "bytes": 16275
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-phase-2-fix-15.md",
+    "bytes": 49237
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-phase-2-fix-16.md",
+    "bytes": 27548
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-phase-2-fix-17.md",
+    "bytes": 30740
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/implementation-phase-2-fix-8.md",
+    "bytes": 31648
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/machinery-8.md",
+    "bytes": 19015
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/machinery-9-feasibility.md",
+    "bytes": 70632
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/machinery-9.md",
+    "bytes": 58429
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/machinery-fix-12.md",
+    "bytes": 27559
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/machinery-fix-13-complete.md",
+    "bytes": 147270
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/machinery-fix-13.md",
+    "bytes": 13986
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/machinery-fix-18.md",
+    "bytes": 57343
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/machinery-fix-21.md",
+    "bytes": 12804
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/machinery-review-12.md",
+    "bytes": 18805
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/measurement-1.md",
+    "bytes": 17989
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/measurement-10.md",
+    "bytes": 25820
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/measurement-2.md",
+    "bytes": 32901
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/measurement-3.md",
+    "bytes": 37720
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/measurement-4.md",
+    "bytes": 28224
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/measurement-6.md",
+    "bytes": 34598
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/measurement-7.md",
+    "bytes": 47440
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/measurement-8.md",
+    "bytes": 17529
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/measurement-9.md",
+    "bytes": 25002
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-1-plan-8.md",
+    "bytes": 38151
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-1-plan.md",
+    "bytes": 67065
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-2-plan-10-closed.md",
+    "bytes": 86644
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-2-plan-10.md",
+    "bytes": 85974
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-2-plan-11.md",
+    "bytes": 117509
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-2-plan-12.md",
+    "bytes": 164639
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-2-plan-13.md",
+    "bytes": 182052
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-2-plan-14.md",
+    "bytes": 187774
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-2-plan-15.md",
+    "bytes": 208867
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-2-plan-9.md",
+    "bytes": 22729
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-2-plan.md",
+    "bytes": 62734
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-charter",
+    "bytes": 24815
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/phase-fit",
+    "bytes": 874936
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/plan-essence-before-hygiene.md",
+    "bytes": 63585
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/plan-essence-before-lifetime.md",
+    "bytes": 77046
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/plan-essence-before-round1.md",
+    "bytes": 37771
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/plan-essence-before-round2.md",
+    "bytes": 54854
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/plan-essence.md",
+    "bytes": 111969
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/plan-hygiene-5.md",
+    "bytes": 16191
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/plan-lifetime-6.md",
+    "bytes": 19859
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/plan-v12-recovery-10-closed.md",
+    "bytes": 84543
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/plan-v12-recovery-10.md",
+    "bytes": 83647
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/plan.md",
+    "bytes": 14508
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/proof-author-3.md",
+    "bytes": 17432
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/proof-author-6-before-namespace-repair.md",
+    "bytes": 31668
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/proof-author-6.md",
+    "bytes": 52780
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/proof-author-7.md",
+    "bytes": 17443
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/proof6-feasibility.md",
+    "bytes": 16428
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/recovery-authority-8.md",
+    "bytes": 19681
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/recovery-authority-9.md",
+    "bytes": 40227
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/01-generate.yml",
+    "bytes": 25584
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/01-generate.yml.before-case692.txt",
+    "bytes": 20613
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/01-generate.yml.before-case714.txt",
+    "bytes": 19914
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/01-generate.yml.before-case719.txt",
+    "bytes": 21156
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/01-generate.yml.before-case723.txt",
+    "bytes": 25316
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/01-generate.yml.before-static-review-1.txt",
+    "bytes": 20697
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/02-verify-combined.yml",
+    "bytes": 22531
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/02-verify-combined.yml.before-case692.txt",
+    "bytes": 20471
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/02-verify-combined.yml.before-case714.txt",
+    "bytes": 19551
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/02-verify-combined.yml.before-case719.txt",
+    "bytes": 22449
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/02-verify-combined.yml.before-case723.txt",
+    "bytes": 22449
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/02-verify-combined.yml.before-static-review-1.txt",
+    "bytes": 20471
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/03-verify-source-only.yml",
+    "bytes": 15422
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/03-verify-source-only.yml.before-case723.txt",
+    "bytes": 15422
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/03-verify-source-only.yml.before-static-review-1.txt",
+    "bytes": 13598
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/report.md",
+    "bytes": 52811
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/report.md.before-case692.txt",
+    "bytes": 23574
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/report.md.before-case714.txt",
+    "bytes": 30191
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/report.md.before-case719.txt",
+    "bytes": 44704
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/report.md.before-case723.txt",
+    "bytes": 44704
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/report.md.before-review1-T1.txt",
+    "bytes": 52811
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-current-preparation/source-only-report.md",
+    "bytes": 14501
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-phase3-preparation/01-generate.yml",
+    "bytes": 28621
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-phase3-preparation/01-generate.yml.before-case753.txt",
+    "bytes": 26715
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-phase3-preparation/02-verify-combined.yml",
+    "bytes": 17167
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-phase3-preparation/02-verify-combined.yml.before-case753.txt",
+    "bytes": 17167
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-phase3-preparation/report.md",
+    "bytes": 32811
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-phase3-preparation/report.md.before-case753.txt",
+    "bytes": 27550
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-12.yml",
+    "bytes": 145646
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-13-final.yml",
+    "bytes": 224946
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-13.yml",
+    "bytes": 230113
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-14.yml",
+    "bytes": 224946
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-15.yml",
+    "bytes": 227418
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-16.yml",
+    "bytes": 238725
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-17.yml",
+    "bytes": 238725
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-18-bound.yml",
+    "bytes": 240234
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-18.yml",
+    "bytes": 240233
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-19.yml",
+    "bytes": 240242
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-20.yml",
+    "bytes": 240234
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-21-bound.yml",
+    "bytes": 241457
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-21.yml",
+    "bytes": 241421
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-6-before-namespace-repair.yml",
+    "bytes": 104537
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-6.yml",
+    "bytes": 104411
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-7.yml",
+    "bytes": 104432
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-8.yml",
+    "bytes": 104492
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-9-before-test-order.yml",
+    "bytes": 139939
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-9.yml",
+    "bytes": 139934
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-before-ir-pair.yml",
+    "bytes": 23162
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-before-log-repair.yml",
+    "bytes": 39440
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-before-reference-tests.yml",
+    "bytes": 24159
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-before-repeat-transport.yml",
+    "bytes": 29946
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-before-snapshot.yml",
+    "bytes": 20667
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof-before-u1-red.yml",
+    "bytes": 29074
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-proof.yml",
+    "bytes": 39555
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-transport-4.yml",
+    "bytes": 7635
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/remote-transport.yml",
+    "bytes": 4671
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-charter-1.md",
+    "bytes": 20206
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-charter-reassessment-2.md",
+    "bytes": 33812
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-charter-reassessment-3.md",
+    "bytes": 29599
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-impl-1.md",
+    "bytes": 10613
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-integration-1.md",
+    "bytes": 4224
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-machinery-13.md",
+    "bytes": 34525
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-machinery-18.md",
+    "bytes": 38649
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-phase-1-impl-2.md",
+    "bytes": 34761
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-phase-1-plan-5.md",
+    "bytes": 26947
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-phase-2-impl-3.md",
+    "bytes": 31604
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-phase-2-impl-4.md",
+    "bytes": 19752
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-phase-2-plan-10.md",
+    "bytes": 49467
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-phase-2-plan-11.md",
+    "bytes": 38204
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-phase-2-plan-12.md",
+    "bytes": 39612
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-phase-2-plan-13.md",
+    "bytes": 38888
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-phase-2-plan-14.md",
+    "bytes": 32790
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-phase-2-plan-15.md",
+    "bytes": 33510
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-phase-2-plan-6.md",
+    "bytes": 27768
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-plan-1.md",
+    "bytes": 15257
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-plan-2.md",
+    "bytes": 18536
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-plan-3.md",
+    "bytes": 15158
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/review-plan-4.md",
+    "bytes": 25891
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-actor-plan6-before-protocol.nul",
+    "bytes": 2191
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-actor-plan6-before-tactical.nul",
+    "bytes": 2154
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-actor-plan6.nul",
+    "bytes": 2306
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-ai-deadline-fix.nul",
+    "bytes": 88
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-ai-timing-fix.nul",
+    "bytes": 57
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-damage-test-fix.nul",
+    "bytes": 198
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-final-pr-2.nul",
+    "bytes": 2430
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-final-pr-3.nul",
+    "bytes": 2628
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-final-pr-4.nul",
+    "bytes": 2569
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-final-pr-5.nul",
+    "bytes": 2569
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-final-pr.nul",
+    "bytes": 2342
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-maintainer-fix.nul",
+    "bytes": 213
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-maintainer-runtime-fix.nul",
+    "bytes": 213
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-paths-before-hygiene.nul",
+    "bytes": 555
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-paths.nul",
+    "bytes": 587
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-phase-1.nul",
+    "bytes": 587
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-phase-2-before-plan10.nul",
+    "bytes": 333
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-phase-2-before-plan11.nul",
+    "bytes": 426
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-phase-2-before-plan12.nul",
+    "bytes": 550
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-phase-2-before-plan14.nul",
+    "bytes": 1731
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-phase-2-before-plan15.nul",
+    "bytes": 1878
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-phase-2.nul",
+    "bytes": 1955
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-phase-3.nul",
+    "bytes": 268
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-property-authority-refactor.nul",
+    "bytes": 46
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-protocol-fixtures.nul",
+    "bytes": 115
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scope-test-import-fix.nul",
+    "bytes": 125
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/actor-implementation-review-1.diff",
+    "bytes": 755798
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/actor-implementation-review-1.facts-unknowns.json",
+    "bytes": 6817
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/actor-implementation-review-1.pack.json",
+    "bytes": 6850
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/actor-implementation-review-1.raw.jsonl",
+    "bytes": 5581
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/actor-implementation-review-1.task.txt",
+    "bytes": 5230
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/actor-plan-precedent-facts-unknowns.json",
+    "bytes": 5373
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/actor-plan-precedent-raw.jsonl",
+    "bytes": 4434
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/actor-plan-precedent-task.txt",
+    "bytes": 1500
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/actor-plan-precedent-verify.log",
+    "bytes": 5403
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/charter10-pack.json",
+    "bytes": 9672
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/charter10-raw.jsonl",
+    "bytes": 7643
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/essence-pack.json",
+    "bytes": 4586
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/essence-raw.jsonl",
+    "bytes": 3600
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/essence-task.txt",
+    "bytes": 730
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/final-maintainer-review-raw.jsonl",
+    "bytes": 576
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/final-maintainer-review-task.txt",
+    "bytes": 3290
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/final-pr-ai-pack.json",
+    "bytes": 4393
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/final-pr-ai-raw.jsonl",
+    "bytes": 3531
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/final-pr-pack.json",
+    "bytes": 8970
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/final-pr-raw.jsonl",
+    "bytes": 7208
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/maintainer-precedent-facts.json",
+    "bytes": 5629
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/maintainer-precedent-pack.json",
+    "bytes": 6319
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/maintainer-precedent-raw.jsonl",
+    "bytes": 5162
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/maintainer-premise-revision-facts.json",
+    "bytes": 2557
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/maintainer-premise-revision-pack.json",
+    "bytes": 6749
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/pack.json",
+    "bytes": 3188
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/phase2-pack.json",
+    "bytes": 14076
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/phase2-raw.jsonl",
+    "bytes": 11469
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/phase2-task.txt",
+    "bytes": 5258
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/phase3-precedent-facts-unknowns.json",
+    "bytes": 5540
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/phase3-precedent-pack.json",
+    "bytes": 5576
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/phase3-precedent-raw.jsonl",
+    "bytes": 4507
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/phase3-precedent-task.txt",
+    "bytes": 4878
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/raw.jsonl",
+    "bytes": 2628
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/review-pack.json",
+    "bytes": 4654
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/review-raw.jsonl",
+    "bytes": 3730
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/review-task.txt",
+    "bytes": 1308
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/review7-pack.json",
+    "bytes": 4750
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/review7-raw.jsonl",
+    "bytes": 3831
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/review8-pack.json",
+    "bytes": 4903
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/review8-raw.jsonl",
+    "bytes": 3939
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/scout/task.txt",
+    "bytes": 956
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/transport-author-2.md",
+    "bytes": 9182
+  },
+  {
+    "path": "engine-implementer-runs/fra-stingerquill/transport-author-4.md",
+    "bytes": 20462
+  },
+  {
+    "path": "plans-and-reviews/essence-actor-charter-feasibility.md",
+    "bytes": 23784
+  },
+  {
+    "path": "plans-and-reviews/essence-actor-feasibility-review.md",
+    "bytes": 14542
+  },
+  {
+    "path": "plans-and-reviews/essence-actor-fix-1.md",
+    "bytes": 28712
+  },
+  {
+    "path": "plans-and-reviews/essence-actor-implementation-1.md",
+    "bytes": 111683
+  },
+  {
+    "path": "plans-and-reviews/essence-actor-implementation-review-1.md",
+    "bytes": 46763
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-2.md",
+    "bytes": 55148
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-3.md",
+    "bytes": 103721
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-4.md",
+    "bytes": 123720
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-5.md",
+    "bytes": 175202
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-6-before-text.md",
+    "bytes": 194110
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-6.md",
+    "bytes": 194724
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-7.md",
+    "bytes": 237555
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-8.md",
+    "bytes": 265797
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-9.md",
+    "bytes": 283560
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-review-2.md",
+    "bytes": 3521
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-review-3.md",
+    "bytes": 18266
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-review-4.md",
+    "bytes": 24279
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-review-5.md",
+    "bytes": 27464
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-review-6.md",
+    "bytes": 30270
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-review-7.md",
+    "bytes": 30084
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-review-8.md",
+    "bytes": 37009
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan-review.md",
+    "bytes": 11034
+  },
+  {
+    "path": "plans-and-reviews/essence-maintainer-fix-plan.md",
+    "bytes": 41053
+  },
+  {
+    "path": "plans-and-reviews/essence-phase-3-implementation-1.md",
+    "bytes": 33043
+  },
+  {
+    "path": "plans-and-reviews/essence-phase-3-plan-1.md",
+    "bytes": 94737
+  },
+  {
+    "path": "plans-and-reviews/essence-phase-3-plan-review-1.md",
+    "bytes": 18849
+  },
+  {
+    "path": "plans-and-reviews/essence-phase3-remote-workflow-review-1.md",
+    "bytes": 16476
+  },
+  {
+    "path": "plans-and-reviews/essence-phase3-remote-workflow-review-2.md",
+    "bytes": 20328
+  },
+  {
+    "path": "plans-and-reviews/essence-plan6-scope-admission-protocol-review.md",
+    "bytes": 27173
+  },
+  {
+    "path": "plans-and-reviews/essence-plan6-scope-admission-protocol.md",
+    "bytes": 36669
+  },
+  {
+    "path": "plans-and-reviews/essence-plan6-scope-admission-tactical-2.md",
+    "bytes": 40832
+  },
+  {
+    "path": "plans-and-reviews/essence-plan6-scope-admission-tactical-review-2.md",
+    "bytes": 26992
+  },
+  {
+    "path": "plans-and-reviews/essence-plan6-scope-admission-tactical-review.md",
+    "bytes": 25750
+  },
+  {
+    "path": "plans-and-reviews/essence-plan6-scope-admission-tactical.md",
+    "bytes": 28621
+  },
+  {
+    "path": "plans-and-reviews/essence-plan6-scope-admission-trigger.md",
+    "bytes": 40031
+  },
+  {
+    "path": "plans-and-reviews/essence-plan7-remaining-charter-2.md",
+    "bytes": 32815
+  },
+  {
+    "path": "plans-and-reviews/essence-plan7-remaining-charter-3.md",
+    "bytes": 26091
+  },
+  {
+    "path": "plans-and-reviews/essence-plan7-remaining-charter-assessment.md",
+    "bytes": 29618
+  },
+  {
+    "path": "plans-and-reviews/essence-plan7-remaining-charter-review-2.md",
+    "bytes": 14101
+  },
+  {
+    "path": "plans-and-reviews/essence-plan7-remaining-charter-review-3.md",
+    "bytes": 20584
+  },
+  {
+    "path": "plans-and-reviews/essence-plan7-remaining-charter-review.md",
+    "bytes": 15142
+  },
+  {
+    "path": "plans-and-reviews/essence-pr-body-3bed2b.md",
+    "bytes": 10625
+  },
+  {
+    "path": "plans-and-reviews/essence-pr-body-63174-draft.md",
+    "bytes": 8598
+  },
+  {
+    "path": "plans-and-reviews/essence-pr10032-feedback-latest.json",
+    "bytes": 40623
+  },
+  {
+    "path": "plans-and-reviews/essence-remote-workflow-review-1.md",
+    "bytes": 14015
+  },
+  {
+    "path": "plans-and-reviews/essence-runtime-regression-fix-executor.md",
+    "bytes": 19782
+  },
+  {
+    "path": "essence-completion-checks/base-tool-525c-resume.log",
+    "bytes": 105
+  },
+  {
+    "path": "essence-completion-checks/base-tool-525c-resume2.log",
+    "bytes": 105
+  },
+  {
+    "path": "essence-completion-checks/base-tool-525c-resume3.log",
+    "bytes": 178
+  },
+  {
+    "path": "essence-completion-checks/base-tool-525c.log",
+    "bytes": 3343
+  },
+  {
+    "path": "essence-completion-checks/card-data-validate-3bed.log",
+    "bytes": 120
+  },
+  {
+    "path": "essence-completion-checks/clippy-3bed.log",
+    "bytes": 398
+  },
+  {
+    "path": "essence-completion-checks/clippy-63174.log",
+    "bytes": 726
+  },
+  {
+    "path": "essence-completion-checks/clippy-8719.log",
+    "bytes": 4321
+  },
+  {
+    "path": "essence-completion-checks/clippy-e9d.log",
+    "bytes": 9618
+  },
+  {
+    "path": "essence-completion-checks/clippy.log",
+    "bytes": 10783
+  },
+  {
+    "path": "essence-completion-checks/coverage-sidecars-8719.log",
+    "bytes": 1181
+  },
+  {
+    "path": "essence-completion-checks/decks-8719.log",
+    "bytes": 224
+  },
+  {
+    "path": "essence-completion-checks/decks-8719.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "essence-completion-checks/doc-tests-3bed.log",
+    "bytes": 2411
+  },
+  {
+    "path": "essence-completion-checks/fixture-check-63174.log",
+    "bytes": 71
+  },
+  {
+    "path": "essence-completion-checks/fixture-check-8719.log",
+    "bytes": 71
+  },
+  {
+    "path": "essence-completion-checks/fixture-check-f9.log",
+    "bytes": 71
+  },
+  {
+    "path": "essence-completion-checks/fixture-generate-f9.log",
+    "bytes": 141
+  },
+  {
+    "path": "essence-completion-checks/fmt-3bed.log",
+    "bytes": 0
+  },
+  {
+    "path": "essence-completion-checks/fmt-63174.log",
+    "bytes": 0
+  },
+  {
+    "path": "essence-completion-checks/fmt-8719.log",
+    "bytes": 0
+  },
+  {
+    "path": "essence-completion-checks/fmt-e9d.log",
+    "bytes": 0
+  },
+  {
+    "path": "essence-completion-checks/fmt-source-f9.log",
+    "bytes": 0
+  },
+  {
+    "path": "essence-completion-checks/game_action_payload_guard-e3a7154f79537eec-3bed-resume.log",
+    "bytes": 1577
+  },
+  {
+    "path": "essence-completion-checks/gate-a-final-3bed.log",
+    "bytes": 312
+  },
+  {
+    "path": "essence-completion-checks/integration-3bed-resume.log",
+    "bytes": 1119882
+  },
+  {
+    "path": "essence-completion-checks/interaction-bindings-3bed.log",
+    "bytes": 2058
+  },
+  {
+    "path": "essence-completion-checks/inventory-63174.log",
+    "bytes": 110
+  },
+  {
+    "path": "essence-completion-checks/isolation_e2e-0dcb100d22666c09-3bed-resume.log",
+    "bytes": 4679
+  },
+  {
+    "path": "essence-completion-checks/lobby_wire_contract-db8843869c0876ab-3bed-resume.log",
+    "bytes": 458
+  },
+  {
+    "path": "essence-completion-checks/oracle-gen-e9d-prereq.log",
+    "bytes": 1978
+  },
+  {
+    "path": "essence-completion-checks/phase_llm-d738a6788f8db8a0-3bed-resume.log",
+    "bytes": 16724
+  },
+  {
+    "path": "essence-completion-checks/phase_server-b1069183756f9711-3bed-resume.log",
+    "bytes": 29172
+  },
+  {
+    "path": "essence-completion-checks/pnpm-install-63174.log",
+    "bytes": 40733
+  },
+  {
+    "path": "essence-completion-checks/probe_pin-788d4973bb5280ca-3bed-resume.log",
+    "bytes": 113
+  },
+  {
+    "path": "essence-completion-checks/probe_pin-ae3a712e8f8b6f8e-3bed-resume.log",
+    "bytes": 113
+  },
+  {
+    "path": "essence-completion-checks/pure_logic-f3363cb283999ce7-3bed-resume.log",
+    "bytes": 3211
+  },
+  {
+    "path": "essence-completion-checks/seat_reducer-264aafa003633c31-3bed-resume.log",
+    "bytes": 795
+  },
+  {
+    "path": "essence-completion-checks/server-e9d-unsandboxed.log",
+    "bytes": 29172
+  },
+  {
+    "path": "essence-completion-checks/server_core-16e604be81be0370-3bed-resume.log",
+    "bytes": 39395
+  },
+  {
+    "path": "essence-completion-checks/set-list-8719.log",
+    "bytes": 130
+  },
+  {
+    "path": "essence-completion-checks/set-list-8719.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "essence-completion-checks/skill-doc-63174.log",
+    "bytes": 41
+  },
+  {
+    "path": "essence-completion-checks/skill-doc-8719.log",
+    "bytes": 41
+  },
+  {
+    "path": "essence-completion-checks/source-export-f9.log",
+    "bytes": 351
+  },
+  {
+    "path": "essence-completion-checks/source-export-f9.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "essence-completion-checks/source-tool-f9-resume1.log",
+    "bytes": 183
+  },
+  {
+    "path": "essence-completion-checks/source-tool-f9.log",
+    "bytes": 110
+  },
+  {
+    "path": "essence-completion-checks/test-workspace-63174.log",
+    "bytes": 3864274
+  },
+  {
+    "path": "essence-completion-checks/tests-3bed-build.log",
+    "bytes": 8359
+  },
+  {
+    "path": "essence-completion-checks/tests-3bed.log",
+    "bytes": 3310608
+  },
+  {
+    "path": "essence-completion-checks/tests-e9d.log",
+    "bytes": 3857725
+  },
+  {
+    "path": "essence-completion-checks/tests-remaining.log",
+    "bytes": 3310793
+  },
+  {
+    "path": "essence-completion-checks/tests-resume.log",
+    "bytes": 312253
+  },
+  {
+    "path": "essence-completion-checks/tests.log",
+    "bytes": 669466
+  },
+  {
+    "path": "essence-completion-checks/validator-build-3bed.log",
+    "bytes": 182
+  },
+  {
+    "path": "recovery/CONTINUE-HERE.md",
+    "bytes": 22010
+  },
+  {
+    "path": "recovery/archive-file-manifest.json",
+    "bytes": 54289
+  },
+  {
+    "path": "recovery/engine-proof-remote.b64",
+    "bytes": 327311
+  },
+  {
+    "path": "recovery/engine-proof-remote.yml",
+    "bytes": 241457
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/CONTINUE-HERE.md",
+    "bytes": 22010
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-actor-charter-feasibility.md",
+    "bytes": 23784
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-actor-feasibility-review.md",
+    "bytes": 14542
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/base-tool-525c-resume.log",
+    "bytes": 105
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/base-tool-525c-resume2.log",
+    "bytes": 105
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/base-tool-525c-resume3.log",
+    "bytes": 178
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/base-tool-525c.log",
+    "bytes": 3343
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/card-data-validate-3bed.log",
+    "bytes": 120
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/clippy-3bed.log",
+    "bytes": 398
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/clippy-63174.log",
+    "bytes": 726
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/clippy-8719.log",
+    "bytes": 4321
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/clippy-e9d.log",
+    "bytes": 9618
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/clippy.log",
+    "bytes": 10783
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/coverage-sidecars-8719.log",
+    "bytes": 1181
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/decks-8719.log",
+    "bytes": 224
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/decks-8719.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/doc-tests-3bed.log",
+    "bytes": 2411
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/fixture-check-63174.log",
+    "bytes": 71
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/fixture-check-8719.log",
+    "bytes": 71
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/fixture-check-f9.log",
+    "bytes": 71
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/fixture-generate-f9.log",
+    "bytes": 141
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/fmt-3bed.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/fmt-63174.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/fmt-8719.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/fmt-e9d.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/fmt-source-f9.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/game_action_payload_guard-e3a7154f79537eec-3bed-resume.log",
+    "bytes": 1577
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/gate-a-final-3bed.log",
+    "bytes": 312
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/integration-3bed-resume.log",
+    "bytes": 1119882
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/interaction-bindings-3bed.log",
+    "bytes": 2058
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/inventory-63174.log",
+    "bytes": 110
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/isolation_e2e-0dcb100d22666c09-3bed-resume.log",
+    "bytes": 4679
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/lobby_wire_contract-db8843869c0876ab-3bed-resume.log",
+    "bytes": 458
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/oracle-gen-e9d-prereq.log",
+    "bytes": 1978
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/phase_llm-d738a6788f8db8a0-3bed-resume.log",
+    "bytes": 16724
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/phase_server-b1069183756f9711-3bed-resume.log",
+    "bytes": 29172
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/pnpm-install-63174.log",
+    "bytes": 40733
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/probe_pin-788d4973bb5280ca-3bed-resume.log",
+    "bytes": 113
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/probe_pin-ae3a712e8f8b6f8e-3bed-resume.log",
+    "bytes": 113
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/pure_logic-f3363cb283999ce7-3bed-resume.log",
+    "bytes": 3211
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/seat_reducer-264aafa003633c31-3bed-resume.log",
+    "bytes": 795
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/server-e9d-unsandboxed.log",
+    "bytes": 29172
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/server_core-16e604be81be0370-3bed-resume.log",
+    "bytes": 39395
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/set-list-8719.log",
+    "bytes": 130
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/set-list-8719.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/skill-doc-63174.log",
+    "bytes": 41
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/skill-doc-8719.log",
+    "bytes": 41
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/source-export-f9.log",
+    "bytes": 351
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/source-export-f9.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/source-tool-f9-resume1.log",
+    "bytes": 183
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/source-tool-f9.log",
+    "bytes": 110
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/test-workspace-63174.log",
+    "bytes": 3864274
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/tests-3bed-build.log",
+    "bytes": 8359
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/tests-3bed.log",
+    "bytes": 3310608
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/tests-e9d.log",
+    "bytes": 3857725
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/tests-remaining.log",
+    "bytes": 3310793
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/tests-resume.log",
+    "bytes": 312253
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/tests.log",
+    "bytes": 669466
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-completion-checks/validator-build-3bed.log",
+    "bytes": 182
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-maintainer-fix-plan-2.md",
+    "bytes": 55148
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-maintainer-fix-plan-3.md",
+    "bytes": 103721
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-maintainer-fix-plan-4.md",
+    "bytes": 123720
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-maintainer-fix-plan-5.md",
+    "bytes": 175202
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-maintainer-fix-plan-review-2.md",
+    "bytes": 3521
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-maintainer-fix-plan-review-3.md",
+    "bytes": 18266
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-maintainer-fix-plan-review-4.md",
+    "bytes": 24279
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-maintainer-fix-plan-review-5.md",
+    "bytes": 27464
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-maintainer-fix-plan-review.md",
+    "bytes": 11034
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-maintainer-fix-plan.md",
+    "bytes": 41053
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/base-build.log",
+    "bytes": 72
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/base-repeat-diff.json",
+    "bytes": 203
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/base-repeat-diff.log",
+    "bytes": 126
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/base-repeat-diff.md",
+    "bytes": 172
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/base-repeat-diff.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate/coverage.log",
+    "bytes": 1040
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate/data/semantic-audit.json",
+    "bytes": 63785
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate/data/semantic-audit.md",
+    "bytes": 1675
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate/export.log",
+    "bytes": 216
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate/export.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate/semantic.log",
+    "bytes": 404
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate/semantic.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-build.log",
+    "bytes": 71
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-repeat/coverage.log",
+    "bytes": 1040
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-repeat/data/semantic-audit.json",
+    "bytes": 63785
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-repeat/data/semantic-audit.md",
+    "bytes": 1687
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-repeat/export.log",
+    "bytes": 216
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-repeat/export.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-repeat/semantic.log",
+    "bytes": 411
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-repeat/semantic.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-repeat-diff.json",
+    "bytes": 203
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-repeat-diff.log",
+    "bytes": 126
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-repeat-diff.md",
+    "bytes": 172
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/candidate-repeat-diff.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/measurement.md",
+    "bytes": 24069
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/parse-diff-repeat.json",
+    "bytes": 5281
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/parse-diff-repeat.log",
+    "bytes": 126
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/parse-diff-repeat.md",
+    "bytes": 3711
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/parse-diff-repeat.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/parse-diff.json",
+    "bytes": 5281
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/parse-diff.log",
+    "bytes": 126
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/parse-diff.md",
+    "bytes": 3711
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-parser-measurement-import-fix/parse-diff.stdout.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-pr-body-3bed2b.md",
+    "bytes": 10625
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-pr-body-63174-draft.md",
+    "bytes": 8598
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-pr10032-feedback-latest.json",
+    "bytes": 40623
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/artifacts/essence-runtime-regression-fix-executor.md",
+    "bytes": 19782
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/addenda/phase-1",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/addenda/phase-2",
+    "bytes": 6488
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/charter-plan-7.md",
+    "bytes": 35099
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/charter-reassessment-2.md",
+    "bytes": 30208
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/charter-reassessment-3.md",
+    "bytes": 33881
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/feasibility-stingerquill.md",
+    "bytes": 14508
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-1.md",
+    "bytes": 27928
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-2.md",
+    "bytes": 27966
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-3.md",
+    "bytes": 27014
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-4.md",
+    "bytes": 33581
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-5.md",
+    "bytes": 24298
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-phase-1-6.md",
+    "bytes": 60647
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-phase-2-7.md",
+    "bytes": 39788
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-phase-2-fix-10.md",
+    "bytes": 63110
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-phase-2-fix-11.md",
+    "bytes": 49455
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-phase-2-fix-12.md",
+    "bytes": 69597
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-phase-2-fix-13.md",
+    "bytes": 91730
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-phase-2-fix-14.md",
+    "bytes": 16275
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-phase-2-fix-15.md",
+    "bytes": 49237
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-phase-2-fix-16.md",
+    "bytes": 27548
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-phase-2-fix-17.md",
+    "bytes": 30740
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/implementation-phase-2-fix-8.md",
+    "bytes": 31648
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/machinery-8.md",
+    "bytes": 19015
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/machinery-9-feasibility.md",
+    "bytes": 70632
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/machinery-9.md",
+    "bytes": 58429
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/machinery-fix-12.md",
+    "bytes": 27559
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/machinery-fix-13-complete.md",
+    "bytes": 147270
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/machinery-fix-13.md",
+    "bytes": 13986
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/machinery-fix-18.md",
+    "bytes": 57343
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/machinery-fix-21.md",
+    "bytes": 12804
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/machinery-review-12.md",
+    "bytes": 18805
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/measurement-1.md",
+    "bytes": 17989
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/measurement-10.md",
+    "bytes": 25820
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/measurement-2.md",
+    "bytes": 32901
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/measurement-3.md",
+    "bytes": 37720
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/measurement-4.md",
+    "bytes": 28224
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/measurement-6.md",
+    "bytes": 34598
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/measurement-7.md",
+    "bytes": 47440
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/measurement-8.md",
+    "bytes": 17529
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/measurement-9.md",
+    "bytes": 25002
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-1-plan-8.md",
+    "bytes": 38151
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-1-plan.md",
+    "bytes": 67065
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-2-plan-10-closed.md",
+    "bytes": 86644
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-2-plan-10.md",
+    "bytes": 85974
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-2-plan-11.md",
+    "bytes": 117509
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-2-plan-12.md",
+    "bytes": 164639
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-2-plan-13.md",
+    "bytes": 182052
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-2-plan-14.md",
+    "bytes": 187774
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-2-plan-15.md",
+    "bytes": 208867
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-2-plan-9.md",
+    "bytes": 22729
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-2-plan.md",
+    "bytes": 62734
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-charter",
+    "bytes": 12528
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/phase-fit",
+    "bytes": 748446
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/plan-essence-before-hygiene.md",
+    "bytes": 63585
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/plan-essence-before-lifetime.md",
+    "bytes": 77046
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/plan-essence-before-round1.md",
+    "bytes": 37771
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/plan-essence-before-round2.md",
+    "bytes": 54854
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/plan-essence.md",
+    "bytes": 111969
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/plan-hygiene-5.md",
+    "bytes": 16191
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/plan-lifetime-6.md",
+    "bytes": 19859
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/plan-v12-recovery-10-closed.md",
+    "bytes": 84543
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/plan-v12-recovery-10.md",
+    "bytes": 83647
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/plan.md",
+    "bytes": 14508
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/proof-author-3.md",
+    "bytes": 17432
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/proof-author-6-before-namespace-repair.md",
+    "bytes": 31668
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/proof-author-6.md",
+    "bytes": 52780
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/proof-author-7.md",
+    "bytes": 17443
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/proof6-feasibility.md",
+    "bytes": 16428
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/recovery-authority-8.md",
+    "bytes": 19681
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/recovery-authority-9.md",
+    "bytes": 40227
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-12.yml",
+    "bytes": 145646
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-13-final.yml",
+    "bytes": 224946
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-13.yml",
+    "bytes": 230113
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-14.yml",
+    "bytes": 224946
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-15.yml",
+    "bytes": 227418
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-16.yml",
+    "bytes": 238725
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-17.yml",
+    "bytes": 238725
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-18-bound.yml",
+    "bytes": 240234
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-18.yml",
+    "bytes": 240233
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-19.yml",
+    "bytes": 240242
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-20.yml",
+    "bytes": 240234
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-21-bound.yml",
+    "bytes": 241457
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-21.yml",
+    "bytes": 241421
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-6-before-namespace-repair.yml",
+    "bytes": 104537
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-6.yml",
+    "bytes": 104411
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-7.yml",
+    "bytes": 104432
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-8.yml",
+    "bytes": 104492
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-9-before-test-order.yml",
+    "bytes": 139939
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-9.yml",
+    "bytes": 139934
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-before-ir-pair.yml",
+    "bytes": 23162
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-before-log-repair.yml",
+    "bytes": 39440
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-before-reference-tests.yml",
+    "bytes": 24159
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-before-repeat-transport.yml",
+    "bytes": 29946
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-before-snapshot.yml",
+    "bytes": 20667
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof-before-u1-red.yml",
+    "bytes": 29074
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-proof.yml",
+    "bytes": 39555
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-transport-4.yml",
+    "bytes": 7635
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/remote-transport.yml",
+    "bytes": 4671
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-charter-1.md",
+    "bytes": 20206
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-charter-reassessment-2.md",
+    "bytes": 33812
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-charter-reassessment-3.md",
+    "bytes": 29599
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-impl-1.md",
+    "bytes": 10613
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-integration-1.md",
+    "bytes": 4224
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-machinery-13.md",
+    "bytes": 34525
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-machinery-18.md",
+    "bytes": 38649
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-phase-1-impl-2.md",
+    "bytes": 34761
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-phase-1-plan-5.md",
+    "bytes": 26947
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-phase-2-impl-3.md",
+    "bytes": 31604
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-phase-2-impl-4.md",
+    "bytes": 19752
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-phase-2-plan-10.md",
+    "bytes": 49467
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-phase-2-plan-11.md",
+    "bytes": 38204
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-phase-2-plan-12.md",
+    "bytes": 39612
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-phase-2-plan-13.md",
+    "bytes": 38888
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-phase-2-plan-14.md",
+    "bytes": 32790
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-phase-2-plan-15.md",
+    "bytes": 33510
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-phase-2-plan-6.md",
+    "bytes": 27768
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-plan-1.md",
+    "bytes": 15257
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-plan-2.md",
+    "bytes": 18536
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-plan-3.md",
+    "bytes": 15158
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/review-plan-4.md",
+    "bytes": 25891
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-ai-deadline-fix.nul",
+    "bytes": 88
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-ai-timing-fix.nul",
+    "bytes": 57
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-damage-test-fix.nul",
+    "bytes": 198
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-final-pr-2.nul",
+    "bytes": 2430
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-final-pr-3.nul",
+    "bytes": 2628
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-final-pr-4.nul",
+    "bytes": 2569
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-final-pr-5.nul",
+    "bytes": 2569
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-final-pr.nul",
+    "bytes": 2342
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-maintainer-fix.nul",
+    "bytes": 213
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-maintainer-runtime-fix.nul",
+    "bytes": 213
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-paths-before-hygiene.nul",
+    "bytes": 555
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-paths.nul",
+    "bytes": 587
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-phase-1.nul",
+    "bytes": 587
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-phase-2-before-plan10.nul",
+    "bytes": 333
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-phase-2-before-plan11.nul",
+    "bytes": 426
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-phase-2-before-plan12.nul",
+    "bytes": 550
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-phase-2-before-plan14.nul",
+    "bytes": 1731
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-phase-2-before-plan15.nul",
+    "bytes": 1878
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-phase-2.nul",
+    "bytes": 1955
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-property-authority-refactor.nul",
+    "bytes": 46
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scope-test-import-fix.nul",
+    "bytes": 125
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/actor-plan-precedent-raw.jsonl",
+    "bytes": 4434
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/actor-plan-precedent-task.txt",
+    "bytes": 1500
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/actor-plan-precedent-verify.log",
+    "bytes": 5403
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/charter10-pack.json",
+    "bytes": 9672
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/charter10-raw.jsonl",
+    "bytes": 7643
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/essence-pack.json",
+    "bytes": 4586
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/essence-raw.jsonl",
+    "bytes": 3600
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/essence-task.txt",
+    "bytes": 730
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/final-maintainer-review-raw.jsonl",
+    "bytes": 576
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/final-maintainer-review-task.txt",
+    "bytes": 3290
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/final-pr-ai-pack.json",
+    "bytes": 4393
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/final-pr-ai-raw.jsonl",
+    "bytes": 3531
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/final-pr-pack.json",
+    "bytes": 8970
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/final-pr-raw.jsonl",
+    "bytes": 7208
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/maintainer-precedent-facts.json",
+    "bytes": 5629
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/maintainer-precedent-pack.json",
+    "bytes": 6319
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/maintainer-precedent-raw.jsonl",
+    "bytes": 5162
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/maintainer-premise-revision-facts.json",
+    "bytes": 2557
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/maintainer-premise-revision-pack.json",
+    "bytes": 6749
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/pack.json",
+    "bytes": 3188
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/phase2-pack.json",
+    "bytes": 14076
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/phase2-raw.jsonl",
+    "bytes": 11469
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/phase2-task.txt",
+    "bytes": 5258
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/raw.jsonl",
+    "bytes": 2628
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/review-pack.json",
+    "bytes": 4654
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/review-raw.jsonl",
+    "bytes": 3730
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/review-task.txt",
+    "bytes": 1308
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/review7-pack.json",
+    "bytes": 4750
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/review7-raw.jsonl",
+    "bytes": 3831
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/review8-pack.json",
+    "bytes": 4903
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/review8-raw.jsonl",
+    "bytes": 3939
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/scout/task.txt",
+    "bytes": 956
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/transport-author-2.md",
+    "bytes": 9182
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/engine-run/transport-author-4.md",
+    "bytes": 20462
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/inputs/MagicCompRules.txt",
+    "bytes": 977752
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/inputs/engine-inventory.json",
+    "bytes": 2777777
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/inputs/mtgjson/.refresh-week",
+    "bytes": 9
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/inputs/mtgjson/AtomicCards.json",
+    "bytes": 162407952
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/inputs/mtgjson/CardTypes.json",
+    "bytes": 6900
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/inputs/mtgjson/Meta.json",
+    "bytes": 113
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/inputs/mtgjson/SetList.json",
+    "bytes": 11787098
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/inputs/mtgjson/test_fixture.json",
+    "bytes": 519530
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/source.bundle",
+    "bytes": 3440490
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/.github/PULL_REQUEST_TEMPLATE.md",
+    "bytes": 2448
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/AGENTS.md",
+    "bytes": 35085
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/CLAUDE.md",
+    "bytes": 35085
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/CONTRIBUTING.md",
+    "bytes": 3510
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/docs/AI-CONTRIBUTOR.md",
+    "bytes": 53008
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/add-card-data-pipeline/SKILL.md",
+    "bytes": 16922
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/add-engine-effect/SKILL.md",
+    "bytes": 24915
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/add-engine-variant/SKILL.md",
+    "bytes": 15909
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/add-interactive-effect/SKILL.md",
+    "bytes": 25209
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/add-replacement-effect/SKILL.md",
+    "bytes": 18878
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/card-test/SKILL.md",
+    "bytes": 10107
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/casting-stack-conditions/SKILL.md",
+    "bytes": 22789
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/engine-implementer/SKILL.md",
+    "bytes": 49779
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/engine-implementer/agents/openai.yaml",
+    "bytes": 206
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/engine-implementer/chartered.md",
+    "bytes": 12286
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/engine-implementer/executor.md",
+    "bytes": 25518
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/engine-implementer/pr-handoff.md",
+    "bytes": 7018
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/engine-implementer/references/scout-contract.md",
+    "bytes": 839
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/engine-implementer/scout.md",
+    "bytes": 6736
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/engine-implementer/scripts/scout.mjs",
+    "bytes": 6708
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/engine-planner/SKILL.md",
+    "bytes": 20878
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/oracle-parser/SKILL.md",
+    "bytes": 83975
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/oracle-parser/nom_combinators.md",
+    "bytes": 21644
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/project-reference/SKILL.md",
+    "bytes": 23192
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/review-engine-impl/SKILL.md",
+    "bytes": 22807
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/review-engine-impl/agents/openai.yaml",
+    "bytes": 202
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/review-engine-plan/SKILL.md",
+    "bytes": 19111
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/review-engine-plan/agents/openai.yaml",
+    "bytes": 192
+  },
+  {
+    "path": "recovery/essence-cloud-handoff/workflow-reference/skills/validate-cr-annotations/SKILL.md",
+    "bytes": 6056
+  },
+  {
+    "path": "recovery/essence-quota-current-2.json",
+    "bytes": 85
+  },
+  {
+    "path": "recovery/essence-quota-current.json",
+    "bytes": 89
+  },
+  {
+    "path": "recovery/historical-hosted-job-114228038098.log",
+    "bytes": 229051
+  },
+  {
+    "path": "recovery/historical-oct06/download.stderr",
+    "bytes": 637
+  },
+  {
+    "path": "recovery/historical-oct06/metadata-and-attempt.json",
+    "bytes": 557
+  },
+  {
+    "path": "recovery/historical-oct06/pinned-inputs.zip.partial",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/live-fork-phase3-native-preflight-20261022/default-workflows.json",
+    "bytes": 16589
+  },
+  {
+    "path": "recovery/live-fork-phase3-native-preflight-20261022/open-fork-prs.json",
+    "bytes": 46670
+  },
+  {
+    "path": "recovery/live-fork-phase3-preflight-20261021/default-workflows.json",
+    "bytes": 16589
+  },
+  {
+    "path": "recovery/live-fork-phase3-preflight-20261021/open-fork-prs.json",
+    "bytes": 53300
+  },
+  {
+    "path": "recovery/live-fork-phase3-preflight-20261022/default-workflows.json",
+    "bytes": 16589
+  },
+  {
+    "path": "recovery/live-fork-phase3-preflight-20261022/fork-metadata.json",
+    "bytes": 15669
+  },
+  {
+    "path": "recovery/live-fork-phase3-preflight-20261022/open-fork-prs.json",
+    "bytes": 46670
+  },
+  {
+    "path": "recovery/live-fork-preflight-20261020.json",
+    "bytes": 73592
+  },
+  {
+    "path": "recovery/oct13-archive-manifest.json",
+    "bytes": 990849
+  },
+  {
+    "path": "recovery/oct13-upload-parts.json",
+    "bytes": 4371
+  },
+  {
+    "path": "recovery/official-backup-meta-readonly.json",
+    "bytes": 113
+  },
+  {
+    "path": "recovery/official-meta-readonly.json",
+    "bytes": 113
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408184431.zip",
+    "bytes": 15930598
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408254359.zip",
+    "bytes": 15930570
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408398848.zip",
+    "bytes": 6109065
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408403930.zip",
+    "bytes": 15930570
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408408850.zip",
+    "bytes": 6103649
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408423770.zip",
+    "bytes": 15930570
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408428767.zip",
+    "bytes": 15930570
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408448842.zip",
+    "bytes": 6106390
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408513647.zip",
+    "bytes": 15930632
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408543566.zip",
+    "bytes": 1757834
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408578458.zip",
+    "bytes": 6103621
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408663299.zip",
+    "bytes": 6106677
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408668308.zip",
+    "bytes": 15930570
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408782996.zip",
+    "bytes": 6108929
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12408803122.zip",
+    "bytes": 16539966
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12409327338.zip",
+    "bytes": 202
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12409372120.zip",
+    "bytes": 10097
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12455805143.zip",
+    "bytes": 1784746
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12456514426.zip",
+    "bytes": 34941
+  },
+  {
+    "path": "recovery/phase3-remote-case756/artifacts/12458012858.zip",
+    "bytes": 33584
+  },
+  {
+    "path": "recovery/phase3-remote-case756/generation-artifacts-final.json",
+    "bytes": 14621
+  },
+  {
+    "path": "recovery/phase3-remote-case756/generation-artifacts-initial.json",
+    "bytes": 12895
+  },
+  {
+    "path": "recovery/phase3-remote-case756/generation-job.log",
+    "bytes": 564437
+  },
+  {
+    "path": "recovery/phase3-remote-case756/generation-runs-initial.json",
+    "bytes": 11659
+  },
+  {
+    "path": "recovery/phase3-remote-case756/native-artifacts-final.json",
+    "bytes": 965
+  },
+  {
+    "path": "recovery/phase3-remote-case756/native-job-log-failed-download-empty.log",
+    "bytes": 0
+  },
+  {
+    "path": "recovery/phase3-remote-case756/native-jobs-final.json",
+    "bytes": 5661
+  },
+  {
+    "path": "recovery/phase3-remote-case756/native-runs-initial.json",
+    "bytes": 11673
+  },
+  {
+    "path": "recovery/phase3-remote-case756/parity-base-artifacts-final.json",
+    "bytes": 963
+  },
+  {
+    "path": "recovery/phase3-remote-case756/parity-base-job.log",
+    "bytes": 423095
+  },
+  {
+    "path": "recovery/phase3-remote-case756/parity-base-jobs-final.json",
+    "bytes": 4354
+  },
+  {
+    "path": "recovery/phase3-remote-case756/parity-base-runs-initial.json",
+    "bytes": 864
+  },
+  {
+    "path": "recovery/phase3-remote-case756/remaining-artifacts-final.json",
+    "bytes": 964
+  },
+  {
+    "path": "recovery/phase3-remote-case756/remaining-job.log",
+    "bytes": 428011
+  },
+  {
+    "path": "recovery/phase3-remote-case756/remaining-jobs-final.json",
+    "bytes": 4528
+  },
+  {
+    "path": "recovery/phase3-remote-case756/remaining-runs-initial.json",
+    "bytes": 583
+  },
+  {
+    "path": "recovery/pinned-input-manifest-complete-20261020.json",
+    "bytes": 625267
+  },
+  {
+    "path": "recovery/pinned-input-manifest.json",
+    "bytes": 2090
+  },
+  {
+    "path": "recovery/pr10032-20261020/issue-comments.json",
+    "bytes": 15150
+  },
+  {
+    "path": "recovery/pr10032-20261020/metadata.json",
+    "bytes": 27067
+  },
+  {
+    "path": "recovery/pr10032-20261020/review-comments.json",
+    "bytes": 17031
+  },
+  {
+    "path": "recovery/pr10032-20261020/reviews.json",
+    "bytes": 24318
+  }
+]
