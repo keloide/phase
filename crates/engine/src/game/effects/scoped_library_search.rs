@@ -1017,7 +1017,11 @@ mod tests {
 
     #[test]
     fn instruction_actor_search_cast_preserves_optimized_heads_and_refuses_every_marked_delivery() {
-        for head_actor in [None, Some(ControllerRef::ScopedPlayer)] {
+        for head_actor in [
+            None,
+            Some(ControllerRef::ScopedPlayer),
+            Some(ControllerRef::You),
+        ] {
             for (child_actor, prior_choice) in [
                 (None, false),
                 (Some(ControllerRef::ScopedPlayer), false),
@@ -1029,12 +1033,26 @@ mod tests {
                 (Some(ControllerRef::ChosenPlayer { index: 0 }), false),
                 (Some(ControllerRef::ChosenPlayer { index: 0 }), true),
             ] {
+                let controller_head = head_actor == Some(ControllerRef::You);
+                if controller_head && child_actor.is_some() {
+                    continue; // head refusal is isolated from the independent delivery guard
+                }
                 let mut scenario = GameScenario::new_n_player(3, 42);
                 scenario.at_phase(Phase::PreCombatMain);
-                let cards: Vec<_> = [P0, P1, PlayerId(2)]
+                let mut cards: Vec<_> = [P0, P1, PlayerId(2)]
                     .into_iter()
                     .map(|player| scenario.add_card_to_library_top(player, "Exact search card"))
                     .collect();
+                // Identical libraries in every head row: You searches P0's
+                // library on all three iterations; None/Scoped search each seat.
+                let printed_cards = vec![
+                    cards[0],
+                    scenario.add_card_to_library_top(P0, "Second printed-controller card"),
+                    scenario.add_card_to_library_top(P0, "Third printed-controller card"),
+                ];
+                if controller_head {
+                    cards = printed_cards;
+                }
                 let (_, shape, _) = three_player_scoped_search(true);
                 let mut child = AbilityDefinition::new(
                     AbilityKind::Spell,
@@ -1091,7 +1109,7 @@ mod tests {
                     .with_ability_definition(head)
                     .with_mana_cost(ManaCost::zero())
                     .id();
-                let optimized = child_actor.is_none();
+                let optimized = child_actor.is_none() && head_actor != Some(ControllerRef::You);
                 // A real optional move replacement exposes the move's existing
                 // performer authority. Declining it keeps the ordinary destination.
                 if !optimized && !matches!(child_actor, Some(ControllerRef::ChosenPlayer { .. })) {
@@ -1138,9 +1156,14 @@ mod tests {
                     );
                 }
                 for (index, player) in [P0, P1, PlayerId(2)].into_iter().enumerate() {
-                    assert!(
-                        matches!(&runner.state().waiting_for, WaitingFor::SearchChoice { player: actual, .. } if *actual == player)
-                    );
+                    let searcher = if controller_head { P0 } else { player };
+                    assert!(matches!(&runner.state().waiting_for,
+                        WaitingFor::SearchChoice { player: actual, library_owner: Some(owner), cards: eligible, .. }
+                        if *actual == searcher && *owner == searcher && eligible.contains(&cards[index])));
+                    if controller_head {
+                        assert!(runner.state().pending_scoped_library_search.is_none());
+                        assert_eq!(runner.state().objects[&cards[index]].owner, P0);
+                    }
                     let incarnation = runner.state().objects[&cards[index]].incarnation;
                     events.extend(
                         runner
@@ -1166,6 +1189,7 @@ mod tests {
                             Some(ControllerRef::ScopedPlayer) => player,
                             Some(ControllerRef::You) => P0,
                             Some(ControllerRef::SpecificPlayer { id }) => id,
+                            None => player,
                             _ => unreachable!(),
                         };
                         assert!(
@@ -1191,11 +1215,35 @@ mod tests {
                     == if missing { Zone::Library } else { Zone::Hand }));
                 for (index, player) in [P0, P1, PlayerId(2)].into_iter().enumerate() {
                     assert_eq!(
-                        runner.state().players[player.0 as usize]
+                        runner.state().players
+                            [if controller_head { P0 } else { player }.0 as usize]
                             .hand
                             .contains(&cards[index]),
                         !missing,
                         "actor does not replace the searcher/recipient"
+                    );
+                }
+                if controller_head {
+                    assert_eq!(
+                        events
+                            .iter()
+                            .filter(|event| matches!(
+                                event,
+                                GameEvent::HiddenSearchViewed { searcher: P0, .. }
+                            ))
+                            .count(),
+                        3
+                    );
+                    assert!(runner.state().players[P1.0 as usize].hand.is_empty());
+                    assert!(runner.state().players[2].hand.is_empty());
+                    assert_eq!(
+                        events
+                            .iter()
+                            .filter(|event| matches!(event,
+                        GameEvent::StackResolved { object_id } if *object_id == spell))
+                            .count(),
+                        1,
+                        "the ordinary head fallback resolves its source once"
                     );
                 }
                 assert_eq!(runner.life(P0), 21);

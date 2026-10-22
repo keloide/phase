@@ -27380,18 +27380,33 @@ fn lower_subject_predicate_ast(
                 ctx,
                 original_clause,
                 Some(&seed),
+                instruction_actor.as_ref(),
             );
             ctx.declared_player_scope = prev_declared;
             ctx.prior_player_declaration = prev_prior;
             lowered
         }
         Some(seed) => ctx.with_player_scope(seed.clone(), |ctx| {
-            lower_subject_predicate_ast_body(subject, predicate, ctx, original_clause, Some(&seed))
+            lower_subject_predicate_ast_body(
+                subject,
+                predicate,
+                ctx,
+                original_clause,
+                Some(&seed),
+                instruction_actor.as_ref(),
+            )
         }),
-        None => lower_subject_predicate_ast_body(subject, predicate, ctx, original_clause, None),
+        None => lower_subject_predicate_ast_body(
+            subject,
+            predicate,
+            ctx,
+            original_clause,
+            None,
+            instruction_actor.as_ref(),
+        ),
     };
-    if lowered.instruction_actor.is_none() {
-        lowered.instruction_actor = instruction_actor;
+    if let Some(actor) = instruction_actor {
+        lower::default_clause_instruction_actor(&mut lowered, actor);
     }
     lowered
 }
@@ -27405,6 +27420,7 @@ fn lower_subject_predicate_ast_body(
     ctx: &mut ParseContext,
     original_clause: &str,
     seeded: Option<&ControllerRef>,
+    instruction_actor: Option<&ControllerRef>,
 ) -> ParsedEffectClause {
     // CR 115.1d: Propagate multi_target from the subject phrase (e.g., "any number of
     // target creatures", "up to two target artifacts") into the lowered clause so the
@@ -27725,6 +27741,9 @@ fn lower_subject_predicate_ast_body(
             // pick rewrite in the player-target wrapper below), so sibling
             // predicates keep their original scope.
             let mut clause = lower_imperative_clause(&text, ctx);
+            if let Some(actor) = instruction_actor {
+                lower::default_clause_instruction_actor(&mut clause, actor.clone());
+            }
             let placement_target_set = refine_put_at_library_position(&mut clause, &text, ctx);
             if clause.multi_target.is_none() {
                 clause.multi_target = placement_target_set;
@@ -44325,23 +44344,27 @@ fn parse_effect_chain_ir_body(
             // CR 109.4 + CR 115.1 + CR 506.2: propagate relative-player scope
             // from the trigger condition so "that player controls" inside any
             // chunk resolves to TargetPlayer rather than defaulting to You.
-            // CR 608.2c: a chosen-player scope set by an earlier "choose a
-            // player" sentence (Gluntch) takes precedence — the "they"/"that
-            // player controls" anaphor binds to the most recent choice.
-            relative_player_scope: chain_chosen_player_scope
-                .clone()
-                // CR 608.2c (issue #1670): body "its controller may" antecedent
-                // (Star Athlete; issue #3659 Gix — "its controller may pay … if
-                // they do, they draw" must bind "they" to the creature's
-                // controller, not the damaged player from the trigger
-                // condition's TriggeringPlayer scope).
-                .or_else(|| chain_parent_target_controller_scope.clone())
-                .or_else(|| ctx.relative_player_scope.clone())
-                .or_else(|| {
-                    player_scope
-                        .is_some()
-                        .then_some(ControllerRef::ScopedPlayer)
-                }),
+            // The recognized decline dispatch supplies the contextual player
+            // antecedent before typed subject parsing. Explicit possessive and
+            // event subjects retain their own references; no actor-tree remap
+            // is needed after lowering. Outside this dispatch the most recent
+            // chosen-player sentence retains its existing precedence.
+            relative_player_scope: (is_decline_consequence
+                || matches!(decline_dispatch, DeclineDispatch::SubjectOnly))
+            .then_some(ControllerRef::ScopedPlayer)
+            .or_else(|| chain_chosen_player_scope.clone())
+            // CR 608.2c (issue #1670): body "its controller may" antecedent
+            // (Star Athlete; issue #3659 Gix — "its controller may pay … if
+            // they do, they draw" must bind "they" to the creature's
+            // controller, not the damaged player from the trigger
+            // condition's TriggeringPlayer scope).
+            .or_else(|| chain_parent_target_controller_scope.clone())
+            .or_else(|| ctx.relative_player_scope.clone())
+            .or_else(|| {
+                player_scope
+                    .is_some()
+                    .then_some(ControllerRef::ScopedPlayer)
+            }),
             // CR 608.2c + CR 109.4: chain-spanning count of `Choose(Player)`
             // clauses already finalized — supplies the next `ChosenPlayer`
             // index.

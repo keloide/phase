@@ -6118,6 +6118,17 @@ pub(super) fn handle_resolution_choice(
             },
             GameAction::SelectCards { cards: chosen },
         ) => {
+            if matches!(effect_kind, EffectKind::Sacrifice)
+                && state
+                    .pending_player_scope_sacrifice_choice
+                    .as_ref()
+                    .is_some_and(|pending| {
+                        pending.admitted_actors.is_some() && pending.ability.source_id == source_id
+                    })
+            {
+                effects::validate_player_scope_sacrifice_on_restore(state)
+                    .map_err(EngineError::InvalidAction)?;
+            }
             let legacy_optional_attach_empty = chosen.is_empty()
                 && matches!(effect_kind, EffectKind::Attach)
                 && !up_to

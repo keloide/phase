@@ -107,6 +107,33 @@ fn instruction_actor_defaults_preserve_explicit_scoped_and_controller_subjects()
     }
 }
 
+/// SHAPE companion to the ordinary explicit-subject and event-subject casts.
+#[test]
+fn decline_actor_defaults_do_not_rewrite_independent_explicit_references() {
+    for actor in [
+        ControllerRef::TriggeringPlayer,
+        ControllerRef::ParentTargetController,
+        ControllerRef::ParentTargetOwner,
+        ControllerRef::You,
+    ] {
+        let mut clause = parsed_clause(Effect::NoOp);
+        clause.instruction_actor = Some(actor.clone());
+        let mut child = AbilityDefinition::new(AbilityKind::Spell, Effect::NoOp);
+        child.instruction_actor = Some(actor.clone());
+        clause.sub_ability = Some(Box::new(child));
+        lower::rebind_clause_recipients_with(
+            &mut clause,
+            lower::rebind_decline_body_recipient,
+            ControllerRef::ScopedPlayer,
+        );
+        assert_eq!(clause.instruction_actor, Some(actor.clone()));
+        assert_eq!(
+            clause.sub_ability.as_ref().unwrap().instruction_actor,
+            Some(actor)
+        );
+    }
+}
+
 fn assert_attachment_chain_has_no_unimplemented(def: &AbilityDefinition) {
     let mut current = Some(def);
     while let Some(ability) = current {

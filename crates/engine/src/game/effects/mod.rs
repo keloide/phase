@@ -13895,7 +13895,14 @@ fn set_player_scope_sacrifice_waiting_for(
     prompt: PlayerScopeSacrificePrompt,
     source_id: ObjectId,
 ) {
-    state.waiting_for = WaitingFor::EffectZoneChoice {
+    state.waiting_for = player_scope_sacrifice_waiting_for(prompt, source_id);
+}
+
+fn player_scope_sacrifice_waiting_for(
+    prompt: PlayerScopeSacrificePrompt,
+    source_id: ObjectId,
+) -> WaitingFor {
+    WaitingFor::EffectZoneChoice {
         player: prompt.player,
         cards: prompt.cards,
         count: prompt.count,
@@ -13921,7 +13928,7 @@ fn set_player_scope_sacrifice_waiting_for(
         is_cost_payment: false,
         enters_modified_if: None,
         duration: None,
-    };
+    }
 }
 
 fn perform_player_scope_sacrifices(
@@ -14359,7 +14366,13 @@ fn start_player_scope_sacrifice_choices(
         }
         return Ok(());
     }
-    let apnap = super::players::apnap_order(state);
+    // Use the same incoming anchor as the scope driver, before remapping
+    // slots to their admitted actors. The map does not define game order.
+    let apnap = super::players::apnap_order_from(
+        state,
+        template.starting_with.clone(),
+        original_controller,
+    );
     let mut remaining_players: Vec<_> = matching_players
         .iter()
         .copied()
@@ -14564,12 +14577,9 @@ pub(crate) fn owns_player_scope_sacrifice_selection(
         return false;
     }
     match pending.admitted_actors.as_ref() {
-        Some(actors) => {
-            pending
-                .remaining_players
-                .first()
-                .and_then(|slot| actors.get(slot))
-                == Some(&player)
+        Some(_) => {
+            validate_player_scope_sacrifice_on_restore(state).is_ok()
+                && matches!(&state.waiting_for, WaitingFor::EffectZoneChoice { player: chooser, .. } if *chooser == player)
         }
         None => pending.ability.instruction_actor.is_none(), // legacy prompt already latched its actor
     }
@@ -14587,6 +14597,7 @@ pub(crate) fn answer_player_scope_sacrifice_order(
             "missing sacrifice order cursor".into(),
         ));
     };
+    validate_player_scope_sacrifice_on_restore(state).map_err(EffectError::InvalidParam)?;
     let offered = match &state.waiting_for {
         WaitingFor::ChooseFromZoneOpponentChooser {
             player: chooser,
@@ -14711,24 +14722,11 @@ pub(crate) fn player_scope_sacrifice_owns_live_work(state: &GameState) -> bool {
             ..
         } => owns_player_scope_sacrifice_selection(state, *player, *source_id),
         WaitingFor::ChooseFromZoneOpponentChooser {
-            player,
-            ability,
             purpose: ZoneOpponentChooserPurpose::PerPlayerChoiceOrder,
-            candidates,
+            ..
         } => {
-            ability.as_ref() == pending.ability.as_ref()
-                && pending.admitted_actors.as_ref().is_some_and(|actors| {
-                    pending
-                        .remaining_players
-                        .first()
-                        .and_then(|slot| actors.get(slot))
-                        == Some(player)
-                        && !candidates.is_empty()
-                        && candidates.iter().all(|slot| {
-                            pending.remaining_players.contains(slot)
-                                && actors.get(slot) == Some(player)
-                        })
-                })
+            !pending.remaining_players.is_empty()
+                && validate_player_scope_sacrifice_on_restore(state).is_ok()
         }
         WaitingFor::ReplacementChoice { .. } => {
             pending.remaining_players.is_empty()
@@ -14864,31 +14862,93 @@ pub(crate) fn validate_player_scope_sacrifice_on_restore(state: &GameState) -> R
     {
         return Err("sacrifice outstanding queue and actor keys differ".into());
     }
-    if pending.remaining_players.is_empty() {
-        return Ok(());
+    if !matches!(pending.ability.effect, Effect::Sacrifice { .. }) {
+        return Err("admitted sacrifice cursor has a different effect".into());
     }
-    let actor = actors[&pending.remaining_players[0]];
+    if pending.remaining_players.is_empty() {
+        return if player_scope_sacrifice_owns_live_work(state) {
+            Ok(())
+        } else {
+            Err("empty sacrifice cursor has no owned selected-batch replacement".into())
+        };
+    }
+    let front = pending.remaining_players[0];
+    let actor = actors[&front];
+    let reserved: HashSet<_> = pending
+        .selections
+        .iter()
+        .flat_map(|(_, cards)| cards.iter().copied())
+        .collect();
+    let printed = pending
+        .ability
+        .original_controller
+        .unwrap_or(pending.ability.controller);
     match &state.waiting_for {
-        WaitingFor::EffectZoneChoice {
-            player,
-            source_id,
-            effect_kind: EffectKind::Sacrifice,
-            ..
-        } if *player == actor && *source_id == pending.ability.source_id => Ok(()),
+        WaitingFor::EffectZoneChoice { .. } => {
+            match player_scope_sacrifice_step(
+                state,
+                &pending.ability,
+                printed,
+                front,
+                actor,
+                &reserved,
+            ) {
+                PlayerScopeSacrificeStep::Prompt(prompt) => {
+                    if state.waiting_for
+                        == player_scope_sacrifice_waiting_for(prompt, pending.ability.source_id)
+                    {
+                        Ok(())
+                    } else {
+                        Err(
+                            "sacrifice selection differs from its canonical front-slot prompt"
+                                .into(),
+                        )
+                    }
+                }
+                _ => Err("sacrifice selection differs from its canonical front-slot prompt".into()),
+            }
+        }
         WaitingFor::ChooseFromZoneOpponentChooser {
             player,
             candidates,
             ability,
             purpose: ZoneOpponentChooserPurpose::PerPlayerChoiceOrder,
-        } if *player == actor
-            && ability.as_ref() == pending.ability.as_ref()
-            && !candidates.is_empty()
-            && candidates.iter().collect::<HashSet<_>>().len() == candidates.len()
-            && candidates
+        } if *player == actor && ability.as_ref() == pending.ability.as_ref() => {
+            let mut expected = Vec::new();
+            let mut forced_cards = HashSet::new();
+            let mut forced_disjoint = true;
+            for slot in pending
+                .remaining_players
                 .iter()
-                .all(|slot| slots.contains(slot) && actors.get(slot) == Some(player)) =>
-        {
-            Ok(())
+                .copied()
+                .take_while(|slot| actors[slot] == actor)
+            {
+                match player_scope_sacrifice_step(
+                    state,
+                    &pending.ability,
+                    printed,
+                    slot,
+                    actor,
+                    &reserved,
+                ) {
+                    PlayerScopeSacrificeStep::Noop => {}
+                    PlayerScopeSacrificeStep::Auto { cards, .. } => {
+                        expected.push(slot);
+                        for card in cards {
+                            forced_disjoint &= forced_cards.insert(card);
+                        }
+                    }
+                    PlayerScopeSacrificeStep::Prompt(_) => {
+                        expected.push(slot);
+                        forced_disjoint = false;
+                    }
+                }
+            }
+            if expected.len() > 1 && !forced_disjoint && *candidates == expected {
+                Ok(())
+            } else {
+                Err("sacrifice order differs from its complete canonical actor group".into())
+            }
         }
         _ => Err("sacrifice cursor does not own its live selection/order prompt".into()),
     }
@@ -22864,6 +22924,41 @@ mod tests {
                     .into_game_state(),
                 Err(crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(_))
             ));
+            let mut subset = runner.state().clone();
+            if let WaitingFor::ChooseFromZoneOpponentChooser { candidates, .. } =
+                &mut subset.waiting_for
+            {
+                candidates.pop();
+            }
+            assert!(matches!(
+                crate::types::game_state::PersistedGameState::capture(subset.clone())
+                    .into_game_state(),
+                Err(crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(_))
+            ));
+            let mut corrupt_runner = GameRunner::from_state(subset);
+            let before = corrupt_runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .clone();
+            assert!(corrupt_runner
+                .act(GameAction::ChooseZoneOpponentChooser { opponent: P1 })
+                .is_err());
+            assert_eq!(
+                corrupt_runner.state().pending_player_scope_sacrifice_choice,
+                before
+            );
+            let mut wrong_phase = runner.state().clone();
+            let cursor = wrong_phase
+                .pending_player_scope_sacrifice_choice
+                .as_mut()
+                .unwrap();
+            cursor.remaining_players.clear();
+            cursor.admitted_actors.as_mut().unwrap().clear();
+            assert!(matches!(
+                crate::types::game_state::PersistedGameState::capture(wrong_phase)
+                    .into_game_state(),
+                Err(crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(_))
+            ));
             let saved = serde_json::to_vec(&crate::types::game_state::PersistedGameState::capture(
                 runner.state().clone(),
             ))
@@ -22892,6 +22987,40 @@ mod tests {
                 );
                 assert_eq!(runner.state().objects[&a].zone, Zone::Battlefield);
                 assert_eq!(runner.state().objects[&b].zone, Zone::Battlefield);
+                for wrong_cards in [false, true] {
+                    let mut malformed = runner.state().clone();
+                    if let WaitingFor::EffectZoneChoice { cards, count, .. } =
+                        &mut malformed.waiting_for
+                    {
+                        if wrong_cards {
+                            cards.retain(|id| *id != b);
+                        } else {
+                            *count += 1;
+                        }
+                    }
+                    assert!(matches!(
+                        crate::types::game_state::PersistedGameState::capture(malformed.clone())
+                            .into_game_state(),
+                        Err(
+                            crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(
+                                _
+                            )
+                        )
+                    ));
+                    let mut corrupt_runner = GameRunner::from_state(malformed);
+                    let before = corrupt_runner
+                        .state()
+                        .pending_player_scope_sacrifice_choice
+                        .clone();
+                    assert!(corrupt_runner
+                        .act(GameAction::SelectCards { cards: vec![a] })
+                        .is_err());
+                    assert_eq!(
+                        corrupt_runner.state().pending_player_scope_sacrifice_choice,
+                        before
+                    );
+                }
+                runner = restore_actor_prompt(runner);
                 let before_wrong_selection =
                     runner.state().pending_player_scope_sacrifice_choice.clone();
                 assert!(runner
@@ -23376,6 +23505,234 @@ mod tests {
                 if have_second { 2 } else { 1 }
             );
             outcome.assert_life_delta(P0, 1);
+        }
+    }
+
+    /// CR 101.4: typed synthetic casts retain the existing explicit starting anchor.
+    #[test]
+    fn instruction_actor_sacrifice_keeps_starting_anchor_and_turn_direction() {
+        let p2 = PlayerId(2);
+        for actor in [None, Some(ControllerRef::ScopedPlayer)] {
+            for anchor in [ControllerRef::You, ControllerRef::SpecificPlayer { id: P1 }] {
+                for reversed in [false, true] {
+                    let mut scenario = GameScenario::new_n_player(3, 42);
+                    scenario.at_phase(Phase::PreCombatMain);
+                    let pools: Vec<_> = [P0, P1, p2]
+                        .into_iter()
+                        .map(|player| {
+                            [
+                                scenario.add_creature(player, "First option", 1, 2).id(),
+                                scenario.add_creature(player, "Second option", 1, 2).id(),
+                            ]
+                        })
+                        .collect();
+                    let mut definition =
+                        actor_sacrifice_definition(actor.clone(), PlayerFilter::All);
+                    definition.starting_with = Some(anchor.clone());
+                    let spell = scenario
+                        .add_spell_to_hand(P0, "Synthetic Anchored Sacrifice", true)
+                        .with_ability_definition(definition)
+                        .with_mana_cost(ManaCost::zero())
+                        .id();
+                    let mut runner = scenario.build();
+                    runner.state_mut().active_player = p2;
+                    if reversed {
+                        runner.state_mut().turn_direction =
+                            crate::types::phase::TurnDirection::Reversed;
+                    }
+                    let expected = match (&anchor, reversed) {
+                        (ControllerRef::You, false) => vec![P0, P1, p2],
+                        (ControllerRef::You, true) => vec![P0, p2, P1],
+                        (_, false) => vec![P1, p2, P0],
+                        (_, true) => vec![P1, P0, p2],
+                    };
+                    let mut events = runner.cast(spell).resolve().events().to_vec();
+                    for player in expected {
+                        assert!(matches!(&runner.state().waiting_for,
+                            WaitingFor::EffectZoneChoice { player: actual, cards, .. }
+                            if *actual == player && cards == &pools[player.0 as usize].to_vec()));
+                        assert!(pools
+                            .iter()
+                            .flatten()
+                            .all(|id| runner.state().objects[id].zone == Zone::Battlefield));
+                        events.extend(
+                            runner
+                                .act(GameAction::SelectCards {
+                                    cards: vec![pools[player.0 as usize][0]],
+                                })
+                                .unwrap()
+                                .events,
+                        );
+                    }
+                    assert_eq!(
+                        events
+                            .iter()
+                            .filter(|event| matches!(event, GameEvent::PermanentSacrificed { .. }))
+                            .count(),
+                        3
+                    );
+                    assert_eq!(runner.life(P0), 21);
+                    assert!(runner.state().stack.is_empty());
+                    for pool in pools {
+                        assert_eq!(runner.state().objects[&pool[0]].zone, Zone::Graveyard);
+                        assert_eq!(runner.state().objects[&pool[1]].zone, Zone::Battlefield);
+                    }
+                }
+            }
+        }
+    }
+
+    /// CR 101.3: the eligible head has only its detached independent tail in every row.
+    #[test]
+    fn instruction_actor_missing_sacrifice_coordinator_preserves_prior_result_and_tail() {
+        for actor in [
+            ControllerRef::ChosenPlayer { index: 0 },
+            ControllerRef::Opponent,
+            ControllerRef::SpecificPlayer { id: P1 },
+        ] {
+            let resolved = matches!(actor, ControllerRef::SpecificPlayer { .. });
+            let mut scenario = GameScenario::new_n_player(3, 42);
+            scenario.at_phase(Phase::PreCombatMain);
+            let sentinel = scenario
+                .add_creature(P0, "Prior sacrifice result", 1, 2)
+                .id();
+            let pools: Vec<_> = [P1, P1, P1, PlayerId(2), PlayerId(2)]
+                .into_iter()
+                .map(|player| {
+                    scenario
+                        .add_creature(player, "Nonempty coordinator pool", 1, 2)
+                        .id()
+                })
+                .collect();
+            let mut head = actor_sacrifice_definition(Some(actor), PlayerFilter::Opponent);
+            head.else_ability = Some(Box::new(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 100 },
+                    player: TargetFilter::OriginalController,
+                },
+            )));
+            let mut prior = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Sacrifice {
+                    target: TargetFilter::Typed(TypedFilter::creature()),
+                    count: QuantityExpr::Fixed { value: 1 },
+                    min_count: 1,
+                },
+            );
+            prior.sub_ability = Some(Box::new(head));
+            let spell = scenario
+                .add_spell_to_hand(P0, "Synthetic Missing Coordinator", false)
+                .with_ability_definition(prior)
+                .with_mana_cost(ManaCost::zero())
+                .id();
+            let mut runner = scenario.build();
+            let sentinel_set = TrackedSetId(runner.state().next_tracked_set_id);
+            runner.state_mut().next_tracked_set_id += 1;
+            runner
+                .state_mut()
+                .tracked_object_sets
+                .insert(sentinel_set, vec![sentinel]);
+            let mut events = runner.cast(spell).resolve().events().to_vec();
+            assert_eq!(runner.state().objects[&sentinel].zone, Zone::Graveyard);
+            assert_eq!(
+                runner.state().tracked_object_sets.get(&sentinel_set),
+                Some(&vec![sentinel]),
+                "prior tracked-set sentinel remains intact"
+            );
+            if resolved {
+                let pending = runner
+                    .state()
+                    .pending_player_scope_sacrifice_choice
+                    .as_ref()
+                    .unwrap();
+                assert!(
+                    pending.ability.sub_ability.is_none(),
+                    "same eligible coordinated head"
+                );
+                assert_eq!(
+                    pending.admitted_actors,
+                    Some([(P1, P1), (PlayerId(2), P1)].into_iter().collect())
+                );
+                assert!(pending.selections.is_empty());
+                assert!(matches!(
+                    runner.state().waiting_for,
+                    WaitingFor::ChooseFromZoneOpponentChooser { player: P1, .. }
+                ));
+                events.extend(
+                    runner
+                        .act(GameAction::ChooseZoneOpponentChooser { opponent: P1 })
+                        .unwrap()
+                        .events,
+                );
+                events.extend(
+                    runner
+                        .act(GameAction::SelectCards {
+                            cards: vec![pools[0]],
+                        })
+                        .unwrap()
+                        .events,
+                );
+                let mut wrong_reserved = runner.state().clone();
+                if let WaitingFor::EffectZoneChoice { cards, .. } = &mut wrong_reserved.waiting_for
+                {
+                    assert!(!cards.contains(&pools[0]));
+                    cards.push(pools[0]);
+                } else {
+                    panic!("same-shape positive must reach its second selection prompt");
+                }
+                assert!(matches!(
+                    crate::types::game_state::PersistedGameState::capture(wrong_reserved)
+                        .into_game_state(),
+                    Err(crate::types::game_state::PersistedRestoreError::InvalidPerPlayerChoice(_))
+                ));
+                runner = restore_actor_prompt(runner);
+                events.extend(
+                    runner
+                        .act(GameAction::SelectCards {
+                            cards: vec![pools[1]],
+                        })
+                        .unwrap()
+                        .events,
+                );
+            } else {
+                assert!(pools
+                    .iter()
+                    .all(|id| runner.state().objects[id].zone == Zone::Battlefield));
+                assert_eq!(
+                    runner.state().last_effect_count,
+                    Some(1),
+                    "missing admission preserves the real prior result"
+                );
+                assert!(
+                    !runner
+                        .state()
+                        .tracked_object_sets
+                        .values()
+                        .any(|set| set.is_empty()),
+                    "no fabricated empty sacrifice publication"
+                );
+            }
+            assert!(runner
+                .state()
+                .pending_player_scope_sacrifice_choice
+                .is_none());
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, GameEvent::PermanentSacrificed { .. }))
+                    .count(),
+                if resolved { 3 } else { 1 }
+            );
+            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::Sacrifice, source_id, .. } if *source_id == spell)).count(), if resolved { 2 } else { 1 });
+            assert_eq!(runner.life(P0), 21, "tail once and no else");
+            assert_eq!(events.iter().filter(|event| matches!(event, GameEvent::EffectResolved { kind: EffectKind::GainLife, source_id, .. } if *source_id == spell)).count(), 1);
+            assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+            assert!(runner.state().stack.is_empty());
+            assert!(matches!(
+                runner.state().waiting_for,
+                WaitingFor::Priority { .. }
+            ));
         }
     }
 

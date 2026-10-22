@@ -3318,7 +3318,9 @@ fn parse_subject_application_for(
                     controller: Some(scope.clone()),
                     ..Default::default()
                 })
-            } else if matches!(ctx.relative_player_scope, Some(ControllerRef::ScopedPlayer)) {
+            } else if matches!(ctx.relative_player_scope, Some(ControllerRef::ScopedPlayer))
+                && matches!(subject_anaphor, PlayerSubjectAnaphor::Player)
+            {
                 TargetFilter::ScopedPlayer
             } else if matches!(
                 ctx.relative_player_scope,

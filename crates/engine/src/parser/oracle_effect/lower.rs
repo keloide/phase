@@ -6542,28 +6542,12 @@ pub(super) fn rebind_clause_recipients_with(
             return;
         }
         rebind(&mut node.effect);
-        match node.instruction_actor.as_mut() {
-            Some(
-                actor @ (ControllerRef::TriggeringPlayer | ControllerRef::ParentTargetController),
-            ) => {
-                *actor = ControllerRef::ScopedPlayer;
-            }
-            Some(_) => {}
-            None => {}
-        }
         if let Some(sub) = node.sub_ability.as_deref_mut() {
             bind_owned(sub, rebind);
         }
         if let Some(otherwise) = node.else_ability.as_deref_mut() {
             bind_owned(otherwise, rebind);
         }
-    }
-    match clause.instruction_actor.as_mut() {
-        Some(actor @ (ControllerRef::TriggeringPlayer | ControllerRef::ParentTargetController)) => {
-            *actor = ControllerRef::ScopedPlayer;
-        }
-        Some(_) => {}
-        None => {}
     }
     if let Some(sub) = clause.sub_ability.as_deref_mut() {
         bind_owned(sub, &rebind);
