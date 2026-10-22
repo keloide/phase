@@ -1,0 +1,476 @@
+# DRAFT ONLY. Interim phase3; install only after full review and a root-owned reservation.
+# Root binds env literals before the reserved exact-branch push. No default-branch edit or dispatch registration.
+name: Essence phase3 proof generation case 743
+on:
+  push:
+    branches:
+      - proof/essence-phase3-generation-case743
+permissions:
+  contents: read
+concurrency:
+  group: essence-phase3-generation-case743
+  cancel-in-progress: false
+env:
+  RTK_DISABLED: "1"
+  CARGO_BUILD_JOBS: "2"
+  CARGO_INCREMENTAL: "0"
+  RUST_TEST_THREADS: "2"
+  GATED_SETS_AS_OF: "2026-10-14"
+  MTGJSON_SKIP_REFRESH: "1"
+  PHASE_REFRESH_MTGJSON: "0"
+  TEST_FEATURES: phase-engine/test-support,phase-engine/cli,phase-engine/proptest
+  BASE_SHA: 3a6f43de2baf86794975743ee67c3019ec705919
+  SOURCE_SHA: 9d0f1189616c52098d886271b1b1f04635df600d
+  PAYLOAD_HASH: 4a8802b1987118eef1c8a15c890f1444ac5a86e549ce0c22eb860c9248a822c2
+  MANIFEST_HASH: 387cd3729df0d694f2ea168133b8cdd164923a4095c9962afe29d5deaed27d91
+  START_SHA: 63174ea8080282def08b4620e1e21a1f8505a4e0
+jobs:
+  generation:
+    if: github.repository == 'keloide/phase' && github.event_name == 'push' && github.ref == 'refs/heads/proof/essence-phase3-generation-case743'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate immutable input shapes
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PAYLOAD_HASH" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$MANIFEST_HASH" =~ ^[0-9a-f]{64}$ ]]
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          path: proof
+          sparse-checkout: payload
+          persist-credentials: false
+      - name: Reclaim only unused disposable hosted-image payloads
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - name: Audit actual resources before any toolchain or heavy command
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/reports
+          free -b | tee outputs/reports/memory.txt
+          cat /proc/swaps | tee outputs/reports/swaps.txt
+          cat /proc/self/cgroup | tee outputs/reports/cgroup.txt
+          df -B1 . | tee outputs/reports/disk.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, shutil
+          mem = {line.split(':')[0]: int(line.split()[1])*1024 for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith(('MemTotal:', 'MemAvailable:'))}
+          caps, available = [mem['MemTotal']], [mem['MemAvailable']]
+          pairs = [(Path('/sys/fs/cgroup/memory.max'),Path('/sys/fs/cgroup/memory.current')),(Path('/sys/fs/cgroup/memory/memory.limit_in_bytes'),Path('/sys/fs/cgroup/memory/memory.usage_in_bytes'))]
+          for line in Path('/proc/self/cgroup').read_text().splitlines():
+              hierarchy, controllers, group = line.split(':',2)
+              if hierarchy == '0' and not controllers:
+                  root, capname, usedname = Path('/sys/fs/cgroup'), 'memory.max', 'memory.current'
+              elif 'memory' in controllers.split(','):
+                  root, capname, usedname = Path('/sys/fs/cgroup/memory'), 'memory.limit_in_bytes', 'memory.usage_in_bytes'
+              else: continue
+              leaf = (root/group.lstrip('/')).resolve()
+              assert leaf.is_relative_to(root) and leaf.is_dir(), 'Cannot inspect current cgroup; stop before compiling'
+              for directory in [leaf,*leaf.parents]:
+                  if not directory.is_relative_to(root): break
+                  pairs.append((directory/capname,directory/usedname))
+          for capfile, usedfile in pairs:
+              p = Path(capfile)
+              if p.exists():
+                  value = p.read_text().strip()
+                  print(capfile, value)
+                  if value.isdecimal():
+                      cap = int(value)
+                      caps.append(cap)
+                      used = Path(usedfile)
+                      if used.exists(): available.append(max(0, cap-int(used.read_text().strip())))
+          p = Path('/sys/fs/cgroup/memory.swap.max')
+          if p.exists(): print(str(p), p.read_text().strip())
+          print('effective RAM', min(caps), 'effective available RAM', min(available), 'CPU affinity', sorted(os.sched_getaffinity(0)), 'free disk', shutil.disk_usage('.').free)
+          assert min(caps) >= 14*1024**3, 'Need 14 GiB real/effective RAM; swap does not count'
+          assert min(available) >= 12*1024**3, 'Need 12 GiB presently available effective RAM'
+          assert len(os.sched_getaffinity(0)) >= 2
+          assert shutil.disk_usage('.').free >= 45*1024**3, 'Need 45 GiB free disk after image cleanup'
+          PY
+      - name: Restore only the reviewed complete pinned public input payload
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "$MANIFEST_HASH" proof/payload/SHA256SUMS | sha256sum --check --strict
+          cat proof/payload/mtgjson-cr.tar.gz.part-* > "$RUNNER_TEMP/mtgjson-cr.tar.gz"
+          printf '%s  %s\n' "$PAYLOAD_HASH" "$RUNNER_TEMP/mtgjson-cr.tar.gz" | sha256sum --check --strict
+          # The reviewed archive must contain only regular files/directories under data/mtgjson and docs/MagicCompRules.txt.
+          tar -tzf "$RUNNER_TEMP/mtgjson-cr.tar.gz" > outputs/reports/payload-members.txt
+          ! rg '(^/|(^|/)\.\.(/|$))' outputs/reports/payload-members.txt
+          ! tar -tvzf "$RUNNER_TEMP/mtgjson-cr.tar.gz" | awk '$1 !~ /^[-d]/ {print; bad=1} END {exit !bad}'
+          mkdir inputs
+          tar -xzf "$RUNNER_TEMP/mtgjson-cr.tar.gz" -C inputs --no-same-owner --no-same-permissions
+          (cd inputs && sha256sum --check --strict ../proof/payload/SHA256SUMS)
+          (cd inputs && find . -type f -printf '%P\n' | LC_ALL=C sort) > "$RUNNER_TEMP/actual-input-paths"
+          sed -E 's/^[0-9a-f]{64}  //' proof/payload/SHA256SUMS | LC_ALL=C sort > "$RUNNER_TEMP/manifest-input-paths"
+          cmp "$RUNNER_TEMP/actual-input-paths" "$RUNNER_TEMP/manifest-input-paths"
+          test "$(find inputs/data/mtgjson/sets -type f -name '*.json' | wc -l)" -eq 338
+          test "$(find inputs/data/mtgjson/decks -type f -name '*.json' | wc -l)" -eq 3113
+          printf '%s  %s\n' b3aff1a71781fa5fb7f25ec5b39dda2204fd27a0e3b6a3cc7e9fa89d0b79a671 inputs/data/mtgjson/AtomicCards.json | sha256sum --check --strict
+          test "$(stat -c %s inputs/data/mtgjson/AtomicCards.json)" -eq 162407952
+          for f in AtomicCards Meta CardTypes SetList; do
+            jq -e '.meta.date == "2026-10-13" and .meta.version == "5.3.0+20261013"' "inputs/data/mtgjson/$f.json" >/dev/null
+          done
+          printf '%s  %s\n' 7e0b81ed7b25b2532982e40eefd64fd79204fcd89d1c3540f0256b8eb91fa47b inputs/data/mtgjson/Meta.json | sha256sum --check --strict
+          printf '%s  %s\n' d4d6c7fa9b0ebcc25a979fe32388e3ed27609916795b3e39e6c0e22a0c5263fc inputs/data/mtgjson/CardTypes.json | sha256sum --check --strict
+          printf '%s  %s\n' ebc941a40eb828303b497d1fae507d07a28bf682a27dde7071168c9491983a1d inputs/data/mtgjson/SetList.json | sha256sum --check --strict
+          printf '%s  %s\n' 8d860e451f20f38865b725b42d82feb714c725373dd8f3b32b8652b3eeb070ca inputs/docs/MagicCompRules.txt | sha256sum --check --strict
+          # No fetch-token-sets, gen-card-data.sh, refresh, download, or dataset substitution follows.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: keloide/phase
+          ref: ${{ env.BASE_SHA }}
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: keloide/phase
+          ref: 63174ea8080282def08b4620e1e21a1f8505a4e0
+          path: start
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: keloide/phase
+          ref: ${{ env.SOURCE_SHA }}
+          path: candidate
+          persist-credentials: false
+      - name: Check actual source identities and preserve pinned parser inputs
+        run: |
+          set -euo pipefail
+          test "$(git -C base rev-parse HEAD)" = "$BASE_SHA"
+          test "$(git -C start rev-parse HEAD)" = "$START_SHA"
+          test "$(git -C candidate rev-parse HEAD)" = "$SOURCE_SHA"
+          for tree in base start candidate; do
+            printf '%s  %s\n' eaea3f5352a3beaa7f7beb2b741fa21306ba9ab1a012b3109035458ebc29d5ed "$tree/crates/engine/data/known-tokens.toml" | sha256sum --check --strict
+            printf '%s  %s\n' 6d3e968e0e5de03a445a3f9dd94467cdf6edeed4bf18891a2e36fa700b7acea5 "$tree/crates/engine/data/oracle-subtypes.json" | sha256sum --check --strict
+            printf '%s  %s\n' 033b43c5f646509144583818a7ba7c5c54048baf09b2afb5c3b01113d6c77b07 "$tree/data/bracket_lists.json" | sha256sum --check --strict
+            mkdir -p "$tree/data/mtgjson"
+            for item in AtomicCards.json Meta.json CardTypes.json SetList.json sets decks; do
+              test ! -e "$tree/data/mtgjson/$item"
+              ln -s "$GITHUB_WORKSPACE/inputs/data/mtgjson/$item" "$tree/data/mtgjson/$item"
+            done
+            test ! -e "$tree/docs/MagicCompRules.txt"
+            ln -s "$GITHUB_WORKSPACE/inputs/docs/MagicCompRules.txt" "$tree/docs/MagicCompRules.txt"
+          done
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/essence-target" >> "$GITHUB_ENV"
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly-2026-04-19
+          components: rustfmt, clippy, rustc-codegen-cranelift-preview
+          cache: false
+          rustflags: ""
+      - name: Build once per immutable source; export whole pool and same-binary repeats
+        run: |
+          set -euo pipefail
+          for tree in base start candidate; do
+            (
+              cd "$tree"
+              cargo build --locked --profile tool --features cli --bin tokens-gen --bin oracle-gen --bin coverage-report --bin card-data-validate --bin coverage-parse-diff
+              bin="$CARGO_TARGET_DIR/tool"
+              out="$GITHUB_WORKSPACE/outputs/$tree"
+              mkdir -p "$out" client/public data
+              "$bin/oracle-gen" data --stats --names-out "$out/card-names.json" --sidecar-dir client/public --output client/public/card-data.json
+              "$bin/card-data-validate" client/public/card-data.json
+              cp client/public/card-data.json data/card-data.json
+              "$bin/coverage-report" data --all --brief --write-warning-patterns "$out/parser-warning-patterns.json" > "$out/coverage-data.json"
+              "$bin/oracle-gen" semantic-audit data
+              cp data/semantic-audit.json data/semantic-audit.md "$out/"
+              cp data/card-data.json "$out/card-data.json"
+              git diff --exit-code -- crates/engine/data/known-tokens.toml crates/engine/data/oracle-subtypes.json crates/engine/data/mtgjson-vintage
+              if [ "$tree" != start ]; then
+                repeat="$GITHUB_WORKSPACE/outputs/$tree-repeat"
+                mkdir -p "$repeat"
+                "$bin/oracle-gen" data --stats --output "$repeat/card-data.json"
+                "$bin/card-data-validate" "$repeat/card-data.json"
+                cp "$repeat/card-data.json" data/card-data.json
+                "$bin/coverage-report" data --all --brief > "$repeat/coverage-data.json"
+                "$bin/oracle-gen" semantic-audit data
+                cp data/semantic-audit.json data/semantic-audit.md "$repeat/"
+                cp "$out/card-data.json" data/card-data.json
+                cp "$out/semantic-audit.json" "$out/semantic-audit.md" data/
+              fi
+              if [ "$tree" = candidate ]; then
+                cp "$out/coverage-data.json" data/coverage-data.json
+                "$bin/oracle-gen" set-list data client/public/set-list.json
+                "$bin/oracle-gen" decks data client/public/decks.json --emit-skipped
+                "$bin/tokens-gen" --input data/mtgjson/sets --overlay crates/engine/data/known-tokens.overlay.toml --output "$out/known-tokens.proposed.toml"
+                # Catalog proposal is an artifact for inspection; never promote it into parser inputs.
+                cp "$out/card-names.json" "$out/parser-warning-patterns.json" client/public/
+                cp "$out/coverage-data.json" client/public/coverage-data.json
+                jq '{total_cards,supported_cards,coverage_pct,coverage_by_format,coverage_by_set,token_coverage}' "$out/coverage-data.json" > client/public/coverage-summary.json
+                data_hash=$(sha256sum data/card-data.json | cut -c1-16)
+                jq -n --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg commit "$SOURCE_SHA" --arg commit_short "$(git rev-parse --short HEAD)" --arg data_hash "$data_hash" '{generated_at:$generated_at,commit:$commit,commit_short:$commit_short,mtgjson_version:"5.3.0+20261013",mtgjson_date:"2026-10-13",data_hash:$data_hash,data_filename:("card-data-"+$data_hash+".json")}' > client/public/card-data-meta.json
+                cp data/card-data.json "client/public/card-data-$data_hash.json"
+                python3 scripts/gen-test-fixture.py
+                python3 scripts/gen-test-fixture.py --check
+              fi
+            )
+          done
+      - name: Prepare normal artifacts with bounded download sizes
+        run: |
+          set -euo pipefail
+          for tree in base base-repeat start candidate candidate-repeat; do
+            gzip -9 -n -c "outputs/$tree/card-data.json" > "outputs/$tree/card-data.json.gz"
+            gzip -9 -n -c "outputs/$tree/coverage-data.json" > "outputs/$tree/coverage-data.json.gz"
+          done
+          mkdir -p outputs/generated/client/public outputs/generated/crates/engine/tests/fixtures
+          cp candidate/crates/engine/tests/fixtures/integration_cards.json.gz outputs/generated/crates/engine/tests/fixtures/
+          cp candidate/client/public/*.json outputs/generated/client/public/
+          gzip -9 -n outputs/generated/client/public/*.json
+          # Keep all ordinary bytes and relative paths; separate the three known bulk files.
+          data_hash=$(sha256sum candidate/data/card-data.json | cut -c1-16)
+          mkdir -p outputs/generated-card-data/client/public outputs/generated-hashed-card-data/client/public outputs/generated-coverage/client/public
+          mv outputs/generated/client/public/card-data.json.gz outputs/generated-card-data/client/public/
+          mv "outputs/generated/client/public/card-data-$data_hash.json.gz" outputs/generated-hashed-card-data/client/public/
+          mv outputs/generated/client/public/coverage-data.json.gz outputs/generated-coverage/client/public/
+          find outputs -type f -printf '%s %p\n'
+          # Every published individual file and artifact group must remain below 30 MiB.
+          for tree in base base-repeat start candidate candidate-repeat; do
+            for file in card-data.json.gz coverage-data.json.gz; do
+              size=$(stat -c %s "outputs/$tree/$file")
+              printf '%s bytes=%s\n' "outputs/$tree/$file" "$size"
+              test "$size" -lt 31457280
+            done
+          done
+          test "$(du -sb outputs/generated | cut -f1)" -lt 31457280
+          test "$(du -sb outputs/generated-card-data | cut -f1)" -lt 31457280
+          test "$(du -sb outputs/generated-hashed-card-data | cut -f1)" -lt 31457280
+          test "$(du -sb outputs/generated-coverage | cut -f1)" -lt 31457280
+          test "$(du -sb outputs/reports | cut -f1)" -lt 31457280
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: base-card-data-pin20261013-asof20261014-source${{ env.BASE_SHA }}
+          path: outputs/base/card-data.json.gz
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: base-coverage-pin20261013-asof20261014-source${{ env.BASE_SHA }}
+          path: outputs/base/coverage-data.json.gz
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: base-repeat-card-data-pin20261013-asof20261014-source${{ env.BASE_SHA }}
+          path: outputs/base-repeat/card-data.json.gz
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: base-repeat-coverage-pin20261013-asof20261014-source${{ env.BASE_SHA }}
+          path: outputs/base-repeat/coverage-data.json.gz
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: start-card-data-pin20261013-asof20261014-source63174ea8080282def08b4620e1e21a1f8505a4e0
+          path: outputs/start/card-data.json.gz
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: start-coverage-pin20261013-asof20261014-source63174ea8080282def08b4620e1e21a1f8505a4e0
+          path: outputs/start/coverage-data.json.gz
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-card-data-pin20261013-asof20261014-source${{ env.SOURCE_SHA }}
+          path: outputs/candidate/card-data.json.gz
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-coverage-pin20261013-asof20261014-source${{ env.SOURCE_SHA }}
+          path: outputs/candidate/coverage-data.json.gz
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-repeat-card-data-pin20261013-asof20261014-source${{ env.SOURCE_SHA }}
+          path: outputs/candidate-repeat/card-data.json.gz
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-repeat-coverage-pin20261013-asof20261014-source${{ env.SOURCE_SHA }}
+          path: outputs/candidate-repeat/coverage-data.json.gz
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-generated-pin20261013-asof20261014-source${{ env.SOURCE_SHA }}
+          path: outputs/generated
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-generated-card-data-pin20261013-asof20261014-source${{ env.SOURCE_SHA }}
+          path: outputs/generated-card-data
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-generated-hashed-card-data-pin20261013-asof20261014-source${{ env.SOURCE_SHA }}
+          path: outputs/generated-hashed-card-data
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-generated-coverage-pin20261013-asof20261014-source${{ env.SOURCE_SHA }}
+          path: outputs/generated-coverage
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - name: Produce existing parser comparisons and regression output
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/outputs"
+          bin="$CARGO_TARGET_DIR/tool"
+          for pair in 'base candidate' 'base-repeat candidate-repeat' 'base base-repeat' 'candidate candidate-repeat' 'start candidate'; do
+            read -r before after <<< "$pair"
+            before_sha="$BASE_SHA"
+            after_sha="$SOURCE_SHA"
+            if [ "$before" = start ]; then before_sha="$START_SHA"; fi
+            if [ "$before" = candidate ]; then before_sha="$SOURCE_SHA"; fi
+            if [ "$after" = base-repeat ]; then after_sha="$BASE_SHA"; fi
+            "$bin/coverage-parse-diff" "$out/$before/coverage-data.json" "$out/$after/coverage-data.json" --base-sha "$before_sha" --head-sha "$after_sha" --max-clusters 100000 --json "$out/reports/$before-to-$after.json" --markdown "$out/reports/$before-to-$after.md"
+          done
+          test -s "$out/base/coverage-data.json"
+          test -s "$out/candidate/coverage-data.json"
+          ./scripts/coverage-regression-check.sh "$out/base/coverage-data.json" "$out/candidate/coverage-data.json" --fail-on-engine | tee "$out/reports/coverage-regression.log"
+          # Complete-value, duplicate-preserving pool/coverage/semantic review is still required after retrieval.
+          # The existing regression script uses a name map and is not that review.
+      - name: Bound complete generation audit artifact without changing its contents
+        id: generation_audit_size
+        if: always()
+        run: |
+          set -euo pipefail
+          size=0
+          for path in outputs/reports outputs/base/semantic-audit.* outputs/base-repeat/semantic-audit.* outputs/start/semantic-audit.* outputs/candidate/semantic-audit.* outputs/candidate-repeat/semantic-audit.* outputs/candidate/known-tokens.proposed.toml; do
+            if [ -e "$path" ]; then
+              bytes=$(du -sb "$path" | cut -f1)
+              size=$((size + bytes))
+            fi
+          done
+          printf 'generation-audits bytes=%s\n' "$size"
+          # Oversize is a failed, unresolved artifact handoff. Keep every complete file intact.
+          test "$size" -lt 31457280
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always() && steps.generation_audit_size.outcome == 'success'
+        with:
+          name: generation-audits-pin20261013-asof20261014-base${{ env.BASE_SHA }}-source${{ env.SOURCE_SHA }}
+          path: |
+            outputs/reports
+            outputs/base/semantic-audit.*
+            outputs/base-repeat/semantic-audit.*
+            outputs/start/semantic-audit.*
+            outputs/candidate/semantic-audit.*
+            outputs/candidate-repeat/semantic-audit.*
+            outputs/candidate/known-tokens.proposed.toml
+          retention-days: 14
+          if-no-files-found: error
+      - name: Collect existing parser snapshot proposals without updating goldens
+        working-directory: candidate
+        env:
+          INSTA_UPDATE: new
+          INSTA_FORCE_PASS: "1"
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/outputs/snapshot-collection"
+          mkdir -p "$out"
+          printf 'source=%s\nbase=%s\ninput_snapshot=2026-10-13\nas_of=%s\nfeatures=%s\nmode=proposal-only\n' "$SOURCE_SHA" "$BASE_SHA" "$GATED_SETS_AS_OF" "$TEST_FEATURES" > "$out/identity.txt"
+          git diff --binary -- | sha256sum > "$out/tracked-before.sha256"
+          # A snapshot mismatch is pending evidence, never a correctness pass.
+          # Attempt both owners even if an ordinary assertion or compilation fails in one.
+          set +e
+          cargo test --locked -p phase-engine --features "$TEST_FEATURES" --lib snapshot_tests -- --nocapture 2>&1 | tee "$out/lib-snapshot-tests.log"
+          lib_status=("${PIPESTATUS[@]}")
+          cargo test --locked -p phase-engine --features "$TEST_FEATURES" --test integration oracle_parser:: -- --nocapture 2>&1 | tee "$out/integration-oracle-parser.log"
+          integration_status=("${PIPESTATUS[@]}")
+          python3 scripts/gen-test-fixture.py --check 2>&1 | tee "$out/fixture-check.log"
+          fixture_status=("${PIPESTATUS[@]}")
+          rg '^running [1-9][0-9]* tests?$' "$out/lib-snapshot-tests.log" > "$out/lib-population.txt"
+          lib_population_status=$?
+          rg '^running [1-9][0-9]* tests?$' "$out/integration-oracle-parser.log" > "$out/integration-population.txt"
+          integration_population_status=$?
+          git diff --binary -- | sha256sum > "$out/tracked-after.sha256"
+          tracked_hash_status=("${PIPESTATUS[@]}")
+          cmp "$out/tracked-before.sha256" "$out/tracked-after.sha256" > "$out/tracked-unchanged.log" 2>&1
+          tracked_unchanged_status=$?
+          git diff --stat > "$out/tracked-diff-stat.log"
+          diff_stat_status=$?
+          set -e
+          printf 'operation\tprimary_exit\tsecondary_exit\nlib-snapshot-tests\t%s\t%s\nintegration-oracle-parser\t%s\t%s\nfixture-check\t%s\t%s\nlib-nonempty-population\t%s\t-\nintegration-nonempty-population\t%s\t-\ntracked-diff-hash\t%s\t%s\ntracked-unchanged\t%s\t-\ntracked-diff-stat\t%s\t-\n' "${lib_status[@]}" "${integration_status[@]}" "${fixture_status[@]}" "$lib_population_status" "$integration_population_status" "${tracked_hash_status[@]}" "$tracked_unchanged_status" "$diff_stat_status" | tee "$out/exit-status.tsv"
+          status=0
+          for code in "${lib_status[@]}" "${integration_status[@]}" "${fixture_status[@]}" "$lib_population_status" "$integration_population_status" "${tracked_hash_status[@]}" "$tracked_unchanged_status" "$diff_stat_status"; do
+            if [ "$code" -ne 0 ]; then status=1; fi
+          done
+          exit "$status"
+      - name: Preserve complete pending paths and bound ordinary snapshot artifacts
+        if: always()
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/outputs/snapshot-collection"
+          mkdir -p "$out"
+          status=0
+          : > "$out/missing-outputs.txt"
+          for file in identity.txt lib-snapshot-tests.log integration-oracle-parser.log exit-status.tsv; do
+            if [ ! -s "$out/$file" ]; then
+              printf '%s\n' "$file" >> "$out/missing-outputs.txt"
+              status=1
+            fi
+          done
+          find crates/engine -type f -name '*.snap.new' -print0 | LC_ALL=C sort -z > "$out/proposal-paths.nul"
+          tr '\0' '\n' < "$out/proposal-paths.nul" > "$out/proposal-paths.txt"
+          # An empty pending archive is valid only with the retained actual population/status evidence.
+          tar -czf "$RUNNER_TEMP/snapshot-proposals.tar.gz" --null -T "$out/proposal-paths.nul"
+          tar -C "$out" -czf "$RUNNER_TEMP/snapshot-collection-logs.tar.gz" .
+          mkdir -p "$GITHUB_WORKSPACE/outputs/snapshot-artifacts"
+          for file in snapshot-proposals.tar.gz snapshot-collection-logs.tar.gz; do
+            size=$(stat -c %s "$RUNNER_TEMP/$file")
+            printf '%s bytes=%s\n' "$file" "$size"
+            if [ "$size" -lt $((30*1024*1024)) ]; then
+              mv "$RUNNER_TEMP/$file" "$GITHUB_WORKSPACE/outputs/snapshot-artifacts/"
+            else
+              echo "Artifact exceeds the ordinary 30 MiB bound: $file" >&2
+              status=1
+            fi
+          done
+          exit "$status"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: candidate-snapshot-proposals-pin20261013-asof20261014-source${{ env.SOURCE_SHA }}
+          path: outputs/snapshot-artifacts/snapshot-proposals.tar.gz
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: candidate-snapshot-collection-logs-pin20261013-asof20261014-source${{ env.SOURCE_SHA }}
+          path: outputs/snapshot-artifacts/snapshot-collection-logs.tar.gz
+          retention-days: 14
+          if-no-files-found: error
