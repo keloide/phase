@@ -106,6 +106,7 @@ fn selesnya_echo_from_multitype_tap_offers_one_chosen_mana() {
         .act(GameAction::ActivateAbility {
             source_id: chamber,
             ability_index: idx,
+            payment_mode: CastPaymentMode::Auto,
         })
         .expect("tapping the chamber must succeed");
 
@@ -184,6 +185,7 @@ fn selesnya_echo_from_single_type_tap_has_no_prompt_and_adds_one() {
         .act(GameAction::ActivateAbility {
             source_id: forest,
             ability_index: idx,
+            payment_mode: CastPaymentMode::Auto,
         })
         .expect("tapping the Forest must succeed");
     assert!(
@@ -234,6 +236,7 @@ fn mana_flare_echo_routes_choice_and_bonus_to_tapper() {
         .act(GameAction::ActivateAbility {
             source_id: chamber_p1,
             ability_index: idx,
+            payment_mode: CastPaymentMode::Auto,
         })
         .expect("P1 tapping its own chamber must succeed");
 
@@ -696,6 +699,7 @@ fn mirari_echo_choice_drains_ordinary_observer_before_priority() {
         .act(GameAction::ActivateAbility {
             source_id: chamber,
             ability_index: idx,
+            payment_mode: CastPaymentMode::Auto,
         })
         .expect("tapping the chamber must succeed");
     // Base {G}{U} in the pool; echo choice pending with no triggered entry.
@@ -796,6 +800,7 @@ fn unscoped_echo_public_pipeline_prompts_and_pays_tapper() {
         .act(GameAction::ActivateAbility {
             source_id: chamber_p1,
             ability_index: idx,
+            payment_mode: CastPaymentMode::Auto,
         })
         .expect("P1 tapping its own chamber must succeed");
 
@@ -923,6 +928,7 @@ fn mirari_echo_and_convoke_together_fund_bonus_dependent_payment() {
         .act(GameAction::ActivateAbility {
             source_id: chamber,
             ability_index: idx,
+            payment_mode: CastPaymentMode::Auto,
         })
         .expect("the chamber must produce the base {{G}}{{U}}");
     match &runner.state().waiting_for {

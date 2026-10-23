@@ -17,7 +17,7 @@ use crate::types::casting_costs::{
     CostReductionAnalysis, CostReductionCoverage, CostReductionElection, CostReductionEntry,
     CostReductionOutcome, ManaCarrier, ReductionProvenance, SettledTail,
 };
-use crate::types::events::{ActivatedAbilityKind, GameEvent};
+use crate::types::events::{ActivatedAbilityKind, BoundActivationCost, GameEvent};
 use crate::types::game_state::{
     AbilityActivationRecord, ActivationPhyrexianIntent, ActivationShardChoice,
     ActivationTargetFact, LKISnapshot, ShardChoice, TransientContinuousEffect,
@@ -3283,6 +3283,7 @@ fn matches_via_origin_scoped_branch(
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer
+        | TargetFilter::AttackedPlayerOrPlaneswalker
         | TargetFilter::HasChosenName
         | TargetFilter::ChosenDamageSource { .. }
         | TargetFilter::Named { .. }
@@ -29103,6 +29104,8 @@ fn activate_with_cost_carrier(
     // captured now, before any cost is paid. Target settlement adds the
     // committed targets on every target-first route. CR 602.2a: provenance too.
     record_activation_announcement(state, player, source_id, ability_index, &mut resolved);
+    // The record retains the definition's original cost. A resumed proposal's
+    // fold base may already be a selected OneOf branch, a different domain.
     // CR 602.2b + CR 601.2b/c: an X announcement can determine how many
     // targets an ability has. Before X is chosen, target-slot construction may
     // reject that specific class of otherwise legal activation; defer only that
@@ -30056,15 +30059,17 @@ pub(crate) fn record_activated_ability_placed(
                 )),
         "record_activated_ability_placed must name the entry its caller just pushed"
     );
-    // CR 606.1 + CR 602.2: the kind and announcement zone are the facts bound
-    // when the ability was announced — never re-read from the source after its
-    // costs were paid (a cost may have moved it, resetting its abilities).
+    // CR 606.1 + CR 602.2 + CR 602.1a: the kind, announcement zone and
+    // activation cost are the facts bound when the ability was announced —
+    // never re-read from the source after its costs were paid (a cost may have
+    // moved it, resetting its abilities; CR 400.7).
     let kind = if record.is_loyalty_ability {
         ActivatedAbilityKind::Loyalty
     } else {
         ActivatedAbilityKind::Normal
     };
     let announced_zone = record.source_zone;
+    let activation_cost = record.activation_cost.clone();
     restrictions::record_ability_activation(state, source_id, ability_index, Some(record));
     // CR 117.1b: Priority permits unbounded activation. `pending_activations`
     // is a per-priority-window AI-guard — see `GameState::pending_activations`.
@@ -30074,6 +30079,7 @@ pub(crate) fn record_activated_ability_placed(
         player,
         source_id,
         kind,
+        activation_cost,
         Some(placed_entry),
         announced_zone,
         events,
@@ -30192,6 +30198,9 @@ pub(crate) fn capture_activation_record_from(
         // CR 606.1: classified once, from the announcement-bound definition.
         is_loyalty_ability: def.map(ActivatedAbilityKind::of_definition)
             == Some(ActivatedAbilityKind::Loyalty),
+        // CR 602.1a: from the announcement-bound definition, like the CR 606.1
+        // kind above.
+        activation_cost: BoundActivationCost::of_definition(def),
         targets,
     })
 }
@@ -31399,6 +31408,7 @@ fn target_filter_reads_chosen_target(filter: &TargetFilter, read: TargetRead) ->
         | TargetFilter::PostReplacementDamageTarget
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer
+        | TargetFilter::AttackedPlayerOrPlaneswalker
         | TargetFilter::HasChosenName
         | TargetFilter::Named { .. }
         | TargetFilter::Owner

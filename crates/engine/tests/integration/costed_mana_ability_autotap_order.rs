@@ -194,6 +194,7 @@ fn nested_sub_cost_echo_choice_precedes_catacombs_production() {
         .act(GameAction::ActivateAbility {
             source_id: catacombs,
             ability_index,
+            payment_mode: CastPaymentMode::Auto,
         })
         .expect("nested sub-cost tap must pause for echo choice");
     match &runner.state().waiting_for {

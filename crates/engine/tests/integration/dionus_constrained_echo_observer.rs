@@ -261,6 +261,7 @@ fn dionus_grant_fires_for_a_direct_mana_ability_activation() {
         .act(GameAction::ActivateAbility {
             source_id: elves,
             ability_index: idx,
+            payment_mode: CastPaymentMode::Auto,
         })
         .expect("activating the Elves' mana ability must succeed");
     assert!(

@@ -25,7 +25,7 @@ use engine::types::actions::{GameAction, ResolutionOptionalPaymentChoice};
 use engine::types::card_type::CoreType;
 use engine::types::events::GameEvent;
 use engine::types::format::GameFormat;
-use engine::types::game_state::{ManaChoice, ManaChoicePrompt, WaitingFor};
+use engine::types::game_state::{CastPaymentMode, ManaChoice, ManaChoicePrompt, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::mana::{ManaCost, ManaType, ManaUnit};
 use engine::types::phase::Phase;
@@ -181,6 +181,7 @@ fn nested_mana_sub_cost_settles_echo_before_spending_parent_cost() {
         .act(GameAction::ActivateAbility {
             source_id: golem,
             ability_index: 0,
+            payment_mode: CastPaymentMode::Auto,
         })
         .expect("the activation preview counts the echo bonus and the live payment pauses");
     assert_single_color_echo_choice(&runner, &[ManaType::Green, ManaType::Blue]);
