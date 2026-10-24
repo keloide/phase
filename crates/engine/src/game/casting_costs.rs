@@ -3616,6 +3616,26 @@ fn auto_activate_spell_mana_abilities_before_deferred_sacrifice(
         &mut simulated_events,
         events_before,
     );
+    // CR 601.2g-h + CR 605.4a + CR 608.2d: a skipped multi-type mana echo owes
+    // exactly one chosen bonus BEFORE the spend, even on this deferred route.
+    // The same shared authority every other spell/activation/effect root uses
+    // settles it here, rooting the suspension in this cast's own pending mana
+    // payment. Without it the preview admits a bonus-dependent cast that the
+    // live spend then rejects as "Cannot pay mana cost". A pause must keep the
+    // simulated state so the finalizer can surface the choice and retain the
+    // outer cast for its exact resume.
+    if let Err(err) = super::casting::settle_pre_spend_echoes(
+        &mut simulated,
+        player,
+        &simulated_events,
+        events_before,
+        resume,
+        None,
+    ) {
+        *state = simulated;
+        *events = simulated_events;
+        return Err(err);
+    }
     validate_deferred_spell_sacrifices_at_commit(&simulated, player, pending)?;
     simulated.pending_cast = previous_pending;
     *state = simulated;

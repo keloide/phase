@@ -24129,7 +24129,7 @@ fn auto_tap_and_pay_cost_excluding(
 /// suspended cost cursor (`parent`) retains the unpaid component and is the
 /// continuation that retries it after the bonus lands. A payment with neither
 /// cannot suspend, so it must not settle here — its preview stays conservative.
-fn settle_pre_spend_echoes(
+pub(super) fn settle_pre_spend_echoes(
     state: &mut GameState,
     player: PlayerId,
     events: &[GameEvent],

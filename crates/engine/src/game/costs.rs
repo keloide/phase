@@ -1115,10 +1115,14 @@ fn pay_ability_cost_inner(
                         // already owns this component and every later component.
                         // Never copy that suffix into the generic effect
                         // continuation: it would retry a paid prefix or let the
-                        // rider run before the unpaid cost is settled.
+                        // rider run before the unpaid cost is settled. A
+                        // pre-spend echo (CR 605.4a) parks the same ownership in
+                        // `pending_triggered_mana_resume`, so the composite must
+                        // not also hand its suffix to the generic queue.
                         if matches!(scope, PaymentScope::Resolution { .. })
                             && (mana_ability_cost_payment_is_paused(state)
-                                || state.pending_deferred_life_cost_resume.is_some())
+                                || state.pending_deferred_life_cost_resume.is_some()
+                                || state.pending_triggered_mana_resume.is_some())
                         {
                             return Ok(PaymentOutcome::Paused {
                                 remaining_cost: None,

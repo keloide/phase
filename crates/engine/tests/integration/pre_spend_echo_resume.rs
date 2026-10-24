@@ -21,13 +21,19 @@ use engine::game::planechase::{can_roll_planar_die, planar_die_roll_cost};
 use engine::game::scenario::{GameRunner, GameScenario, P0};
 use engine::game::triggers::process_triggers;
 use engine::game::zones::{create_object, move_to_zone};
+use engine::types::ability::{
+    AbilityCost, AdditionalCost, Effect, QuantityExpr, SacrificeCost, TargetFilter, TypeFilter,
+    TypedFilter,
+};
 use engine::types::actions::{GameAction, ResolutionOptionalPaymentChoice};
 use engine::types::card_type::CoreType;
 use engine::types::events::GameEvent;
 use engine::types::format::GameFormat;
-use engine::types::game_state::{CastPaymentMode, ManaChoice, ManaChoicePrompt, WaitingFor};
+use engine::types::game_state::{
+    CastPaymentMode, ManaChoice, ManaChoicePrompt, PayCostKind, StackEntryKind, WaitingFor,
+};
 use engine::types::identifiers::{CardId, ObjectId};
-use engine::types::mana::{ManaCost, ManaType, ManaUnit};
+use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
 
@@ -37,6 +43,7 @@ const COAL_GOLEM_ORACLE: &str = "{3}, Sacrifice ~: Add {R}{R}{R}.";
 const MANABARBS_ORACLE: &str =
     "Whenever a player taps a land for mana, this enchantment deals 1 damage to that player.";
 const DIGSITE_ORACLE: &str = "Sacrifice this creature: Exile up to four target cards from a single graveyard. Activate only as a sorcery.\nWhen this creature dies, you may pay {4}. If you do, discover 4.";
+const MIARA_ORACLE: &str = "Whenever Miara or another Elf you control dies, you may pay {1} and 1 life. If you do, draw a card.\nPartner (You can have two commanders if both have partner.)";
 
 fn floating_colorless(count: usize) -> Vec<ManaUnit> {
     (0..count)
@@ -234,6 +241,100 @@ fn nested_mana_sub_cost_settles_echo_before_spending_parent_cost() {
     );
 }
 
+/// CR 601.2g + CR 601.2h + CR 605.4a + CR 608.2d: a spell whose non-mana
+/// additional cost is deferred past the mana window pays that mana through the
+/// same pre-spend echo authority. Mirari's Wake plus one two-type land funds a
+/// {1}{G}{G} spell only with the owed bonus, so the deferred route must pause
+/// for the type choice before spending mana or committing the sacrifice, then
+/// finish the cast once the choice is answered.
+#[test]
+fn deferred_sacrifice_spell_settles_echo_before_spending_mana() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_enchantment_from_oracle(P0, "Mirari's Wake", MIRARI_ECHO_ORACLE);
+    scenario.add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE);
+    let fodder = scenario.add_creature(P0, "Echo Fodder", 1, 1).id();
+    let spell = scenario
+        .add_spell_to_hand(P0, "Deferred Echo Spell", true)
+        .with_mana_cost(ManaCost::Cost {
+            shards: vec![ManaCostShard::Green, ManaCostShard::Green],
+            generic: 1,
+        })
+        .with_additional_cost(AdditionalCost::Required(AbilityCost::Sacrifice(
+            SacrificeCost::count(
+                TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
+                1,
+            ),
+        )))
+        .with_ability(Effect::GainLife {
+            amount: QuantityExpr::Fixed { value: 1 },
+            player: TargetFilter::Controller,
+        })
+        .id();
+    let mut runner = scenario.build();
+    let spell_card = runner.state().objects[&spell].card_id;
+
+    runner
+        .act(GameAction::CastSpell {
+            object_id: spell,
+            card_id: spell_card,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("the bonus-dependent deferred cast must be announced");
+    match runner.state().waiting_for.clone() {
+        WaitingFor::PayCost {
+            kind: PayCostKind::Sacrifice,
+            choices,
+            ..
+        } => assert!(
+            choices.contains(&fodder),
+            "the fodder creature must be eligible for the deferred sacrifice"
+        ),
+        other => panic!("expected the deferred sacrifice choice, got {other:?}"),
+    }
+
+    runner
+        .act(GameAction::SelectCards {
+            cards: vec![fodder],
+        })
+        .expect("the deferred sacrifice selection must reach the mana payment");
+    assert_single_color_echo_choice(&runner, &[ManaType::Green, ManaType::Blue]);
+    assert!(
+        runner.state().battlefield.contains(&fodder),
+        "the sacrifice must not be committed before the echo choice settles"
+    );
+    assert!(
+        runner
+            .state()
+            .stack
+            .iter()
+            .any(|entry| matches!(entry.kind, StackEntryKind::Spell { .. })),
+        "the spell being cast remains on the stack while its echo choice is pending"
+    );
+
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Green),
+            count: 1,
+        })
+        .expect("answering the echo must finish the deferred payment");
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "the cast completes to priority after the echo choice"
+    );
+    assert_eq!(
+        runner.state().objects[&fodder].zone,
+        Zone::Graveyard,
+        "the deferred sacrifice commits once the mana is paid"
+    );
+    assert_eq!(
+        runner.state().objects[&spell].zone,
+        Zone::Stack,
+        "the paid spell reaches the stack"
+    );
+}
+
 /// CR 118.12 + CR 605.3b + CR 616.1: Digsite Conservator's dies trigger offers
 /// "you may pay {4}". With one floating colorless, Mirari's Wake, and one
 /// untapped Simic Growth Chamber the live payment is affordable only because
@@ -330,6 +431,136 @@ fn resolution_pay_cost_bonus_dependent_payment_pauses_for_echo() {
         runner.state().objects[&conservator].zone,
         Zone::Graveyard,
         "the dies trigger's source stays in the graveyard through the payment"
+    );
+}
+
+/// CR 118.12 + CR 605.3b + CR 616.1 + CR 608.2d: Miara's dies trigger is a
+/// resolution-time `PayCost` whose cost is the composite `{1}` and 1 life. The
+/// mana component is funded by a two-type land whose Mirari's Wake echo is
+/// choice-owing, so payment pauses inside the composite. The typed
+/// `EffectPayCost` root owns the complete unpaid suffix; the resumed composite
+/// must pay the printed one life exactly once, never a generic continuation on
+/// top of it (regression: that double charge cost 2 life for the printed 1).
+#[test]
+fn miara_composite_echo_pays_life_once_through_typed_root() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_enchantment_from_oracle(P0, "Mirari's Wake", MIRARI_ECHO_ORACLE);
+    scenario.add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE);
+    scenario.with_library_top(P0, &["Miara Draw"]);
+    let miara = scenario
+        .add_creature_from_oracle(P0, "Miara, Thorn of the Glade", 1, 2, MIARA_ORACLE)
+        .id();
+    let mut runner = scenario.build();
+    let life_before = runner.state().players[P0.0 as usize].life;
+    let library_before = runner.state().players[P0.0 as usize].library.len();
+
+    // Miara's own death matches the trigger's `SelfRef` disjunct, so the
+    // ordinary zone pipeline and trigger scan are the whole production path.
+    let mut events = Vec::new();
+    move_to_zone(runner.state_mut(), miara, Zone::Graveyard, &mut events);
+    process_triggers(runner.state_mut(), &events);
+
+    let mut offered = false;
+    for _ in 0..20 {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::ResolutionOptionalPaymentChoice { .. }
+            | WaitingFor::OptionalEffectChoice { .. } => {
+                offered = true;
+                break;
+            }
+            WaitingFor::Priority { .. } => {
+                runner
+                    .act(GameAction::PassPriority)
+                    .expect("priority passes resolve Miara's dies trigger");
+            }
+            other => panic!("unexpected state while resolving Miara's trigger: {other:?}"),
+        }
+    }
+    assert!(
+        offered,
+        "Miara's trigger must offer its optional \"{{1}} and 1 life\" payment"
+    );
+
+    match runner.state().waiting_for.clone() {
+        WaitingFor::ResolutionOptionalPaymentChoice { .. } => {
+            runner
+                .act(GameAction::ChooseResolutionOptionalPaymentBranch {
+                    choice: ResolutionOptionalPaymentChoice::Pay { index: 0 },
+                })
+                .expect("the pay branch must resolve into the echo pause");
+        }
+        WaitingFor::OptionalEffectChoice { .. } => {
+            runner
+                .act(GameAction::DecideOptionalEffect { accept: true })
+                .expect("accepting the optional payment must resolve into the echo pause");
+        }
+        other => unreachable!("the loop established a payment prompt, got {other:?}"),
+    }
+    assert_single_color_echo_choice(&runner, &[ManaType::Green, ManaType::Blue]);
+    assert_eq!(
+        runner.state().players[P0.0 as usize].life,
+        life_before,
+        "the composite's life component waits for the echo choice"
+    );
+
+    let resumed = runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Blue),
+            count: 1,
+        })
+        .expect("answering the echo resumes the composite payment");
+
+    assert_eq!(
+        runner.state().players[P0.0 as usize].life,
+        life_before - 1,
+        "the printed 1 life is paid exactly once by the resumed composite"
+    );
+    assert_eq!(
+        runner.state().players[P0.0 as usize].library.len(),
+        library_before - 1,
+        "the conditional rider consumes exactly one library card"
+    );
+    assert_eq!(
+        resumed
+            .events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                GameEvent::CardDrawn { player_id, .. } if *player_id == P0
+            ))
+            .count(),
+        1,
+        "the \"If you do\" rider draws exactly once"
+    );
+    assert_eq!(
+        runner.state().players[P0.0 as usize].mana_pool.total(),
+        2,
+        "base {{G}}{{U}} plus the chosen bonus is three mana; the printed {{1}} spends one"
+    );
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::Priority { player: P0 }
+        ),
+        "the completed trigger restores priority to its controller"
+    );
+    assert!(
+        runner.state().stack.is_empty(),
+        "the trigger leaves the stack after its payment completes"
+    );
+    assert!(
+        !runner.state().withholds_priority(),
+        "no payment or continuation carrier survives the completed payment"
+    );
+    assert!(
+        !runner.state().cost_payment_failed_flag,
+        "the resumed composite payment must not fall through to the failure flag"
+    );
+    assert_eq!(
+        runner.state().objects[&miara].zone,
+        Zone::Graveyard,
+        "Miara remains in the graveyard through her own trigger"
     );
 }
 
