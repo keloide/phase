@@ -21299,21 +21299,17 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
     if payable_from_state(simulated) {
         return true;
     }
-    // CR 605.4a + CR 608.2d: both a choice-owing echo and a deterministic
-    // delayed bonus reach the pool through the pre-spend settlement, which
-    // needs the live payment's resumable root. A rootless live payment
-    // (`pay_unless_cost`, Room unlock) cannot settle either, so its preview
-    // must stay at the real pool — counting the bonus would offer an action the
-    // live payment then fails.
-    if !matches!(options.paused, PausedManaPayment::Resumable) {
-        return false;
-    }
-    // The collector applies deterministic delayed bonuses (a fixed `{R}` or a
-    // single-type echo) to the disposable pool and returns only the firings
-    // that owe a type choice; re-check the pool before the choice search.
-    let firings = super::triggers::echo_bonus_firings_for_preview(simulated, &tap_events);
-    if payable_from_state(simulated) {
+    // CR 605.4a + CR 608.2d: the pre-spend settlement resolves deterministic
+    // delayed bonuses without needing a continuation. Choice-owing firings need
+    // one, so a rootless preview (`pay_unless_cost`, Room unlock) may count the
+    // bonus only when nothing in the batch still owes an interaction.
+    let settlement = super::triggers::settle_echo_bonuses_for_preview(simulated, &tap_events);
+    let resumable = matches!(options.paused, PausedManaPayment::Resumable);
+    if payable_from_state(simulated) && (resumable || settlement.is_choice_free()) {
         return true;
+    }
+    if !resumable {
+        return false;
     }
     // CR 702.51a + CR 702.126a + CR 702.66a + CR 701.67a: convoke, improvise,
     // delve, and waterbend pay cost units with non-mana resources, so the
@@ -21334,7 +21330,7 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
         simulated,
         player,
         cost,
-        firings,
+        settlement.choice_owing,
         permissions,
         &payable_from_state,
         active_tap_payment_mode,
@@ -23018,24 +23014,23 @@ pub(super) fn can_pay_effect_mana_cost_after_auto_tap(
     if payable(&simulated) {
         return true;
     }
-    // CR 605.4a + CR 608.2d: the pre-spend settlement (choice-owing echo or
-    // deterministic delayed bonus) needs the live payment's resumable root; a
-    // rootless payment must keep the conservative real-pool check.
-    if !matches!(paused, PausedManaPayment::Resumable) {
-        return false;
-    }
-    // The collector applies deterministic delayed bonuses to the disposable
-    // pool and returns only the firings that owe a type choice; re-check the
-    // pool before the choice search.
-    let firings = super::triggers::echo_bonus_firings_for_preview(&mut simulated, &tap_events);
-    if payable(&simulated) {
+    // CR 605.4a + CR 608.2d: the pre-spend settlement resolves deterministic
+    // delayed bonuses without needing a continuation. Choice-owing firings need
+    // one, so a rootless preview may count the bonus only when nothing in the
+    // batch still owes an interaction.
+    let settlement = super::triggers::settle_echo_bonuses_for_preview(&mut simulated, &tap_events);
+    let resumable = matches!(paused, PausedManaPayment::Resumable);
+    if payable(&simulated) && (resumable || settlement.is_choice_free()) {
         return true;
+    }
+    if !resumable {
+        return false;
     }
     echo_bonus_preview_can_pay(
         &simulated,
         player,
         cost,
-        firings,
+        settlement.choice_owing,
         permissions,
         &payable,
         // Effect-time payments have no convoke/improvise/delve/waterbend
@@ -23869,24 +23864,41 @@ fn pay_non_cast_mana_cost(
     // continuation root (companion, effect, or special action). Without it the
     // preview admits a bonus-dependent payment the live path then fails before
     // offering the choice.
-    settle_pre_spend_echoes(state, player, events, events_before, resume, None)?;
-
+    //
+    // A rootless payment (`pay_unless_cost`, Room unlock) cannot suspend for a
+    // choice, but a delayed deterministic bonus owes none and is settled at the
+    // same affordability boundary. Skip the settlement when the pool already
+    // covers the cost, so genuinely choice-owing work stays at its normal
+    // release boundary instead of failing an otherwise payable payment.
     let permissions = {
         let mana_spend_permission =
             player_mana_spend_permission_for_optional_spell(state, player, None);
         super::static_abilities::build_cost_permission_context(state, player, mana_spend_permission)
     };
-    {
-        let player_data = state
+    let pool_covers = |state: &GameState| -> bool {
+        state
             .players
             .iter()
             .find(|p| p.id == player)
-            .expect("player exists");
-        if !mana_payment::can_pay_for_spell(&player_data.mana_pool, cost, Some(&ctx), permissions) {
-            return Err(EngineError::ActionNotAllowed(
-                "Cannot pay mana cost".to_string(),
-            ));
-        }
+            .is_some_and(|player_data| {
+                mana_payment::can_pay_for_spell(
+                    &player_data.mana_pool,
+                    cost,
+                    Some(&ctx),
+                    permissions,
+                )
+            })
+    };
+    if resume.is_some() {
+        settle_pre_spend_echoes(state, player, events, events_before, resume, None)?;
+    } else if !pool_covers(state) {
+        super::triggers::settle_choice_free_delayed_mana(state, events, events_before)?;
+    }
+
+    if !pool_covers(state) {
+        return Err(EngineError::ActionNotAllowed(
+            "Cannot pay mana cost".to_string(),
+        ));
     }
 
     state.restamp_pool_pip_ids(player);

@@ -4098,34 +4098,17 @@ pub(super) fn resolve_tap_mana_triggers_inline(
     state.pending_taps_for_mana_overrides.clear();
 }
 
-/// CR 605.4a + CR 608.2d + CR 601.2g-h: preview helper for the synchronous
-/// payment affordability probe.
+/// CR 605.4a + CR 603.3b: collect the normal and delayed triggers of one mana
+/// frame and partition them through the one complete triggered-mana classifier.
 ///
-/// Deterministic delayed mana production — a fixed `{R}` (Molten Tide's "add an
-/// additional {R}") or a single-type `TriggerEventManaType` echo (Selesnya's
-/// "add one mana of any type that land produced" after a single-type tap) —
-/// owes no type choice, so it is resolved straight into the disposable preview
-/// `state` through the same inline triggered-mana authority the live payment
-/// uses, and the caller re-reads the pool. Only delayed deterministic contexts
-/// are applied here: battlefield deterministic triggers were already resolved
-/// by `resolve_tap_mana_triggers_inline`, so applying a normal one again would
-/// double the bonus.
-///
-/// Choice-owing firings are returned as one entry per owed echo firing in
-/// `events` (the Pass-1 `continue` shape), each entry the distinct bonus types
-/// that firing may choose among. Collection runs through the same
-/// normal-plus-delayed authority the live settlement uses, so delayed-generator
-/// echoes (Selesnya Loft Gardens) and multiple same-event firings (two Mirari's
-/// Wakes on one tap) are each reported — a unioned single-type list cannot
-/// distinguish one bonus from two. Only unrestricted echo bodies
-/// (`restrictions` empty) are reported: a restricted bonus cannot generally
-/// fund an arbitrary cost, so previews must not count it. Runs on disposable
-/// preview state only; previews stay choice-free (no prompt) while the live
-/// payment pauses for a real choice via the typed fixed-point continuation.
-pub(crate) fn echo_bonus_firings_for_preview(
+/// This is the single collection authority shared by the affordability preview,
+/// the resumable pre-spend settlement, and the rootless choice-free settlement.
+/// Ordinary observers are returned untouched so each caller can decide whether
+/// to defer them; a disposable preview simply drops them.
+fn collect_mana_frame_triggers(
     state: &mut GameState,
     events: &[GameEvent],
-) -> Vec<Vec<crate::types::mana::ManaType>> {
+) -> (Vec<AcceptedTriggeredMana>, Vec<PendingTriggerContext>) {
     super::layers::flush_layers(state);
     super::trigger_index::ensure_ready(state);
     let seed = collect_triggers_for_batch(state, events);
@@ -4135,87 +4118,309 @@ pub(crate) fn echo_bonus_firings_for_preview(
         events,
         DelayedTriggerEventScope::Any,
     );
-    let (accepted, _ordinary) = partition_collected_mana_frame_contexts(state, collected.contexts);
-    let mut firings: Vec<Vec<crate::types::mana::ManaType>> = Vec::new();
+    partition_collected_mana_frame_contexts(state, collected.contexts)
+}
+
+/// CR 605.4a + CR 608.2d: what one accepted triggered-mana firing may do at a
+/// pre-spend settlement boundary.
+///
+/// This classification is the single authority shared by the affordability
+/// preview and the live rootless settlement, so "the preview counts it" and
+/// "the payment can resolve it without a continuation" cannot drift apart.
+pub(crate) enum ChoiceFreeManaFiring {
+    /// A delayed, mandatory, unrestricted production that owes no type choice:
+    /// a fixed, colorless, mixed, or single-type `TriggerEventManaType` echo.
+    ChoiceFreeDelayed,
+    /// An unrestricted echo that owes a type choice. `options` are the distinct
+    /// types it may produce (empty when the firing event carries no types).
+    ChoiceOwing {
+        options: Vec<crate::types::mana::ManaType>,
+    },
+    /// A restricted, optional, stored-choice, or non-delayed production. A
+    /// rootless boundary must not resolve it.
+    Unresolved,
+}
+
+/// CR 106.4 + CR 605.4a + CR 608.2d: classify one accepted triggered-mana
+/// context for a pre-spend settlement.
+///
+/// Only a delayed deterministic production is settled without a prompt.
+/// Battlefield deterministic triggers were already resolved by
+/// `resolve_tap_mana_triggers_inline`, so applying a normal one again would
+/// double the bonus. `AnyOneColor` / `AnyCombination` / the `ChoiceAmong*`
+/// shapes and a multi-type `TriggerEventManaType` echo choose a type;
+/// `ChosenColor` / `NotedType` read a stored choice and are left out because an
+/// unset readback can surface a prompt. A restricted bonus cannot generally
+/// fund an arbitrary cost, so it is never counted optimistically.
+fn classify_choice_free_mana_firing(view: &AcceptedTriggeredMana) -> ChoiceFreeManaFiring {
+    // CR 106.12a: the "is tapped for mana" firing event carries the produced
+    // set the echo reads.
+    let trigger_event = view
+        .context
+        .pending
+        .trigger_event
+        .as_ref()
+        .or_else(|| view.context.trigger_events.first());
+    let Some(trigger_event) = trigger_event else {
+        return ChoiceFreeManaFiring::Unresolved;
+    };
+    let restricted = match &view.context.pending.ability.effect {
+        Effect::Mana { restrictions, .. } => !restrictions.is_empty(),
+        _ => true,
+    };
+    if restricted {
+        return ChoiceFreeManaFiring::Unresolved;
+    }
+    if super::mana_abilities::echo_body_owes_type_choice(
+        &view.context.pending.ability,
+        Some(trigger_event),
+    ) {
+        let mut options = super::mana_abilities::echo_distinct_types(trigger_event);
+        options.sort();
+        options.dedup();
+        return ChoiceFreeManaFiring::ChoiceOwing { options };
+    }
+    let deterministic_production = match &view.context.pending.ability.effect {
+        Effect::Mana {
+            produced:
+                crate::types::ability::ManaProduction::Fixed { .. }
+                | crate::types::ability::ManaProduction::Colorless { .. }
+                | crate::types::ability::ManaProduction::Mixed { .. },
+            ..
+        } => true,
+        Effect::Mana {
+            produced: crate::types::ability::ManaProduction::TriggerEventManaType,
+            ..
+        } => super::mana_abilities::echo_distinct_types(trigger_event).len() == 1,
+        _ => false,
+    };
+    if deterministic_production
+        && matches!(
+            view.context.dispatch_origin,
+            PendingTriggerDispatchOrigin::Delayed
+        )
+        && !view.context.pending.ability.optional
+        && view.context.pending.ability.optional_for.is_none()
+    {
+        ChoiceFreeManaFiring::ChoiceFreeDelayed
+    } else {
+        ChoiceFreeManaFiring::Unresolved
+    }
+}
+
+/// CR 605.4a + CR 608.2d + CR 601.2g-h: result of applying every choice-free
+/// firing in one collected mana frame.
+pub(crate) struct ChoiceFreeManaSettlement {
+    /// Number of delayed choice-free firings resolved into the pool.
+    pub(crate) settled: usize,
+    /// One entry per choice-owing echo firing, each entry the distinct types
+    /// that firing may choose among (empty when the event carries none).
+    pub(crate) choice_owing: Vec<Vec<crate::types::mana::ManaType>>,
+    /// Number of accepted firings this boundary must not resolve.
+    pub(crate) unresolved: usize,
+}
+
+impl ChoiceFreeManaSettlement {
+    /// True when every accepted firing either resolved inline or did not need
+    /// this boundary at all. A rootless payment may only count such a frame.
+    pub(crate) fn is_choice_free(&self) -> bool {
+        self.choice_owing.is_empty() && self.unresolved == 0
+    }
+}
+
+/// CR 605.4a + CR 608.2d: resolve every choice-free delayed firing in
+/// `accepted` into `state`, and report the work that still needs a player
+/// interaction.
+///
+/// Resolution goes through `resolve_triggered_mana_ability_inline`, the same
+/// inline triggered-mana authority the battlefield tap pass uses, so a
+/// deterministic bonus lands in the pool exactly once.
+fn settle_choice_free_mana_firings(
+    state: &mut GameState,
+    accepted: Vec<AcceptedTriggeredMana>,
+) -> ChoiceFreeManaSettlement {
+    let mut outcome = ChoiceFreeManaSettlement {
+        settled: 0,
+        choice_owing: Vec::new(),
+        unresolved: 0,
+    };
     for view in accepted {
-        // CR 106.12a: the "is tapped for mana" firing event carries the
-        // produced set the echo reads.
-        let trigger_event = view
-            .context
-            .pending
-            .trigger_event
-            .as_ref()
-            .or_else(|| view.context.trigger_events.first());
-        let Some(trigger_event) = trigger_event else {
-            continue;
-        };
-        // CR 106.4: only an unrestricted echo bonus is generally spendable;
-        // a restricted one (e.g. spend-only-on-X) cannot be counted
-        // optimistically for an arbitrary cost.
-        let restricted = match &view.context.pending.ability.effect {
-            Effect::Mana { restrictions, .. } => !restrictions.is_empty(),
-            _ => true,
-        };
-        if restricted {
-            continue;
-        }
-        if super::mana_abilities::echo_body_owes_type_choice(
-            &view.context.pending.ability,
-            Some(trigger_event),
-        ) {
-            let mut options = super::mana_abilities::echo_distinct_types(trigger_event);
-            options.sort();
-            options.dedup();
-            if !options.is_empty() {
-                firings.push(options);
+        match classify_choice_free_mana_firing(&view) {
+            ChoiceFreeManaFiring::ChoiceFreeDelayed => {
+                let trigger_event = view
+                    .context
+                    .pending
+                    .trigger_event
+                    .as_ref()
+                    .or_else(|| view.context.trigger_events.first())
+                    .cloned();
+                let Some(trigger_event) = trigger_event else {
+                    outcome.unresolved += 1;
+                    continue;
+                };
+                let mut scratch = Vec::new();
+                super::mana_abilities::resolve_triggered_mana_ability_inline(
+                    state,
+                    &view.context.pending.ability,
+                    Some(&trigger_event),
+                    &mut scratch,
+                    None,
+                );
+                outcome.settled += 1;
             }
-            continue;
-        }
-        // CR 106.4 + CR 605.4a: only a production that owes no type choice is
-        // resolved inline. `AnyOneColor` / `AnyCombination` / the
-        // `ChoiceAmong*` shapes and a multi-type `TriggerEventManaType` echo
-        // choose a type; fixed, colorless, mixed, and a single-type echo do
-        // not. `ChosenColor` / `NotedType` read a stored choice and are left
-        // out: the preview does not need that class, and an unset readback can
-        // surface a prompt.
-        let deterministic_production = match &view.context.pending.ability.effect {
-            Effect::Mana {
-                produced:
-                    crate::types::ability::ManaProduction::Fixed { .. }
-                    | crate::types::ability::ManaProduction::Colorless { .. }
-                    | crate::types::ability::ManaProduction::Mixed { .. },
-                ..
-            } => true,
-            Effect::Mana {
-                produced: crate::types::ability::ManaProduction::TriggerEventManaType,
-                ..
-            } => super::mana_abilities::echo_distinct_types(trigger_event).len() == 1,
-            _ => false,
-        };
-        // CR 605.4a: a deterministic delayed bonus owes no choice, so the
-        // optional-pause machinery cannot strand it. Resolve it inline into the
-        // disposable preview. `optional`/`optional_for` bodies are left out:
-        // the preview cannot answer a prompt, and a mandatory fixed/single-type
-        // echo is the class this preview exists for.
-        if deterministic_production
-            && matches!(
-                view.context.dispatch_origin,
-                PendingTriggerDispatchOrigin::Delayed
-            )
-            && !view.context.pending.ability.optional
-            && view.context.pending.ability.optional_for.is_none()
-        {
-            let mut scratch = Vec::new();
-            super::mana_abilities::resolve_triggered_mana_ability_inline(
-                state,
-                &view.context.pending.ability,
-                Some(trigger_event),
-                &mut scratch,
-                None,
-            );
+            ChoiceFreeManaFiring::ChoiceOwing { options } => outcome.choice_owing.push(options),
+            ChoiceFreeManaFiring::Unresolved => outcome.unresolved += 1,
         }
     }
-    firings
+    outcome
+}
+
+/// CR 605.4a + CR 608.2d + CR 601.2g-h: preview helper for the synchronous
+/// payment affordability probe.
+///
+/// Deterministic delayed mana production — a fixed `{R}` (Molten Tide's "add an
+/// additional {R}") or a single-type `TriggerEventManaType` echo (Selesnya's
+/// "add one mana of any type that land produced" after a single-type tap) —
+/// owes no type choice, so it is resolved straight into the disposable preview
+/// `state` through the same inline triggered-mana authority the live payment
+/// uses, and the caller re-reads the pool. Only delayed deterministic contexts
+/// are applied: battlefield deterministic triggers were already resolved by
+/// `resolve_tap_mana_triggers_inline`.
+///
+/// Choice-owing firings are reported as one entry per owed echo firing, each
+/// entry the distinct bonus types that firing may choose among. Collection runs
+/// through the same normal-plus-delayed authority the live settlement uses, so
+/// delayed-generator echoes (Selesnya Loft Gardens) and multiple same-event
+/// firings (two Mirari's Wakes on one tap) are each reported — a unioned
+/// single-type list cannot distinguish one bonus from two. Runs on disposable
+/// preview state only; previews stay choice-free (no prompt) while the live
+/// payment pauses for a real choice via the typed fixed-point continuation.
+pub(crate) fn settle_echo_bonuses_for_preview(
+    state: &mut GameState,
+    events: &[GameEvent],
+) -> ChoiceFreeManaSettlement {
+    let (accepted, _ordinary) = collect_mana_frame_triggers(state, events);
+    let mut settlement = settle_choice_free_mana_firings(state, accepted);
+    // The preview only reasons about firings that can actually contribute a
+    // bonus; an echo event with no produced types is still `unresolved` for the
+    // live rootless boundary, so keep it in the count rather than dropping it.
+    settlement
+        .choice_owing
+        .retain(|options| !options.is_empty());
+    settlement
+}
+
+/// CR 605.4a + CR 608.2d: how a rootless payment batch classifies against the
+/// choice-free delayed settlement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChoiceFreeDelayedManaProbe {
+    /// No choice-free delayed firing is present; leave the batch untouched.
+    Absent,
+    /// At least one choice-free delayed firing is present and every accepted
+    /// firing is choice-free.
+    Settleable,
+    /// A choice-free delayed firing is present, but another accepted firing
+    /// needs a player interaction. A rootless boundary must not resolve either.
+    Blocked,
+}
+
+/// CR 605.4a + CR 608.2d: probe a payment batch without mutating `state`.
+///
+/// Collection records constrained admissions (once-per-turn ledgers) at match
+/// time, so a probe that runs on the live state would either strand an admitted
+/// context or force a deferral the caller did not ask for. The probe therefore
+/// runs on a clone and only reports whether the live settlement is safe.
+pub(crate) fn probe_choice_free_delayed_mana(
+    state: &GameState,
+    events: &[GameEvent],
+) -> ChoiceFreeDelayedManaProbe {
+    let mut probe = state.clone();
+    let (accepted, _ordinary) = collect_mana_frame_triggers(&mut probe, events);
+    let mut choice_free = 0usize;
+    let mut requires_choice = 0usize;
+    for view in &accepted {
+        match classify_choice_free_mana_firing(view) {
+            ChoiceFreeManaFiring::ChoiceFreeDelayed => choice_free += 1,
+            ChoiceFreeManaFiring::ChoiceOwing { .. } | ChoiceFreeManaFiring::Unresolved => {
+                requires_choice += 1;
+            }
+        }
+    }
+    match (choice_free, requires_choice) {
+        (0, _) => ChoiceFreeDelayedManaProbe::Absent,
+        (_, 0) => ChoiceFreeDelayedManaProbe::Settleable,
+        _ => ChoiceFreeDelayedManaProbe::Blocked,
+    }
+}
+
+/// CR 605.4a + CR 608.2d + CR 603.3b: settle delayed choice-free mana for a
+/// payment that cannot suspend for a player interaction.
+///
+/// Only a batch whose accepted firings are all choice-free is resolved. A
+/// choice-owing or otherwise unresolved accepted firing makes the whole batch
+/// conservative: the payment reports that it needs a choice, and the action
+/// boundary restores the pre-payment state. Ordinary observers are deferred
+/// (never discarded) and the batch is claimed, exactly as the resumable
+/// settlement does.
+pub(crate) fn settle_choice_free_delayed_mana(
+    state: &mut GameState,
+    events: &[GameEvent],
+    events_before: usize,
+) -> Result<(), super::engine::EngineError> {
+    if events_before >= events.len() {
+        return Ok(());
+    }
+    let raw_batch = &events[events_before..];
+    match probe_choice_free_delayed_mana(state, raw_batch) {
+        ChoiceFreeDelayedManaProbe::Absent => return Ok(()),
+        ChoiceFreeDelayedManaProbe::Blocked => {
+            return Err(super::engine::EngineError::InvalidAction(
+                "Mana payment is awaiting a mana choice".to_string(),
+            ));
+        }
+        ChoiceFreeDelayedManaProbe::Settleable => {}
+    }
+    let (accepted, ordinary) = collect_mana_frame_triggers(state, raw_batch);
+    let settlement = settle_choice_free_mana_firings(state, accepted);
+    debug_assert!(
+        settlement.is_choice_free(),
+        "a probe reported a choice-free mana frame, but the live settlement found \
+         choice-owing work: settled={} choice_owing={} unresolved={}",
+        settlement.settled,
+        settlement.choice_owing.len(),
+        settlement.unresolved,
+    );
+    defer_rejected_mana_frame_contexts(state, ordinary);
+    claim_mana_frame_batch(state, events, events_before);
+    // CR 118.12 + CR 605.3b + CR 616.1: a replacement choice surfaced by the
+    // settlement's own resolution is an in-progress payment this rootless
+    // boundary cannot resume.
+    if super::casting::mana_ability_cost_payment_is_paused(state) {
+        return Err(super::engine::EngineError::InvalidAction(
+            "Mana payment is awaiting a replacement choice".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// CR 603.3b: claim every live occurrence in one payment's own auto-tap batch,
+/// by full-action index, so the post-action pipeline cannot collect it twice.
+fn claim_mana_frame_batch(state: &mut GameState, events: &[GameEvent], events_before: usize) {
+    if events_before >= events.len() {
+        return;
+    }
+    let occurrences = (events_before..events.len())
+        .map(|index| ConsumedTriggerEventOccurrence {
+            event: events[index].clone(),
+            occurrence: trigger_event_occurrence(events, index),
+            scope: ConsumedTriggerEventScope::AllCollectors,
+        })
+        .collect();
+    resolve_and_apply_trigger_collection(
+        state,
+        ResolvedTriggerCollection::ConsumeBeforePriority { occurrences },
+    )
+    .expect("pre-spend trigger settlement consumed-before-priority journal cause must be live");
 }
 
 /// CR 605.4a + CR 608.2d + CR 601.2g-h + CR 603.3: pre-spend echo settlement
@@ -4242,18 +4447,7 @@ pub(crate) fn settle_skipped_echo_before_spend(
     // Only after the combined collection result is durably owned: claim every
     // exact live occurrence this payment is responsible for, by full-action
     // index, so the post-action pipeline cannot collect them a second time.
-    let occurrences = (events_before..events.len())
-        .map(|index| ConsumedTriggerEventOccurrence {
-            event: events[index].clone(),
-            occurrence: trigger_event_occurrence(events, index),
-            scope: ConsumedTriggerEventScope::AllCollectors,
-        })
-        .collect();
-    resolve_and_apply_trigger_collection(
-        state,
-        ResolvedTriggerCollection::ConsumeBeforePriority { occurrences },
-    )
-    .expect("pre-spend echo settlement consumed-before-priority journal cause must be live");
+    claim_mana_frame_batch(state, events, events_before);
     pause
 }
 

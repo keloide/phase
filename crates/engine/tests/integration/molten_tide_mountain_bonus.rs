@@ -6,13 +6,19 @@
 //! the bonus into the tapper's (= controller's) pool, fires repeatedly, and
 //! expires at end of turn.
 
+use engine::game::combat::{
+    attack_tax_is_affordable, pending_combat_tax_is_affordable, AttackTarget,
+};
 use engine::game::mana_abilities::activate_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::triggers::{check_delayed_triggers, process_triggers};
 use engine::game::turns::execute_cleanup;
+use engine::parser::oracle_static::parse_static_line;
 use engine::types::actions::GameAction;
 use engine::types::events::{GameEvent, ManaTapState};
-use engine::types::game_state::{CastPaymentMode, ManaAbilityResume, StackEntryKind, WaitingFor};
+use engine::types::game_state::{
+    CastPaymentMode, CombatTaxContext, ManaAbilityResume, StackEntryKind, WaitingFor,
+};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
@@ -306,5 +312,202 @@ fn molten_tide_fixed_bonus_funds_auto_payment_without_prompt() {
     assert!(
         runner.state().objects[&mountain].tapped,
         "the Mountain paid the cost"
+    );
+}
+
+/// Ghostly Prison's combat-tax static, carried by a 2/2 creature shell so the
+/// fixture has a live permanent. Only its tax behavior is under test.
+fn add_ghostly_prison(scenario: &mut GameScenario, player: PlayerId) -> ObjectId {
+    let def = parse_static_line(
+        "Creatures can't attack you unless their controller pays {2} for each creature they control that's attacking you.",
+    )
+    .expect("Ghostly Prison should parse");
+    let mut builder = scenario.add_creature(player, "Ghostly Prison", 2, 2);
+    builder.with_static_definition(def);
+    builder.id()
+}
+
+struct CombatTaxFixture {
+    runner: GameRunner,
+    attacker: ObjectId,
+    mountain: ObjectId,
+}
+
+/// One untapped Mountain, one attacker, and Ghostly Prison's {2} tax. The
+/// `with_tide` variant resolves Molten Tide through the real cast pipeline
+/// (registering its delayed trigger) from a synthetic floating {R}, then empties
+/// every pool, so the only mana left is the Mountain and its delayed bonus.
+fn combat_tax_fixture(with_tide: bool) -> CombatTaxFixture {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let tide = with_tide.then(|| {
+        scenario
+            .add_spell_to_hand_from_oracle(P0, "Molten Tide", true, MOLTEN_TIDE_ORACLE)
+            .id()
+    });
+    let attacker = scenario.add_creature(P0, "Grizzly Bears", 2, 2).id();
+    let mountain = scenario.add_basic_land(P0, ManaColor::Red);
+    add_ghostly_prison(&mut scenario, P1);
+    if with_tide {
+        // Fund Molten Tide itself without consuming the Mountain under test.
+        scenario.with_mana_pool(
+            P0,
+            vec![ManaUnit::new(ManaType::Red, ObjectId(9999), false, vec![])],
+        );
+    }
+    let mut runner = scenario.build();
+    if let Some(tide) = tide {
+        runner.cast(tide).resolve();
+        assert_eq!(
+            runner.state().delayed_triggers.len(),
+            1,
+            "Molten Tide must install its delayed trigger"
+        );
+        clear_pools(&mut runner);
+    }
+    CombatTaxFixture {
+        runner,
+        attacker,
+        mountain,
+    }
+}
+
+/// CR 508.1d + CR 508.1i-j + CR 605.4a + CR 608.2d: Molten Tide's mandatory
+/// fixed {R} owes no type choice, so the rootless combat-tax payment boundary
+/// (`PayCombatTax` -> `pay_unless_cost`, which cannot suspend) must settle it
+/// before the affordability check. One Mountain's base {R} plus the delayed {R}
+/// pays Ghostly Prison's {2}; accepting the tax commits the attack and the
+/// declaration continuation reaches its terminal priority state.
+#[test]
+fn molten_tide_fixed_bonus_funds_rootless_combat_tax_and_attack_commits() {
+    let CombatTaxFixture {
+        mut runner,
+        attacker,
+        mountain,
+    } = combat_tax_fixture(true);
+    let attacks = vec![(attacker, AttackTarget::Player(P1))];
+
+    // The preview the declaration solver consults must already see the bonus.
+    assert!(
+        attack_tax_is_affordable(runner.state(), &attacks),
+        "one Mountain's base {{R}} plus Molten Tide's delayed {{R}} must cover the {{2}} tax"
+    );
+
+    runner.pass_both_players();
+    runner
+        .act(GameAction::DeclareAttackers {
+            attacks: attacks.clone(),
+            bands: vec![],
+        })
+        .expect("the affordable taxed proposal must open CombatTaxPayment");
+
+    match &runner.state().waiting_for {
+        WaitingFor::CombatTaxPayment {
+            player,
+            context,
+            total_cost,
+            per_creature,
+            ..
+        } => {
+            assert_eq!(*player, P0, "the active player owes the tax");
+            assert!(matches!(context, CombatTaxContext::Attacking));
+            assert_eq!(total_cost.mana_value(), 2);
+            assert_eq!(per_creature.len(), 1);
+        }
+        other => panic!("expected CombatTaxPayment, got {other:?}"),
+    }
+    assert!(
+        pending_combat_tax_is_affordable(runner.state()),
+        "the live tax prompt's own affordability probe must count the delayed bonus"
+    );
+
+    runner
+        .act(GameAction::PayCombatTax { accept: true })
+        .expect("the delayed {R} must fund the rootless combat-tax payment");
+
+    let state = runner.state();
+    let combat = state
+        .combat
+        .as_ref()
+        .expect("combat state must exist once the tax is paid");
+    assert_eq!(combat.attackers.len(), 1, "the attack must commit");
+    assert!(
+        state.objects[&mountain].tapped,
+        "the Mountain (not a pre-floated pool) paid the tax"
+    );
+    assert_eq!(
+        red(&runner, P0),
+        0,
+        "base {{R}} + bonus {{R}} exactly pays {{2}}"
+    );
+    assert_eq!(
+        state.delayed_triggers.len(),
+        1,
+        "Molten Tide's multi-fire delayed trigger stays installed"
+    );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0),
+        "the declaration continuation must reach its terminal priority state; got {:?}",
+        state.waiting_for
+    );
+}
+
+/// CR 508.1d: the same-state control. Without Molten Tide the Mountain's base
+/// {R} cannot cover Ghostly Prison's {2}: the declaration preview reports the
+/// tax unaffordable, and accepting the prompt fails before anything is tapped or
+/// committed.
+#[test]
+fn mountain_alone_cannot_pay_the_same_combat_tax_without_molten_tide() {
+    let CombatTaxFixture {
+        mut runner,
+        attacker,
+        mountain,
+    } = combat_tax_fixture(false);
+    let attacks = vec![(attacker, AttackTarget::Player(P1))];
+
+    assert!(
+        !attack_tax_is_affordable(runner.state(), &attacks),
+        "one Mountain's base {{R}} alone cannot cover the {{2}} tax"
+    );
+
+    runner.pass_both_players();
+    runner
+        .act(GameAction::DeclareAttackers {
+            attacks,
+            bands: vec![],
+        })
+        .expect("a human taxed declaration still opens the tax prompt");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::CombatTaxPayment { .. }
+    ));
+    assert!(
+        !pending_combat_tax_is_affordable(runner.state()),
+        "the control prompt must stay unaffordable"
+    );
+
+    let error = runner
+        .act(GameAction::PayCombatTax { accept: true })
+        .expect_err("accepting an unaffordable tax must fail");
+    assert!(
+        format!("{error:?}").contains("Cannot pay mana cost"),
+        "unexpected rejection: {error:?}"
+    );
+    let state = runner.state();
+    assert!(
+        state
+            .combat
+            .as_ref()
+            .is_none_or(|combat| combat.attackers.is_empty()),
+        "a failed tax payment must not commit an attack"
+    );
+    assert!(
+        !state.objects[&mountain].tapped,
+        "a failed tax payment must not tap the Mountain"
+    );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::CombatTaxPayment { .. }),
+        "the failed payment must leave the tax prompt intact; got {:?}",
+        state.waiting_for
     );
 }

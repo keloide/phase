@@ -89,7 +89,7 @@ fn continue_declare_attackers_after_commit(
         return Ok(waiting_for);
     }
 
-    finish_declare_attackers(state, events, attacks.is_empty())
+    finish_declare_attackers(state, events, declaration_start, attacks.is_empty())
 }
 
 /// CR 508.1g–j + CR 701.43b: Snapshot each eligible ability occurrence before
@@ -352,15 +352,19 @@ fn process_declaration_triggers_with_delayed_phase(
 pub(super) fn finish_declare_attackers(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
+    declaration_start: usize,
     attacks_empty: bool,
 ) -> Result<WaitingFor, EngineError> {
     // CR 508.2: process the buffered declaration events together with any
     // `CreatureExerted` events from the exert sub-step. In the common (no-exert)
-    // path the buffer is empty and the per-action `events` slice carries the
-    // declaration events.
+    // path the buffer is empty and `events[declaration_start..]` carries the
+    // declaration events. The action buffer can also contain earlier
+    // micro-frame events — a taxed declaration pays its cost before committing,
+    // and that payment's tap events were already settled by the payment
+    // boundary — so the batch must start at `declaration_start`, not 0.
     let deferred = std::mem::take(&mut state.pending_attack_trigger_events);
     if deferred.is_empty() {
-        let trigger_events = events.clone();
+        let trigger_events = events[declaration_start.min(events.len())..].to_vec();
         if let Some(prompt) =
             process_declaration_triggers_with_delayed_phase(state, &trigger_events, events)
         {
