@@ -21300,14 +21300,15 @@ fn can_pay_mana_cost_after_auto_tap_with_context_and_cache(
         return true;
     }
     // CR 605.4a + CR 608.2d: the pre-spend settlement resolves deterministic
-    // delayed bonuses without needing a continuation. Choice-owing firings need
-    // one, so a rootless preview (`pay_unless_cost`, Room unlock) may count the
-    // bonus only when nothing in the batch still owes an interaction.
+    // delayed bonuses without needing a continuation. The live rootless
+    // boundary settles exactly the same choice-free firings and carries the
+    // rest to its release boundary, so a settled bonus is payable regardless of
+    // what else the frame owes.
     let settlement = super::triggers::settle_echo_bonuses_for_preview(simulated, &tap_events);
-    let resumable = matches!(options.paused, PausedManaPayment::Resumable);
-    if payable_from_state(simulated) && (resumable || settlement.is_choice_free()) {
+    if payable_from_state(simulated) {
         return true;
     }
+    let resumable = matches!(options.paused, PausedManaPayment::Resumable);
     if !resumable {
         return false;
     }
@@ -23015,14 +23016,15 @@ pub(super) fn can_pay_effect_mana_cost_after_auto_tap(
         return true;
     }
     // CR 605.4a + CR 608.2d: the pre-spend settlement resolves deterministic
-    // delayed bonuses without needing a continuation. Choice-owing firings need
-    // one, so a rootless preview may count the bonus only when nothing in the
-    // batch still owes an interaction.
+    // delayed bonuses without needing a continuation. The live rootless
+    // boundary settles exactly the same choice-free firings and carries the
+    // rest to its release boundary, so a settled bonus is payable regardless of
+    // what else the frame owes.
     let settlement = super::triggers::settle_echo_bonuses_for_preview(&mut simulated, &tap_events);
-    let resumable = matches!(paused, PausedManaPayment::Resumable);
-    if payable(&simulated) && (resumable || settlement.is_choice_free()) {
+    if payable(&simulated) {
         return true;
     }
+    let resumable = matches!(paused, PausedManaPayment::Resumable);
     if !resumable {
         return false;
     }

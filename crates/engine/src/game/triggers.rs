@@ -4216,16 +4216,10 @@ pub(crate) struct ChoiceFreeManaSettlement {
     /// One entry per choice-owing echo firing, each entry the distinct types
     /// that firing may choose among (empty when the event carries none).
     pub(crate) choice_owing: Vec<Vec<crate::types::mana::ManaType>>,
-    /// Number of accepted firings this boundary must not resolve.
-    pub(crate) unresolved: usize,
-}
-
-impl ChoiceFreeManaSettlement {
-    /// True when every accepted firing either resolved inline or did not need
-    /// this boundary at all. A rootless payment may only count such a frame.
-    pub(crate) fn is_choice_free(&self) -> bool {
-        self.choice_owing.is_empty() && self.unresolved == 0
-    }
+    /// Accepted firings this boundary must not resolve, in collection order.
+    /// A live rootless settlement carries them to the owner's release boundary
+    /// instead of dropping them; a disposable preview discards them.
+    pub(crate) carried: Vec<PendingTriggerContext>,
 }
 
 /// CR 605.4a + CR 608.2d: resolve every choice-free delayed firing in
@@ -4242,7 +4236,7 @@ fn settle_choice_free_mana_firings(
     let mut outcome = ChoiceFreeManaSettlement {
         settled: 0,
         choice_owing: Vec::new(),
-        unresolved: 0,
+        carried: Vec::new(),
     };
     for view in accepted {
         match classify_choice_free_mana_firing(&view) {
@@ -4255,7 +4249,7 @@ fn settle_choice_free_mana_firings(
                     .or_else(|| view.context.trigger_events.first())
                     .cloned();
                 let Some(trigger_event) = trigger_event else {
-                    outcome.unresolved += 1;
+                    outcome.carried.push(view.context);
                     continue;
                 };
                 let mut scratch = Vec::new();
@@ -4268,8 +4262,11 @@ fn settle_choice_free_mana_firings(
                 );
                 outcome.settled += 1;
             }
-            ChoiceFreeManaFiring::ChoiceOwing { options } => outcome.choice_owing.push(options),
-            ChoiceFreeManaFiring::Unresolved => outcome.unresolved += 1,
+            ChoiceFreeManaFiring::ChoiceOwing { options } => {
+                outcome.choice_owing.push(options);
+                outcome.carried.push(view.context);
+            }
+            ChoiceFreeManaFiring::Unresolved => outcome.carried.push(view.context),
         }
     }
     outcome
@@ -4302,66 +4299,29 @@ pub(crate) fn settle_echo_bonuses_for_preview(
     let (accepted, _ordinary) = collect_mana_frame_triggers(state, events);
     let mut settlement = settle_choice_free_mana_firings(state, accepted);
     // The preview only reasons about firings that can actually contribute a
-    // bonus; an echo event with no produced types is still `unresolved` for the
-    // live rootless boundary, so keep it in the count rather than dropping it.
+    // bonus; an echo event with no produced types is still carried by the live
+    // rootless boundary, so keep it in the count rather than dropping it.
     settlement
         .choice_owing
         .retain(|options| !options.is_empty());
     settlement
 }
 
-/// CR 605.4a + CR 608.2d: how a rootless payment batch classifies against the
-/// choice-free delayed settlement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChoiceFreeDelayedManaProbe {
-    /// No choice-free delayed firing is present; leave the batch untouched.
-    Absent,
-    /// At least one choice-free delayed firing is present and every accepted
-    /// firing is choice-free.
-    Settleable,
-    /// A choice-free delayed firing is present, but another accepted firing
-    /// needs a player interaction. A rootless boundary must not resolve either.
-    Blocked,
-}
-
-/// CR 605.4a + CR 608.2d: probe a payment batch without mutating `state`.
-///
-/// Collection records constrained admissions (once-per-turn ledgers) at match
-/// time, so a probe that runs on the live state would either strand an admitted
-/// context or force a deferral the caller did not ask for. The probe therefore
-/// runs on a clone and only reports whether the live settlement is safe.
-pub(crate) fn probe_choice_free_delayed_mana(
-    state: &GameState,
-    events: &[GameEvent],
-) -> ChoiceFreeDelayedManaProbe {
-    let mut probe = state.clone();
-    let (accepted, _ordinary) = collect_mana_frame_triggers(&mut probe, events);
-    let mut choice_free = 0usize;
-    let mut requires_choice = 0usize;
-    for view in &accepted {
-        match classify_choice_free_mana_firing(view) {
-            ChoiceFreeManaFiring::ChoiceFreeDelayed => choice_free += 1,
-            ChoiceFreeManaFiring::ChoiceOwing { .. } | ChoiceFreeManaFiring::Unresolved => {
-                requires_choice += 1;
-            }
-        }
-    }
-    match (choice_free, requires_choice) {
-        (0, _) => ChoiceFreeDelayedManaProbe::Absent,
-        (_, 0) => ChoiceFreeDelayedManaProbe::Settleable,
-        _ => ChoiceFreeDelayedManaProbe::Blocked,
-    }
-}
-
 /// CR 605.4a + CR 608.2d + CR 603.3b: settle delayed choice-free mana for a
 /// payment that cannot suspend for a player interaction.
 ///
-/// Only a batch whose accepted firings are all choice-free is resolved. A
-/// choice-owing or otherwise unresolved accepted firing leaves the whole batch
-/// untouched: a rootless boundary must not partially settle it, and the caller's
-/// pool check then decides whether the base pool suffices. Ordinary observers
-/// are deferred (never discarded) and the batch is claimed, exactly as the
-/// resumable settlement does.
+/// Every choice-free delayed firing in the frame is resolved into the pool,
+/// whether or not other firings in the same frame owe a choice. A firing this
+/// boundary cannot resolve — a choice-owing echo or a restricted/optional
+/// production — is carried to the owner's next release boundary through the
+/// same deferred-trigger authority that carries ordinary observers, instead of
+/// being dropped: a rootless payment cannot suspend mid-payment, but its
+/// mandatory bonuses must still resolve (CR 605.4a). The deferred drain
+/// re-enters the inline triggered-mana authority, so a carried mana ability
+/// still resolves without using the stack and pauses for its real choice there.
+///
+/// The completed frame is claimed once, exactly as the resumable settlement
+/// does, so the suppressed post-action scan cannot collect it a second time.
 pub(crate) fn settle_choice_free_delayed_mana(
     state: &mut GameState,
     events: &[GameEvent],
@@ -4371,25 +4331,13 @@ pub(crate) fn settle_choice_free_delayed_mana(
         return Ok(());
     }
     let raw_batch = &events[events_before..];
-    match probe_choice_free_delayed_mana(state, raw_batch) {
-        // `Blocked` keeps genuine choice-owing work at its normal release
-        // boundary: a rootless payment cannot suspend for it, and resolving
-        // only the choice-free part would claim an event the choice-owing
-        // firing still needs.
-        ChoiceFreeDelayedManaProbe::Absent | ChoiceFreeDelayedManaProbe::Blocked => return Ok(()),
-        ChoiceFreeDelayedManaProbe::Settleable => {}
-    }
     let (accepted, ordinary) = collect_mana_frame_triggers(state, raw_batch);
     let settlement = settle_choice_free_mana_firings(state, accepted);
-    debug_assert!(
-        settlement.is_choice_free(),
-        "a probe reported a choice-free mana frame, but the live settlement found \
-         choice-owing work: settled={} choice_owing={} unresolved={}",
-        settlement.settled,
-        settlement.choice_owing.len(),
-        settlement.unresolved,
-    );
+    if settlement.settled == 0 && settlement.carried.is_empty() && ordinary.is_empty() {
+        return Ok(());
+    }
     defer_rejected_mana_frame_contexts(state, ordinary);
+    defer_rejected_mana_frame_contexts(state, settlement.carried);
     claim_mana_frame_batch(state, events, events_before);
     // CR 118.12 + CR 605.3b + CR 616.1: a replacement choice surfaced by the
     // settlement's own resolution is an in-progress payment this rootless

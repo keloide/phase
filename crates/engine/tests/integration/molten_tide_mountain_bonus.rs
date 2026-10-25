@@ -17,7 +17,8 @@ use engine::parser::oracle_static::parse_static_line;
 use engine::types::actions::GameAction;
 use engine::types::events::{GameEvent, ManaTapState};
 use engine::types::game_state::{
-    CastPaymentMode, CombatTaxContext, ManaAbilityResume, StackEntryKind, WaitingFor,
+    CastPaymentMode, CombatTaxContext, ManaAbilityResume, ManaChoice, ManaChoicePrompt,
+    StackEntryKind, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
@@ -26,6 +27,9 @@ use engine::types::player::PlayerId;
 
 const MOLTEN_TIDE_ORACLE: &str =
     "Until end of turn, whenever you tap a Mountain for mana, add an additional {R}.";
+const SELESNYA_ORACLE: &str = "If an effect would create one or more tokens, it creates twice that many of those tokens instead.\nIf an effect would put one or more counters on a permanent, it puts twice that many of those counters on that permanent instead.\nWhenever chaos ensues, until end of turn, whenever you tap a land for mana, add one mana of any type that land produced.";
+const CHAMBER_ORACLE: &str =
+    "This land enters tapped.\nWhen this land enters, return a land you control to its owner's hand.\n{T}: Add {G}{U}.";
 
 fn red(runner: &GameRunner, p: PlayerId) -> usize {
     runner.state().players[p.0 as usize]
@@ -588,5 +592,149 @@ fn mountain_alone_cannot_pay_the_same_combat_tax_without_molten_tide() {
         matches!(state.waiting_for, WaitingFor::CombatTaxPayment { .. }),
         "the failed payment must leave the tax prompt intact; got {:?}",
         state.waiting_for
+    );
+}
+
+/// CR 605.4a + CR 608.2d + CR 508.1i-j: one rootless payment frame can mix a
+/// choice-free delayed bonus (Molten Tide on each Mountain tap) with a
+/// choice-owing echo (Selesnya Loft Gardens on the Chamber's {G}{U} tap). The
+/// choice-free firings must still settle before spending — without them the
+/// four base units cannot pay Ghostly Prison's {6} — and the choice-owing
+/// firing must be carried to the next release boundary instead of being erased
+/// by `PayCombatTax`'s `SpellCast`-only post-action scan.
+#[test]
+fn mixed_choice_free_and_choice_owing_frame_settles_bonus_and_carries_the_choice() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let tide = scenario
+        .add_spell_to_hand_from_oracle(P0, "Molten Tide", true, MOLTEN_TIDE_ORACLE)
+        .id();
+    let selesnya = scenario
+        .add_land_from_oracle(P0, "Selesnya Loft Gardens", SELESNYA_ORACLE)
+        .id();
+    let chamber = scenario
+        .add_land_from_oracle(P0, "Simic Growth Chamber", CHAMBER_ORACLE)
+        .id();
+    let mountains: Vec<ObjectId> = (0..2)
+        .map(|_| scenario.add_basic_land(P0, ManaColor::Red))
+        .collect();
+    let attackers: Vec<ObjectId> = (0..3)
+        .map(|_| scenario.add_creature(P0, "Grizzly Bears", 2, 2).id())
+        .collect();
+    add_ghostly_prison(&mut scenario, P1);
+    scenario.with_mana_pool(
+        P0,
+        vec![ManaUnit::new(ManaType::Red, ObjectId(9999), false, vec![])],
+    );
+    let mut runner = scenario.build();
+    runner.cast(tide).resolve();
+    clear_pools(&mut runner);
+
+    // CR 311.7 / CR 901.9b: fire Selesnya's chaos trigger through the real
+    // pipeline so its delayed echo is live alongside Molten Tide's.
+    let events = vec![GameEvent::ChaosEnsued { plane_id: selesnya }];
+    process_triggers(runner.state_mut(), &events);
+    while runner.state().delayed_triggers.len() < 2 && !runner.state().stack.is_empty() {
+        runner
+            .act(GameAction::PassPriority)
+            .expect("passing priority to resolve the chaos trigger must succeed");
+    }
+    assert_eq!(
+        runner.state().delayed_triggers.len(),
+        2,
+        "Molten Tide and Selesnya Loft Gardens must both be live"
+    );
+    clear_pools(&mut runner);
+
+    let attacks: Vec<(ObjectId, AttackTarget)> = attackers
+        .iter()
+        .map(|id| (*id, AttackTarget::Player(P1)))
+        .collect();
+
+    // Three attackers owe Ghostly Prison {6}. The four base mana units are
+    // short: only the choice-free delayed settlement (two Selesnya Mountain
+    // echoes + two Molten Tide bonuses) makes the tax payable.
+    assert!(
+        attack_tax_is_affordable(runner.state(), &attacks),
+        "the preview must count the settled choice-free bonuses even though the \
+         chamber's echo still owes a colour"
+    );
+
+    runner.pass_both_players();
+    runner
+        .act(GameAction::DeclareAttackers {
+            attacks,
+            bands: vec![],
+        })
+        .expect("the affordable taxed proposal must open CombatTaxPayment");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::CombatTaxPayment { .. }
+    ));
+    assert!(pending_combat_tax_is_affordable(runner.state()));
+
+    runner
+        .act(GameAction::PayCombatTax { accept: true })
+        .expect("the mixed frame must settle its choice-free firings and pay");
+
+    {
+        let state = runner.state();
+        assert_eq!(
+            state
+                .combat
+                .as_ref()
+                .expect("combat state must exist once the tax is paid")
+                .attackers
+                .len(),
+            3,
+            "the attack must commit"
+        );
+        assert!(
+            mountains
+                .iter()
+                .chain(std::iter::once(&chamber))
+                .all(|land| state.objects[land].tapped),
+            "every base source must have been tapped"
+        );
+        assert_eq!(
+            state.players[P0.0 as usize].mana_pool.total(),
+            2,
+            "base 4 + four settled bonuses (8) minus the {{6}} tax"
+        );
+    }
+
+    // The carried echo must not be lost: it drains at the next release boundary
+    // through the inline triggered-mana authority and pauses for its colour.
+    let bound_before = runner.state().players[P0.0 as usize].mana_pool.total();
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseManaColor {
+            player,
+            choice: ManaChoicePrompt::SingleColor { options },
+            ..
+        } => {
+            assert_eq!(*player, P0, "the echo choice belongs to the tapper");
+            assert_eq!(
+                options.len(),
+                2,
+                "the carried chamber echo must offer exactly Green and Blue; got {options:?}"
+            );
+        }
+        other => panic!("expected the carried echo's colour choice, got {other:?}"),
+    }
+    runner
+        .act(GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Green),
+            count: 1,
+        })
+        .expect("answering the carried echo must succeed");
+    assert_eq!(
+        runner.state().players[P0.0 as usize].mana_pool.total(),
+        bound_before + 1,
+        "the carried echo must still add exactly one bonus mana"
+    );
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "the carried echo must converge back to Priority; got {:?}",
+        runner.state().waiting_for
     );
 }
