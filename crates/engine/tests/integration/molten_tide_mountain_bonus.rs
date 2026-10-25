@@ -330,14 +330,18 @@ fn add_ghostly_prison(scenario: &mut GameScenario, player: PlayerId) -> ObjectId
 struct CombatTaxFixture {
     runner: GameRunner,
     attacker: ObjectId,
-    mountain: ObjectId,
+    mountains: Vec<ObjectId>,
 }
 
-/// One untapped Mountain, one attacker, and Ghostly Prison's {2} tax. The
-/// `with_tide` variant resolves Molten Tide through the real cast pipeline
+/// One or more untapped Mountains, one attacker, and Ghostly Prison's {2} tax.
+/// The `with_tide` variant resolves Molten Tide through the real cast pipeline
 /// (registering its delayed trigger) from a synthetic floating {R}, then empties
-/// every pool, so the only mana left is the Mountain and its delayed bonus.
+/// every pool, so the only mana left is the Mountains and their delayed bonuses.
 fn combat_tax_fixture(with_tide: bool) -> CombatTaxFixture {
+    combat_tax_fixture_with_mountains(with_tide, 1)
+}
+
+fn combat_tax_fixture_with_mountains(with_tide: bool, mountain_count: usize) -> CombatTaxFixture {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let tide = with_tide.then(|| {
@@ -346,10 +350,12 @@ fn combat_tax_fixture(with_tide: bool) -> CombatTaxFixture {
             .id()
     });
     let attacker = scenario.add_creature(P0, "Grizzly Bears", 2, 2).id();
-    let mountain = scenario.add_basic_land(P0, ManaColor::Red);
+    let mountains: Vec<ObjectId> = (0..mountain_count)
+        .map(|_| scenario.add_basic_land(P0, ManaColor::Red))
+        .collect();
     add_ghostly_prison(&mut scenario, P1);
     if with_tide {
-        // Fund Molten Tide itself without consuming the Mountain under test.
+        // Fund Molten Tide itself without consuming the Mountains under test.
         scenario.with_mana_pool(
             P0,
             vec![ManaUnit::new(ManaType::Red, ObjectId(9999), false, vec![])],
@@ -368,7 +374,7 @@ fn combat_tax_fixture(with_tide: bool) -> CombatTaxFixture {
     CombatTaxFixture {
         runner,
         attacker,
-        mountain,
+        mountains,
     }
 }
 
@@ -383,8 +389,9 @@ fn molten_tide_fixed_bonus_funds_rootless_combat_tax_and_attack_commits() {
     let CombatTaxFixture {
         mut runner,
         attacker,
-        mountain,
+        mountains,
     } = combat_tax_fixture(true);
+    let mountain = mountains[0];
     let attacks = vec![(attacker, AttackTarget::Player(P1))];
 
     // The preview the declaration solver consults must already see the bonus.
@@ -452,6 +459,77 @@ fn molten_tide_fixed_bonus_funds_rootless_combat_tax_and_attack_commits() {
     );
 }
 
+/// CR 605.4a + CR 508.1i-j: when the base pool already covers the cost, the
+/// mandatory delayed bonus still resolves during the payment. Two Mountains
+/// produce {R}{R} for the {2} tax and each tap triggers Tide, so the pool must
+/// carry both surplus {R} after the tax is paid. On the `PayCombatTax` path the
+/// post-action scan retains only `SpellCast` events, so a skipped settlement
+/// would drop the bonus entirely rather than deliver it at priority.
+#[test]
+fn molten_tide_bonus_settles_when_two_mountains_already_cover_the_combat_tax() {
+    let CombatTaxFixture {
+        mut runner,
+        attacker,
+        mountains,
+    } = combat_tax_fixture_with_mountains(true, 2);
+    let attacks = vec![(attacker, AttackTarget::Player(P1))];
+
+    assert!(
+        attack_tax_is_affordable(runner.state(), &attacks),
+        "two Mountains cover the tax before any bonus is considered"
+    );
+
+    runner.pass_both_players();
+    runner
+        .act(GameAction::DeclareAttackers {
+            attacks,
+            bands: vec![],
+        })
+        .expect("the affordable taxed proposal must open CombatTaxPayment");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::CombatTaxPayment { .. }
+    ));
+    assert!(pending_combat_tax_is_affordable(runner.state()));
+
+    runner
+        .act(GameAction::PayCombatTax { accept: true })
+        .expect("the covered tax must still settle each mandatory delayed {R}");
+
+    let state = runner.state();
+    assert_eq!(
+        state
+            .combat
+            .as_ref()
+            .expect("combat state must exist once the tax is paid")
+            .attackers
+            .len(),
+        1,
+        "the attack must commit"
+    );
+    assert!(
+        mountains
+            .iter()
+            .all(|mountain| state.objects[mountain].tapped),
+        "both Mountains produced the base {{R}}{{R}}"
+    );
+    assert_eq!(
+        red(&runner, P0),
+        2,
+        "base {{R}}{{R}} + two delayed {{R}} minus the {{2}} tax"
+    );
+    assert_eq!(
+        state.delayed_triggers.len(),
+        1,
+        "Molten Tide's multi-fire delayed trigger stays installed"
+    );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0),
+        "the declaration continuation must reach its terminal priority state; got {:?}",
+        state.waiting_for
+    );
+}
+
 /// CR 508.1d: the same-state control. Without Molten Tide the Mountain's base
 /// {R} cannot cover Ghostly Prison's {2}: the declaration preview reports the
 /// tax unaffordable, and accepting the prompt fails before anything is tapped or
@@ -461,8 +539,9 @@ fn mountain_alone_cannot_pay_the_same_combat_tax_without_molten_tide() {
     let CombatTaxFixture {
         mut runner,
         attacker,
-        mountain,
+        mountains,
     } = combat_tax_fixture(false);
+    let mountain = mountains[0];
     let attacks = vec![(attacker, AttackTarget::Player(P1))];
 
     assert!(

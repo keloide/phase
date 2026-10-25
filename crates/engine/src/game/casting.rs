@@ -23867,9 +23867,9 @@ fn pay_non_cast_mana_cost(
     //
     // A rootless payment (`pay_unless_cost`, Room unlock) cannot suspend for a
     // choice, but a delayed deterministic bonus owes none and is settled at the
-    // same affordability boundary. Skip the settlement when the pool already
-    // covers the cost, so genuinely choice-owing work stays at its normal
-    // release boundary instead of failing an otherwise payable payment.
+    // same affordability boundary. A choice-owing batch is left untouched for
+    // the normal release boundary; the pool check below still decides whether
+    // the payment can proceed without it.
     let permissions = {
         let mana_spend_permission =
             player_mana_spend_permission_for_optional_spell(state, player, None);
@@ -23891,7 +23891,7 @@ fn pay_non_cast_mana_cost(
     };
     if resume.is_some() {
         settle_pre_spend_echoes(state, player, events, events_before, resume, None)?;
-    } else if !pool_covers(state) {
+    } else {
         super::triggers::settle_choice_free_delayed_mana(state, events, events_before)?;
     }
 

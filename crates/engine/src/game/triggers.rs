@@ -4357,11 +4357,11 @@ pub(crate) fn probe_choice_free_delayed_mana(
 /// payment that cannot suspend for a player interaction.
 ///
 /// Only a batch whose accepted firings are all choice-free is resolved. A
-/// choice-owing or otherwise unresolved accepted firing makes the whole batch
-/// conservative: the payment reports that it needs a choice, and the action
-/// boundary restores the pre-payment state. Ordinary observers are deferred
-/// (never discarded) and the batch is claimed, exactly as the resumable
-/// settlement does.
+/// choice-owing or otherwise unresolved accepted firing leaves the whole batch
+/// untouched: a rootless boundary must not partially settle it, and the caller's
+/// pool check then decides whether the base pool suffices. Ordinary observers
+/// are deferred (never discarded) and the batch is claimed, exactly as the
+/// resumable settlement does.
 pub(crate) fn settle_choice_free_delayed_mana(
     state: &mut GameState,
     events: &[GameEvent],
@@ -4372,12 +4372,11 @@ pub(crate) fn settle_choice_free_delayed_mana(
     }
     let raw_batch = &events[events_before..];
     match probe_choice_free_delayed_mana(state, raw_batch) {
-        ChoiceFreeDelayedManaProbe::Absent => return Ok(()),
-        ChoiceFreeDelayedManaProbe::Blocked => {
-            return Err(super::engine::EngineError::InvalidAction(
-                "Mana payment is awaiting a mana choice".to_string(),
-            ));
-        }
+        // `Blocked` keeps genuine choice-owing work at its normal release
+        // boundary: a rootless payment cannot suspend for it, and resolving
+        // only the choice-free part would claim an event the choice-owing
+        // firing still needs.
+        ChoiceFreeDelayedManaProbe::Absent | ChoiceFreeDelayedManaProbe::Blocked => return Ok(()),
         ChoiceFreeDelayedManaProbe::Settleable => {}
     }
     let (accepted, ordinary) = collect_mana_frame_triggers(state, raw_batch);
