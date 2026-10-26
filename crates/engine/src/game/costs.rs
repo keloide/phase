@@ -961,10 +961,11 @@ fn pay_ability_cost_inner(
             // payment failure (not an engine error).
             PaymentScope::Resolution { cost_move_root, .. } => {
                 // CR 118.12 + CR 605.3b + CR 616.1: only an `EffectPayCost`
-                // root can suspend for a pre-spend echo choice. A
+                // root can suspend for a choice-owing pre-spend echo. A
                 // `ReplacementMayCost` payment has no resume channel, so its
-                // preview must stay at the real pool and its pre-gate must
-                // refuse a bonus-dependent payment before auto-tapping.
+                // preview counts only the choice-free delayed bonuses the
+                // rootless boundary settles and still refuses a payment that
+                // depends on a choice-owing bonus.
                 let paused = match cost_move_root {
                     ResolutionCostMoveRoot::EffectPayCost => PausedManaPayment::Resumable,
                     ResolutionCostMoveRoot::ReplacementMayCost => PausedManaPayment::Unresumable,

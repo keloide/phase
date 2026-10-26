@@ -4123,6 +4123,24 @@ fn resume_mana_ability_root_payment(
         ManaAbilityResume::PlanarDieRoll { player, cost } => {
             super::planechase::resume_paid_planar_die_roll(state, player, cost, events)
         }
+        // CR 508.1d + CR 509.1c + CR 605.4a: finish the suspended combat
+        // declaration once its tax bonus is in the pool. The frozen proposal
+        // and price ride on the root, so nothing is re-derived or rescored.
+        ManaAbilityResume::CombatTaxPayment {
+            player,
+            context,
+            total_cost,
+            per_creature,
+            pending,
+        } => super::engine_combat::resume_combat_tax_payment(
+            state,
+            player,
+            context,
+            total_cost,
+            per_creature,
+            pending,
+            events,
+        ),
         // CR 116.2b + CR 605.3b: NOT compiler-forced either — the `resume =>`
         // catch-all below would route a paused turn-face-up payment into
         // `resume_waiting_for`, which `unreachable!()`s for this family.
@@ -4292,7 +4310,8 @@ pub(crate) fn finish_mana_root_after_deferred_life_payment(
             pending_mana_ability,
         } => continue_mana_ability_activation(state, *pending_mana_ability, events),
         ManaAbilityResume::PhyrexianCastPayment { .. }
-        | ManaAbilityResume::FinalizePendingManaPayment { .. } => Err(EngineError::InvalidAction(
+        | ManaAbilityResume::FinalizePendingManaPayment { .. }
+        | ManaAbilityResume::CombatTaxPayment { .. } => Err(EngineError::InvalidAction(
             "Cast mana payment reached the non-cast deferred-life continuation".to_string(),
         )),
     }
@@ -6044,6 +6063,7 @@ pub(crate) fn resume_waiting_for(
         ManaAbilityResume::EffectPayCost { .. }
         | ManaAbilityResume::PhyrexianCastPayment { .. }
         | ManaAbilityResume::FinalizePendingManaPayment { .. }
+        | ManaAbilityResume::CombatTaxPayment { .. }
         | ManaAbilityResume::CompanionToHand { .. }
         // CR 116.2c + CR 116.2i + CR 116.2b: like `CompanionToHand`, the
         // pay-to-end, planar-die, and turn-face-up special actions are resumed

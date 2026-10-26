@@ -8427,20 +8427,39 @@ fn begin_trigger_ordering(
     use crate::types::game_state::{PendingTriggerOrder, TriggerOrderGroup};
 
     // Partition by ordering controller while preserving the input (placement) order.
+    //
+    // CR 605.4a: a triggered mana ability resolves immediately and never becomes
+    // a stack object, so it is never part of a CR 603.3b stack-ordering choice.
+    // A carried one (a rootless payment's deferred echo) reaches this shared
+    // queue beside ordinary observers; it gets its own already-ordered group so
+    // a same-controller ordinary trigger cannot fold it into an `OrderTriggers`
+    // prompt. It still dispatches in placement order through the inline
+    // triggered-mana authority.
     let mut groups: Vec<TriggerOrderGroup> = Vec::new();
+    let mut last_group_accepts_more = false;
     for ctx in pending {
         let controller = trigger_order_controller(state, ctx.pending.controller);
-        if let Some(last) = groups.last_mut() {
-            if last.controller == controller {
-                last.triggers.push(ctx);
-                continue;
+        let trigger_event = ctx
+            .pending
+            .trigger_event
+            .as_ref()
+            .or_else(|| ctx.trigger_events.first());
+        let is_triggered_mana =
+            super::mana_abilities::is_triggered_mana_ability(&ctx.pending.ability, trigger_event);
+        if !is_triggered_mana {
+            if let Some(last) = groups.last_mut() {
+                if last.controller == controller && last_group_accepts_more {
+                    last.triggers.push(ctx);
+                    continue;
+                }
             }
         }
         groups.push(TriggerOrderGroup {
             controller,
             triggers: vec![ctx],
-            ordered: false,
+            ordered: is_triggered_mana,
         });
+        last_group_accepts_more = !is_triggered_mana;
     }
 
     // CR 603.3b: A group needs an ordering choice only when permuting it is
@@ -42381,6 +42400,59 @@ pub mod tests {
             die_result: None,
             provenance: None,
         })
+    }
+
+    /// CR 605.4a + CR 603.3b: a triggered mana ability resolves immediately and
+    /// never becomes a stack object, so the shared ordering pass must never fold
+    /// it into a controller's `OrderTriggers` group. A rootless payment still
+    /// carries an accepted echo context into the same deferred queue as ordinary
+    /// observers; the ordering authority gives the echo its own already-ordered
+    /// group so no prompt can offer it.
+    #[test]
+    fn a_triggered_mana_context_never_joins_a_stack_ordering_group() {
+        let mut state = setup();
+        let producer_card = CardId(state.next_object_id);
+        let producer = create_object(
+            &mut state,
+            producer_card,
+            PlayerId(0),
+            "Echo source".to_string(),
+            Zone::Battlefield,
+        );
+        let echo_ability = ResolvedAbility::new(
+            Effect::Mana {
+                produced: crate::types::ability::ManaProduction::Colorless {
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: None,
+                target: None,
+            },
+            vec![],
+            producer,
+            PlayerId(0),
+        );
+        let mut echo = PendingTriggerContext::single(PendingTrigger::ordinary(
+            producer,
+            PlayerId(0),
+            None,
+            Box::new(echo_ability),
+            0,
+        ));
+        echo.pending.trigger_event = Some(GameEvent::ManaAdded {
+            player_id: PlayerId(0),
+            mana_type: crate::types::mana::ManaType::Green,
+            source_id: producer,
+            tap_state: ManaTapState::default(),
+        });
+        let observer = make_draw_pending_trigger(&mut state, "Observer", PlayerId(0));
+
+        let disposition = begin_trigger_ordering(&mut state, vec![echo, observer]);
+        assert!(
+            matches!(disposition, TriggerOrderingDisposition::NoChoiceNeeded(_)),
+            "a triggered mana context must never surface an ordering prompt"
+        );
     }
 
     /// Issue #1793: mid-resolution continuations must not drain (or reorder)

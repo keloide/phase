@@ -776,6 +776,7 @@ fn classify_deferred_life_root(
             | ManaAbilityResume::EndContinuousEffect { .. }
             | ManaAbilityResume::TurnFaceUp { .. }
             | ManaAbilityResume::UnlessPayment { .. }
+            | ManaAbilityResume::CombatTaxPayment { .. }
             | ManaAbilityResume::EffectPayCost { .. } => PaymentContinuationState::NotAffiliated,
         },
         DeferredLifeCostResume::PayAmount { .. } => PaymentContinuationState::NotAffiliated,
@@ -878,6 +879,7 @@ fn record_root_from_resume(
         | ManaAbilityResume::EndContinuousEffect { .. }
         | ManaAbilityResume::TurnFaceUp { .. }
         | ManaAbilityResume::UnlessPayment { .. }
+        | ManaAbilityResume::CombatTaxPayment { .. }
         | ManaAbilityResume::EffectPayCost { .. } => None,
     };
     merge_root(root, next)

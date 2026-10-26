@@ -21188,11 +21188,11 @@ struct AutoTapProbeOptions<'a> {
     explicit_tap_payment_mode: Option<ConvokeMode>,
     /// CR 605.3b + CR 616.1 + CR 605.4a: capabilities of the live payment this
     /// preview stands in for. Defaults to `Resumable` — spell casts, ability
-    /// activations, and resumable special actions (companion, planar die roll,
-    /// turn face up, end continuous effect) all carry a typed root and suspend
-    /// for the choice. `pay_unless_cost` paths preview `Unresumable` so the
-    /// preview cannot promise a payment the live path then fails; rootless
-    /// flows with no affordability probe (Room unlock) are unaffected.
+    /// activations, resumable special actions (companion, planar die roll,
+    /// turn face up, end continuous effect), and combat-tax declarations all
+    /// carry a typed root and suspend for the choice. Rootless payments
+    /// (`pay_unless_cost` outside combat, Room unlock) preview `Unresumable` so
+    /// the preview cannot promise a payment the live path then fails.
     paused: PausedManaPayment,
     phyrexian_life_budget: ProbeLifeBudget,
 }
@@ -22931,15 +22931,17 @@ pub fn can_pay_ability_mana_cost_after_auto_tap_excluding(
 /// Whether that pause is "still payable" depends on the live payment the probe
 /// previews, not on the mana: a payment made with a resumable root surfaces the
 /// choice and continues, while one made without a root cannot suspend at all —
-/// neither for the replacement choice nor for the echo, whose chosen bonus then
-/// never reaches the pool.
+/// neither for the replacement choice nor for the choice-owing echo. A
+/// choice-free delayed bonus owes no choice, so it is settled at the rootless
+/// affordability boundary before both the preview and the spend; only the
+/// choice-owing echo is left for the release boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum PausedManaPayment {
     /// The live payment carries a resumable root and will surface the choice.
     #[default]
     Resumable,
-    /// The live payment cannot suspend (`pay_unless_cost`, which combat taxes
-    /// and resolution-time "pay {X}" amounts pay through, and the rootless
+    /// The live payment cannot suspend (`pay_unless_cost` for resolution-time
+    /// "pay {X}" amounts and replacement costs, and the rootless
     /// special-action compat entry used by Room unlock), so a pause means the
     /// payment cannot complete.
     Unresumable,
@@ -22997,7 +22999,9 @@ pub(super) fn can_pay_effect_mana_cost_after_auto_tap(
     // CR 605.4a + CR 608.2d: effect-time payments carry a typed resolution
     // root when the live path can suspend for a pre-spend echo choice, so the
     // preview must account for the same bonus the spell/ability preview does.
-    // A rootless live payment keeps the conservative real-pool check.
+    // A rootless live payment settles its choice-free delayed bonuses at the
+    // same boundary and carries only the choice-owing work, so the settled
+    // bonuses are payable here too.
     let payable = |state: &GameState| {
         state
             .players

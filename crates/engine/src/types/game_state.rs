@@ -9839,6 +9839,19 @@ pub enum ManaAbilityResume {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         remaining: Vec<PlayerId>,
     },
+    /// CR 508.1d + CR 508.1h + CR 509.1c + CR 509.1d + CR 605.4a: A combat
+    /// declaration whose locked-in tax payment suspended before spending on a
+    /// pre-spend mana choice. The proposal, its price, and the defending seat
+    /// are frozen at announcement; resumption must re-enter this exact accept
+    /// path and commit the declaration only after the triggered mana has
+    /// resolved into the payer's pool (CR 508.1i–j, CR 509.1e–f).
+    CombatTaxPayment {
+        player: PlayerId,
+        context: CombatTaxContext,
+        total_cost: ManaCost,
+        per_creature: Vec<(ObjectId, ManaCost)>,
+        pending: CombatTaxPending,
+    },
     /// CR 118.12 + CR 605.3b + CR 616.1: A resolving `Effect::PayCost` whose
     /// auto-tapped mana source paused on a replaceable cost move. The exact
     /// payer-adjusted ability and concrete outer cost are retried by the cost
@@ -9964,6 +9977,7 @@ fn visit_mana_ability_resume_events(
         | ManaAbilityResume::EndContinuousEffect { .. }
         | ManaAbilityResume::ManaPayment { .. }
         | ManaAbilityResume::ManaSourceSelection { .. }
+        | ManaAbilityResume::CombatTaxPayment { .. }
         | ManaAbilityResume::EffectPayCost { .. }
         | ManaAbilityResume::PhyrexianCastPayment { .. }
         | ManaAbilityResume::FinalizePendingManaPayment { .. } => {}
@@ -9985,6 +9999,7 @@ impl ManaAbilityResume {
             | ManaAbilityResume::TurnFaceUp { .. }
             | ManaAbilityResume::EndContinuousEffect { .. }
             | ManaAbilityResume::EffectPayCost { .. }
+            | ManaAbilityResume::CombatTaxPayment { .. }
             | ManaAbilityResume::PhyrexianCastPayment { .. }
             | ManaAbilityResume::FinalizePendingManaPayment { .. } => true,
             // CR 605.3a + CR 602.2b: a mana ability activated by hand retries
@@ -10020,6 +10035,7 @@ impl ManaAbilityResume {
             | ManaAbilityResume::ManaSourceSelection { .. }
             | ManaAbilityResume::ManaAbilityManaPayment { .. }
             | ManaAbilityResume::UnlessPayment { .. }
+            | ManaAbilityResume::CombatTaxPayment { .. }
             | ManaAbilityResume::EffectPayCost { .. }
             | ManaAbilityResume::PhyrexianCastPayment { .. }
             | ManaAbilityResume::FinalizePendingManaPayment { .. } => false,
@@ -10027,16 +10043,24 @@ impl ManaAbilityResume {
     }
 
     /// CR 117.3c + CR 117.5: Whether this resume chain terminates at a root
-    /// that returns priority directly — `Priority` itself or a CR 116.2
-    /// special action. A nested `ManaAbilityManaPayment` carries the enclosing
-    /// activation's root, so a parent settling through one is still a direct
-    /// priority root and must run settled-Priority convergence.
+    /// that returns priority with no enclosing owner left to scan its own
+    /// events — `Priority` itself, a CR 116.2 special action, or a combat
+    /// declaration whose locked tax payment is the declaration's own last step
+    /// (CR 508.1i-k, CR 509.1e-g). Such a root must run settled-Priority
+    /// convergence, or the frame's deferred ordinary observers would still be
+    /// waiting when priority is handed out (CR 603.3b). A nested
+    /// `ManaAbilityManaPayment` carries the enclosing activation's root, so a
+    /// parent settling through one is still a direct priority root.
     pub fn reaches_direct_priority_root(&self) -> bool {
         match self {
             ManaAbilityResume::Priority => true,
             ManaAbilityResume::ManaAbilityManaPayment {
                 pending_mana_ability,
             } => pending_mana_ability.resume.reaches_direct_priority_root(),
+            // CR 508.1k + CR 509.1g: the declaration commits and hands priority
+            // to the active player; no cast or activation encloses it, so its
+            // committed batch is the last thing this resume owns.
+            ManaAbilityResume::CombatTaxPayment { .. } => true,
             resume => resume.is_top_level_special_action(),
         }
     }
@@ -10052,6 +10076,9 @@ impl ManaAbilityResume {
             | ManaAbilityResume::ManaSourceSelection { .. }
             | ManaAbilityResume::PhyrexianCastPayment { .. }
             | ManaAbilityResume::FinalizePendingManaPayment { .. } => true,
+            // CR 508.1i-j + CR 509.1e-f: the declaration has not committed while
+            // its tax is unpaid, so no player receives priority before it does.
+            ManaAbilityResume::CombatTaxPayment { .. } => true,
             // CR 602.2b: the outer mana ability's cost is still being paid.
             ManaAbilityResume::ManaAbilityManaPayment { .. } => true,
             // CR 116.2g / 116.2i / 116.2b / 116.2c: companion to hand, rolling
@@ -10355,6 +10382,7 @@ impl PendingManaAbility {
             | ManaAbilityResume::ManaPayment { .. }
             | ManaAbilityResume::ManaSourceSelection { .. }
             | ManaAbilityResume::UnlessPayment { .. }
+            | ManaAbilityResume::CombatTaxPayment { .. }
             | ManaAbilityResume::EffectPayCost { .. }
             | ManaAbilityResume::PhyrexianCastPayment { .. }
             | ManaAbilityResume::FinalizePendingManaPayment { .. } => None,
@@ -25424,6 +25452,7 @@ fn visit_mana_ability_resume_chains<'a>(
         | ManaAbilityResume::EndContinuousEffect { .. }
         | ManaAbilityResume::ManaPayment { .. }
         | ManaAbilityResume::ManaSourceSelection { .. }
+        | ManaAbilityResume::CombatTaxPayment { .. }
         | ManaAbilityResume::PhyrexianCastPayment { .. }
         | ManaAbilityResume::FinalizePendingManaPayment { .. } => Ok(()),
     }

@@ -4086,6 +4086,7 @@ fn redact_mana_ability_resume_payment(
         | ManaAbilityResume::EndContinuousEffect { .. }
         | ManaAbilityResume::ManaPayment { .. }
         | ManaAbilityResume::ManaSourceSelection { .. }
+        | ManaAbilityResume::CombatTaxPayment { .. }
         | ManaAbilityResume::PhyrexianCastPayment { .. }
         | ManaAbilityResume::FinalizePendingManaPayment { .. } => {}
     }
