@@ -62180,6 +62180,104 @@ fn resumable_special_action_payment_settles_echo_before_spending() {
     );
 }
 
+/// CR 116.2h + CR 605.3b + CR 616.1: the offer probe that gates the Foretell
+/// special action must admit the same resumable source seam the live payment
+/// uses. The only source here produces {R}{R}, but its own activation cost
+/// (tap, exile itself) owes a CR 616.1 ordering choice between two redirects —
+/// an unresumable probe reports that source as unaffordable, so this test pins
+/// `can_foretell_card` to `PausedManaPayment::Resumable`.
+#[test]
+fn foretell_probe_admits_a_source_whose_own_cost_pauses() {
+    use crate::game::scenario::{GameScenario, P0};
+    use crate::types::zones::EtbTapState;
+    const DOOMSKAR_ORACLE: &str = "Destroy all creatures.\nForetell {1}{W}{W} (During your turn, you may pay {2} and exile this card from your hand face down. Cast it on a later turn for its foretell cost.)";
+    fn redirect_exile_to_graveyard() -> ReplacementDefinition {
+        ReplacementDefinition::new(ReplacementEvent::Moved)
+            .destination_zone(Zone::Exile)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::ChangeZone {
+                    destination: Zone::Graveyard,
+                    origin: None,
+                    target: TargetFilter::SelfRef,
+                    owner_library: false,
+                    enter_transformed: false,
+                    enters_under: None,
+                    enter_tapped: EtbTapState::Unspecified,
+                    enters_attacking: false,
+                    up_to: false,
+                    enter_with_counters: vec![],
+                    conditional_enter_with_counters: vec![],
+                    face_down_profile: None,
+                    enters_modified_if: None,
+                },
+            ))
+    }
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let doomskar = scenario
+        .add_spell_to_hand_from_oracle(P0, "Doomskar", false, DOOMSKAR_ORACLE)
+        .id();
+    scenario
+        .add_creature(P0, "Self-Exiling Mana Source", 1, 1)
+        .with_ability_definition(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: ManaProduction::Fixed {
+                        colors: vec![ManaColor::Red, ManaColor::Red],
+                        contribution: ManaContribution::Base,
+                    },
+                    restrictions: vec![],
+                    grants: vec![],
+                    expiry: None,
+                    target: None,
+                },
+            )
+            .cost(AbilityCost::Composite {
+                costs: vec![
+                    AbilityCost::Tap,
+                    AbilityCost::Exile {
+                        count: 1,
+                        zone: None,
+                        filter: Some(TargetFilter::SelfRef),
+                    },
+                ],
+            }),
+        );
+    for name in ["First Pause Replacement", "Second Pause Replacement"] {
+        scenario
+            .add_creature(P0, name, 0, 0)
+            .as_enchantment()
+            .with_replacement_definition(redirect_exile_to_graveyard());
+    }
+    let runner = scenario.build();
+
+    assert_eq!(
+        runner.state().players[P0.0 as usize].mana_pool.total(),
+        0,
+        "premise: the foretell {{2}} must come entirely from the pausing source"
+    );
+    assert!(
+        super::can_foretell_card(runner.state(), P0, doomskar),
+        "the only source owes a CR 616.1 ordering choice, so the offer must model its resume"
+    );
+    // CONTROL: this is the deleted rootless probe's mode. If `can_foretell_card`
+    // ever stops passing `PausedManaPayment::Resumable`, it silently hides an
+    // action the live continuation can still suspend for and finish.
+    assert!(
+        !can_pay_special_action_mana_cost_after_auto_tap(
+            runner.state(),
+            P0,
+            Some(doomskar),
+            &ManaCost::generic(2),
+            crate::types::mana::SpecialAction::Foretell,
+            PausedManaPayment::Unresumable,
+        ),
+        "control: an unresumable probe rejects the same board"
+    );
+}
+
 #[test]
 fn echo_upper_bound_defers_to_life_payment_permissions() {
     // CR 107.4f + CR 118.3b: a K'rrik-style grant pays a colored shard with

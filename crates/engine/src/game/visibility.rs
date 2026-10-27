@@ -4077,9 +4077,9 @@ fn redact_mana_ability_resume_payment(
         ManaAbilityResume::ManaAbilityManaPayment {
             pending_mana_ability,
         } => redact_pending_mana_ability_payment(pending_mana_ability, hidden_ids),
-        // CR 702.143e: a foretell card in hand is hidden, and its latched
-        // foretell cast cost is a characteristic of that hidden card. Zero it
-        // for viewers who cannot see the card; the {2} payment cost is public.
+        // CR 400.2 + CR 702.143a: a foretell card in hand is in a hidden zone,
+        // and its effective foretell cast cost is not public information. Zero
+        // it for viewers who cannot see the card; the {2} payment cost is public.
         ManaAbilityResume::Foretell {
             object_id, cost, ..
         } if hidden_ids.contains(object_id) => {
