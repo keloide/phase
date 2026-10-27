@@ -8433,10 +8433,15 @@ fn begin_trigger_ordering(
     // A carried one (a rootless payment's deferred echo) reaches this shared
     // queue beside ordinary observers; it gets its own already-ordered group so
     // a same-controller ordinary trigger cannot fold it into an `OrderTriggers`
-    // prompt. It still dispatches in placement order through the inline
-    // triggered-mana authority.
+    // prompt. Because it is not a stack object, it must not sever the ordinary
+    // run it lands in either: the next ordinary trigger of that controller
+    // still joins the controller's previous ordinary group across the echo.
     let mut groups: Vec<TriggerOrderGroup> = Vec::new();
-    let mut last_group_accepts_more = false;
+    // Controller and index of the most recent group that accepted an ordinary
+    // trigger. Deliberately not updated by a triggered-mana context: an echo
+    // group is invisible to CR 603.3b grouping, while an ordinary group of a
+    // different controller still ends the previous controller's APNAP run.
+    let mut last_ordinary_group: Option<(PlayerId, usize)> = None;
     for ctx in pending {
         let controller = trigger_order_controller(state, ctx.pending.controller);
         let trigger_event = ctx
@@ -8447,9 +8452,9 @@ fn begin_trigger_ordering(
         let is_triggered_mana =
             super::mana_abilities::is_triggered_mana_ability(&ctx.pending.ability, trigger_event);
         if !is_triggered_mana {
-            if let Some(last) = groups.last_mut() {
-                if last.controller == controller && last_group_accepts_more {
-                    last.triggers.push(ctx);
+            if let Some((group_controller, index)) = last_ordinary_group {
+                if group_controller == controller {
+                    groups[index].triggers.push(ctx);
                     continue;
                 }
             }
@@ -8459,7 +8464,9 @@ fn begin_trigger_ordering(
             triggers: vec![ctx],
             ordered: is_triggered_mana,
         });
-        last_group_accepts_more = !is_triggered_mana;
+        if !is_triggered_mana {
+            last_ordinary_group = Some((controller, groups.len() - 1));
+        }
     }
 
     // CR 603.3b: A group needs an ordering choice only when permuting it is
@@ -42402,20 +42409,17 @@ pub mod tests {
         })
     }
 
-    /// CR 605.4a + CR 603.3b: a triggered mana ability resolves immediately and
-    /// never becomes a stack object, so the shared ordering pass must never fold
-    /// it into a controller's `OrderTriggers` group. A rootless payment still
-    /// carries an accepted echo context into the same deferred queue as ordinary
-    /// observers; the ordering authority gives the echo its own already-ordered
-    /// group so no prompt can offer it.
-    #[test]
-    fn a_triggered_mana_context_never_joins_a_stack_ordering_group() {
-        let mut state = setup();
+    /// CR 605.4a + CR 603.3b: a triggered-mana context as a rootless payment's
+    /// deferred echo delivers it to the shared ordering queue.
+    fn make_triggered_mana_echo(
+        state: &mut GameState,
+        controller: PlayerId,
+    ) -> PendingTriggerContext {
         let producer_card = CardId(state.next_object_id);
         let producer = create_object(
-            &mut state,
+            state,
             producer_card,
-            PlayerId(0),
+            controller,
             "Echo source".to_string(),
             Zone::Battlefield,
         );
@@ -42431,27 +42435,97 @@ pub mod tests {
             },
             vec![],
             producer,
-            PlayerId(0),
+            controller,
         );
         let mut echo = PendingTriggerContext::single(PendingTrigger::ordinary(
             producer,
-            PlayerId(0),
+            controller,
             None,
             Box::new(echo_ability),
             0,
         ));
         echo.pending.trigger_event = Some(GameEvent::ManaAdded {
-            player_id: PlayerId(0),
+            player_id: controller,
             mana_type: crate::types::mana::ManaType::Green,
             source_id: producer,
             tap_state: ManaTapState::default(),
         });
+        echo
+    }
+
+    fn order_trigger_prompt_sources(disposition: TriggerOrderingDisposition) -> Vec<String> {
+        match disposition {
+            TriggerOrderingDisposition::PromptForChoice(wf) => match *wf {
+                WaitingFor::OrderTriggers { triggers, .. } => {
+                    triggers.into_iter().map(|t| t.source_name).collect()
+                }
+                other => panic!("expected OrderTriggers, got {other:?}"),
+            },
+            TriggerOrderingDisposition::NoChoiceNeeded(_) => {
+                panic!("expected an OrderTriggers prompt")
+            }
+        }
+    }
+
+    /// CR 605.4a + CR 603.3b: a triggered mana ability resolves immediately and
+    /// never becomes a stack object, so the shared ordering pass must never fold
+    /// it into a controller's `OrderTriggers` group. A rootless payment still
+    /// carries an accepted echo context into the same deferred queue as ordinary
+    /// observers; the ordering authority gives the echo its own already-ordered
+    /// group so no prompt can offer it.
+    #[test]
+    fn a_triggered_mana_context_never_joins_a_stack_ordering_group() {
+        let mut state = setup();
+        let echo = make_triggered_mana_echo(&mut state, PlayerId(0));
         let observer = make_draw_pending_trigger(&mut state, "Observer", PlayerId(0));
 
         let disposition = begin_trigger_ordering(&mut state, vec![echo, observer]);
         assert!(
             matches!(disposition, TriggerOrderingDisposition::NoChoiceNeeded(_)),
             "a triggered mana context must never surface an ordering prompt"
+        );
+    }
+
+    /// CR 605.4a + CR 603.3b: an echo that lands between two ordinary triggers
+    /// of one controller must not sever their ordering run. Because the echo is
+    /// not a stack object, the prompt is the same two-trigger group the no-echo
+    /// control produces, and the echo is never one of the offered triggers.
+    #[test]
+    fn a_triggered_mana_context_between_observers_keeps_their_ordering_group() {
+        // Control: the two ordinary triggers adjacent, no echo.
+        let mut control = setup();
+        let observer_a = make_draw_pending_trigger(&mut control, "Observer A", PlayerId(0));
+        let observer_c = make_draw_pending_trigger(&mut control, "Observer C", PlayerId(0));
+        let control_names = order_trigger_prompt_sources(begin_trigger_ordering(
+            &mut control,
+            vec![observer_a, observer_c],
+        ));
+
+        // The deferred queue can order [A ordinary, B echo, C ordinary]: the
+        // echo takes a fresh timestamp between the two observers (CR 605.4a),
+        // and the rootless frame appends its carried contexts beside them.
+        let mut state = setup();
+        let observer_a = make_draw_pending_trigger(&mut state, "Observer A", PlayerId(0));
+        let echo = make_triggered_mana_echo(&mut state, PlayerId(0));
+        let observer_c = make_draw_pending_trigger(&mut state, "Observer C", PlayerId(0));
+        let names = order_trigger_prompt_sources(begin_trigger_ordering(
+            &mut state,
+            vec![observer_a, echo, observer_c],
+        ));
+
+        assert_eq!(
+            names, control_names,
+            "the echo must leave the ordinary ordering group exactly as it was without it"
+        );
+        assert_eq!(
+            names.len(),
+            2,
+            "the echo must never be offered in the ordering prompt; got {names:?}"
+        );
+        assert_eq!(
+            names,
+            vec!["Observer A".to_string(), "Observer C".to_string()],
+            "the merged group must keep the two observers in placement order"
         );
     }
 

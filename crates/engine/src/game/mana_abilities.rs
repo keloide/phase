@@ -4169,6 +4169,15 @@ fn resume_mana_ability_root_payment(
         } => super::end_continuous_effect::resume_end_continuous_effect_payment(
             state, player, group, cost, events,
         ),
+        // CR 116.2m + CR 605.3b: NOT compiler-forced either — the `resume =>`
+        // catch-all below would silently route a paused unlock payment into
+        // `resume_waiting_for`, which `unreachable!()`s for this family.
+        ManaAbilityResume::RoomUnlock {
+            player,
+            object_id,
+            door,
+            cost,
+        } => super::room::resume_room_unlock_payment(state, player, object_id, door, cost, events),
         // CR 605.3a + CR 602.2b: the window's activation completed; the pending
         // activation decides its payment again.
         ManaAbilityResume::ManaAbilityManaPayment {
@@ -4300,6 +4309,16 @@ pub(crate) fn finish_mana_root_after_deferred_life_payment(
                 state, player, group, events,
             ),
         ),
+        // CR 116.2m + CR 709.5c: the deferred life component finished, so the
+        // paid unlock commits its designation once.
+        ManaAbilityResume::RoomUnlock {
+            player,
+            object_id,
+            door,
+            ..
+        } => Ok(super::room::finish_paid_room_unlock(
+            state, player, object_id, door, events,
+        )),
         // CR 116.2i + CR 118.3b: the deferred life component finished, so the
         // paid roll commits once with its locked cost.
         ManaAbilityResume::PlanarDieRoll { player, .. } => {
@@ -6065,10 +6084,12 @@ pub(crate) fn resume_waiting_for(
         | ManaAbilityResume::FinalizePendingManaPayment { .. }
         | ManaAbilityResume::CombatTaxPayment { .. }
         | ManaAbilityResume::CompanionToHand { .. }
-        // CR 116.2c + CR 116.2i + CR 116.2b: like `CompanionToHand`, the
-        // pay-to-end, planar-die, and turn-face-up special actions are resumed
-        // by `resume_mana_ability_root`'s named arms, never here.
+        // CR 116.2c + CR 116.2i + CR 116.2b + CR 116.2m: like
+        // `CompanionToHand`, the pay-to-end, planar-die, turn-face-up, and
+        // Room-unlock special actions are resumed by `resume_mana_ability_root`'s
+        // named arms, never here.
         | ManaAbilityResume::EndContinuousEffect { .. }
+        | ManaAbilityResume::RoomUnlock { .. }
         | ManaAbilityResume::PlanarDieRoll { .. }
         | ManaAbilityResume::TurnFaceUp { .. } => {
             unreachable!("effect-cost resume is handled by resume_mana_ability_root")

@@ -62090,15 +62090,14 @@ fn quantity_vs_each_opponent_skips_a_player_who_left_the_game() {
     );
 }
 
-/// CR 116.2m + CR 605.4a + CR 608.2d: a rootless special action (Room unlock)
-/// pays through `pay_special_action_mana_cost`, which carries no continuation
-/// and cannot suspend for a pre-spend choice-owing mana echo. Its affordability
-/// probe must therefore stay at the real pool: `Unresumable` declines the
-/// bonus-dependent cost that the `Resumable` preview (companion / planar die /
-/// turn face up / end continuous effect) admits, and the rootless live payment
-/// fails at affordability exactly where the conservative probe declined.
+/// CR 116.2m + CR 605.4a + CR 608.2d: a continuation-carrying special action
+/// (Room unlock) pays through `pay_special_action_mana_cost_with_resume`. Its
+/// affordability probe admits a bonus-dependent cost, and the live payment
+/// settles the choice-owing echo BEFORE spending: it suspends on that choice
+/// with the pool untouched instead of failing at affordability or committing a
+/// mana prefix.
 #[test]
-fn rootless_special_action_probe_stays_at_the_real_pool() {
+fn resumable_special_action_payment_settles_echo_before_spending() {
     use crate::game::scenario::{GameScenario, P0};
     fn floating_colorless(n: usize) -> Vec<ManaUnit> {
         (0..n)
@@ -62132,37 +62131,53 @@ fn rootless_special_action_probe_stays_at_the_real_pool() {
         ),
         "a continuation-carrying live payment suspends for the echo choice, so its preview counts the bonus"
     );
-    assert!(
-        !can_pay_special_action_mana_cost_after_auto_tap(
-            runner.state(),
-            P0,
-            None,
-            &cost,
-            crate::types::mana::SpecialAction::UnlockDoor,
-            PausedManaPayment::Unresumable,
-        ),
-        "a rootless live payment cannot deposit the bonus; its preview must stay at the real pool"
-    );
 
+    let resume = crate::types::game_state::ManaAbilityResume::RoomUnlock {
+        player: P0,
+        object_id: ObjectId(1),
+        door: crate::game::game_object::RoomDoor::Left,
+        cost: cost.clone(),
+    };
     let mut events = Vec::new();
-    let live = pay_special_action_mana_cost(
+    let paused = pay_special_action_mana_cost_with_resume(
         runner.state_mut(),
         P0,
         None,
         &cost,
         crate::types::mana::SpecialAction::UnlockDoor,
+        Some(&resume),
         &mut events,
+    )
+    .expect("a resumable special-action payment must suspend, not fail");
+    assert_eq!(
+        paused,
+        SpecialActionManaPayment::Paused,
+        "the owed echo choice suspends the payment before any mana is spent"
     );
-    match &live {
-        Err(EngineError::ActionNotAllowed(reason)) => assert_eq!(
-            reason, "Cannot pay mana cost",
-            "the rootless live payment must fail at affordability exactly where the \
-             conservative probe declined"
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::ChooseManaColor { .. }
         ),
-        other => {
-            panic!("expected the rootless payment to fail at affordability, got {other:?}")
-        }
-    }
+        "the live prompt must be the echo choice, got {:?}",
+        runner.state().waiting_for
+    );
+    let pool = &runner.state().players[P0.0 as usize].mana_pool;
+    assert_eq!(
+        pool.count_color(ManaType::Green),
+        1,
+        "the chamber's base {{G}} is still unspent while the choice is pending"
+    );
+    assert_eq!(
+        pool.count_color(ManaType::Blue),
+        1,
+        "the chamber's base {{U}} is still unspent while the choice is pending"
+    );
+    assert_eq!(
+        pool.count_color(ManaType::Colorless),
+        2,
+        "floating mana is still unspent while the choice is pending"
+    );
 }
 
 #[test]

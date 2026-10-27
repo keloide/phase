@@ -1397,6 +1397,7 @@ mod ripples_of_undeath_regression;
 mod riptide_gearhulk_5994;
 mod rite_of_consumption_damage;
 mod rite_of_the_serpent;
+mod room_unlock_pre_spend_choice;
 mod roots_of_wisdom_if_you_cant_draw;
 mod roughshod_mentor_green_trample_grant;
 mod rules;

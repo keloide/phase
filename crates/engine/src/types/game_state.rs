@@ -9796,6 +9796,19 @@ pub enum ManaAbilityResume {
         group: EndEffectGroupId,
         cost: ManaCost,
     },
+    /// CR 116.2m + CR 709.5e + CR 605.3b + CR 616.1: A Room-door unlock whose
+    /// auto-tapped mana source paused on a replacement-aware cost move or a
+    /// pre-spend echo choice. `object_id`, `door`, and `cost` are the exact
+    /// action latched at announcement (the cost is the locked half's effective
+    /// print after special-action reductions), so resumption cannot re-derive
+    /// them against a board that changed while the prompt was pending. The door
+    /// stays locked and no mana is spent until the continuation completes.
+    RoomUnlock {
+        player: PlayerId,
+        object_id: ObjectId,
+        door: crate::game::game_object::RoomDoor,
+        cost: ManaCost,
+    },
     ManaPayment {
         /// The payer of the outer spell/ability cost. This is intentionally
         /// independent from `PendingManaAbility::player`: Assist can activate
@@ -9975,6 +9988,7 @@ fn visit_mana_ability_resume_events(
         | ManaAbilityResume::PlanarDieRoll { .. }
         | ManaAbilityResume::TurnFaceUp { .. }
         | ManaAbilityResume::EndContinuousEffect { .. }
+        | ManaAbilityResume::RoomUnlock { .. }
         | ManaAbilityResume::ManaPayment { .. }
         | ManaAbilityResume::ManaSourceSelection { .. }
         | ManaAbilityResume::CombatTaxPayment { .. }
@@ -9998,6 +10012,7 @@ impl ManaAbilityResume {
             | ManaAbilityResume::PlanarDieRoll { .. }
             | ManaAbilityResume::TurnFaceUp { .. }
             | ManaAbilityResume::EndContinuousEffect { .. }
+            | ManaAbilityResume::RoomUnlock { .. }
             | ManaAbilityResume::EffectPayCost { .. }
             | ManaAbilityResume::CombatTaxPayment { .. }
             | ManaAbilityResume::PhyrexianCastPayment { .. }
@@ -10029,7 +10044,9 @@ impl ManaAbilityResume {
             // CR 116.2b: turning a face-down permanent face up.
             | ManaAbilityResume::TurnFaceUp { .. }
             // CR 116.2c: paying to end a continuous effect.
-            | ManaAbilityResume::EndContinuousEffect { .. } => true,
+            | ManaAbilityResume::EndContinuousEffect { .. }
+            // CR 116.2m: paying a Room's unlock cost.
+            | ManaAbilityResume::RoomUnlock { .. } => true,
             ManaAbilityResume::Priority
             | ManaAbilityResume::ManaPayment { .. }
             | ManaAbilityResume::ManaSourceSelection { .. }
@@ -10081,13 +10098,14 @@ impl ManaAbilityResume {
             ManaAbilityResume::CombatTaxPayment { .. } => true,
             // CR 602.2b: the outer mana ability's cost is still being paid.
             ManaAbilityResume::ManaAbilityManaPayment { .. } => true,
-            // CR 116.2g / 116.2i / 116.2b / 116.2c: companion to hand, rolling
-            // the planar die, turning a permanent face up, and paying to end an
-            // effect are special actions.
+            // CR 116.2g / 116.2i / 116.2b / 116.2c / 116.2m: companion to hand,
+            // rolling the planar die, turning a permanent face up, paying to end
+            // an effect, and paying a Room's unlock cost are special actions.
             ManaAbilityResume::CompanionToHand { .. }
             | ManaAbilityResume::PlanarDieRoll { .. }
             | ManaAbilityResume::TurnFaceUp { .. }
-            | ManaAbilityResume::EndContinuousEffect { .. } => true,
+            | ManaAbilityResume::EndContinuousEffect { .. }
+            | ManaAbilityResume::RoomUnlock { .. } => true,
             // CR 118.12 / CR 608.2: payments made while an ability resolves.
             ManaAbilityResume::UnlessPayment { .. } | ManaAbilityResume::EffectPayCost { .. } => {
                 false
@@ -10379,6 +10397,7 @@ impl PendingManaAbility {
             | ManaAbilityResume::PlanarDieRoll { .. }
             | ManaAbilityResume::TurnFaceUp { .. }
             | ManaAbilityResume::EndContinuousEffect { .. }
+            | ManaAbilityResume::RoomUnlock { .. }
             | ManaAbilityResume::ManaPayment { .. }
             | ManaAbilityResume::ManaSourceSelection { .. }
             | ManaAbilityResume::UnlessPayment { .. }
@@ -25450,6 +25469,7 @@ fn visit_mana_ability_resume_chains<'a>(
         | ManaAbilityResume::PlanarDieRoll { .. }
         | ManaAbilityResume::TurnFaceUp { .. }
         | ManaAbilityResume::EndContinuousEffect { .. }
+        | ManaAbilityResume::RoomUnlock { .. }
         | ManaAbilityResume::ManaPayment { .. }
         | ManaAbilityResume::ManaSourceSelection { .. }
         | ManaAbilityResume::CombatTaxPayment { .. }

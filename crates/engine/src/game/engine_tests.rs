@@ -3117,8 +3117,8 @@ fn a_room_cast_from_exile_offers_the_face_choice_per_cast() {
 /// IS eligible. Before this fix the unlock cost paid via
 /// `PaymentContext::Effect`, which rejects every restriction — the restricted
 /// {R} could not pay and the unlock failed. Reverting the
-/// `pay_special_action_mana_cost` wiring flips this assertion (the unlock
-/// would error "Cannot pay mana cost").
+/// `pay_special_action_mana_cost_with_resume` wiring flips this assertion (the
+/// unlock would error "Cannot pay mana cost").
 #[test]
 fn unlock_door_restricted_mana_pays_room_unlock_cost() {
     use crate::types::mana::{ManaRestriction, ManaType, ManaUnit, SpecialAction};

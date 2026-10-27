@@ -774,6 +774,7 @@ fn classify_deferred_life_root(
             | ManaAbilityResume::CompanionToHand { .. }
             | ManaAbilityResume::PlanarDieRoll { .. }
             | ManaAbilityResume::EndContinuousEffect { .. }
+            | ManaAbilityResume::RoomUnlock { .. }
             | ManaAbilityResume::TurnFaceUp { .. }
             | ManaAbilityResume::UnlessPayment { .. }
             | ManaAbilityResume::CombatTaxPayment { .. }
@@ -877,6 +878,7 @@ fn record_root_from_resume(
         | ManaAbilityResume::CompanionToHand { .. }
         | ManaAbilityResume::PlanarDieRoll { .. }
         | ManaAbilityResume::EndContinuousEffect { .. }
+        | ManaAbilityResume::RoomUnlock { .. }
         | ManaAbilityResume::TurnFaceUp { .. }
         | ManaAbilityResume::UnlessPayment { .. }
         | ManaAbilityResume::CombatTaxPayment { .. }

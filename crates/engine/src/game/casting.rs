@@ -21189,10 +21189,11 @@ struct AutoTapProbeOptions<'a> {
     /// CR 605.3b + CR 616.1 + CR 605.4a: capabilities of the live payment this
     /// preview stands in for. Defaults to `Resumable` — spell casts, ability
     /// activations, resumable special actions (companion, planar die roll,
-    /// turn face up, end continuous effect), and combat-tax declarations all
-    /// carry a typed root and suspend for the choice. Rootless payments
-    /// (`pay_unless_cost` outside combat, Room unlock) preview `Unresumable` so
-    /// the preview cannot promise a payment the live path then fails.
+    /// turn face up, end continuous effect, Room unlock), and combat-tax
+    /// declarations all carry a typed root and suspend for the choice.
+    /// Rootless payments (`pay_unless_cost` outside combat) preview
+    /// `Unresumable` so the preview cannot promise a payment the live path then
+    /// fails.
     paused: PausedManaPayment,
     phyrexian_life_budget: ProbeLifeBudget,
 }
@@ -22941,9 +22942,8 @@ pub(crate) enum PausedManaPayment {
     #[default]
     Resumable,
     /// The live payment cannot suspend (`pay_unless_cost` for resolution-time
-    /// "pay {X}" amounts and replacement costs, and the rootless
-    /// special-action compat entry used by Room unlock), so a pause means the
-    /// payment cannot complete.
+    /// "pay {X}" amounts and replacement costs), so a pause means the payment
+    /// cannot complete.
     Unresumable,
 }
 
@@ -23714,36 +23714,10 @@ pub(crate) enum SpecialActionManaPayment {
     Paused,
 }
 
-/// CR 116.2m + CR 709.5e: Pay a special action's mana cost (e.g. a Room's unlock
-/// cost) through a `PaymentContext::SpecialAction`, so CR 106.6 special-action
-/// spend restrictions (Smoky Lounge's "spend this mana only to … unlock doors")
-/// gate which restricted mana is eligible. Routes through the same single
-/// authority as effect-time payments, differing only in the payment context.
-pub(crate) fn pay_special_action_mana_cost(
-    state: &mut GameState,
-    player: PlayerId,
-    source_id: Option<ObjectId>,
-    cost: &crate::types::mana::ManaCost,
-    action: crate::types::mana::SpecialAction,
-    events: &mut Vec<GameEvent>,
-) -> Result<(), EngineError> {
-    match pay_special_action_mana_cost_with_resume(
-        state, player, source_id, cost, action, None, events,
-    )? {
-        SpecialActionManaPayment::Paid => Ok(()),
-        // Existing callers do not carry an outer continuation. Leave their
-        // historical error contract intact rather than committing their action
-        // while the mana-source cost is unresolved.
-        SpecialActionManaPayment::Paused => Err(EngineError::InvalidAction(
-            "Mana payment is awaiting a replacement choice".to_string(),
-        )),
-    }
-}
-
 /// CR 116.2 + CR 605.3b + CR 616.1: Special-action payment core for callers
-/// that retain a typed continuation. Unlike the compatibility wrapper above,
-/// a paused mana-source cost is surfaced as success so the continuation can
-/// resume the exact original action after the replacement choice.
+/// that retain a typed continuation. A paused mana-source cost is surfaced as
+/// success so the continuation can resume the exact original action after the
+/// replacement choice or pre-spend echo choice.
 pub(crate) fn pay_special_action_mana_cost_with_resume(
     state: &mut GameState,
     player: PlayerId,
@@ -23797,13 +23771,11 @@ pub(crate) fn pay_special_action_mana_cost_with_resume(
 }
 
 /// CR 116.2 + CR 106.6: Whether a special action's mana cost is payable after
-/// auto-tapping sources, for a live payment with the capabilities of `paused`.
-/// Continuation-carrying flows (companion, planar die roll, turning a morph
-/// face up, ending a continuous effect) pay through
-/// [`pay_special_action_mana_cost_with_resume`] and pass
-/// `PausedManaPayment::Resumable`; the rootless Room unlock pays through
-/// [`pay_special_action_mana_cost`], which cannot suspend. Room unlock has no
-/// affordability probe to parameterize, so it never guesses between the two.
+/// auto-tapping sources. Every shipped special action that pays a mana cost
+/// (companion to hand, planar die roll, turning a morph face up, ending a
+/// continuous effect, unlocking a Room door) carries a typed continuation and
+/// passes `PausedManaPayment::Resumable`, so a replacement choice or a
+/// pre-spend echo choice on an auto-tapped source is still payable.
 pub(crate) fn can_pay_special_action_mana_cost_after_auto_tap(
     state: &GameState,
     player: PlayerId,
@@ -23871,11 +23843,11 @@ fn pay_non_cast_mana_cost(
     // preview admits a bonus-dependent payment the live path then fails before
     // offering the choice.
     //
-    // A rootless payment (`pay_unless_cost`, Room unlock) cannot suspend for a
-    // choice, but a delayed deterministic bonus owes none and is settled at the
-    // same affordability boundary. A choice-owing batch is left untouched for
-    // the normal release boundary; the pool check below still decides whether
-    // the payment can proceed without it.
+    // A rootless payment (`pay_unless_cost`) cannot suspend for a choice, but a
+    // delayed deterministic bonus owes none and is settled at the same
+    // affordability boundary. A choice-owing batch is left untouched for the
+    // normal release boundary; the pool check below still decides whether the
+    // payment can proceed without it.
     let permissions = {
         let mana_spend_permission =
             player_mana_spend_permission_for_optional_spell(state, player, None);
