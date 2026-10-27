@@ -1999,15 +1999,6 @@ pub(crate) fn foretell_cost(state: &GameState, object_id: ObjectId) -> Option<Ma
         })
 }
 
-fn can_pay_special_action_cost_after_auto_tap(
-    state: &GameState,
-    player: PlayerId,
-    cost: &ManaCost,
-) -> bool {
-    let mut simulated = state.clone();
-    pay_unless_cost(&mut simulated, player, cost, &mut Vec::new()).is_ok()
-}
-
 /// CR 702.143a-b: A player may foretell a card from hand any time they have
 /// priority during their turn by paying {2}. This is a special action and does
 /// not use the stack.
@@ -2029,8 +2020,18 @@ pub fn can_foretell_card(state: &GameState, player: PlayerId, object_id: ObjectI
         return false;
     }
 
-    let cost = ManaCost::generic(FORETELL_SPECIAL_ACTION_COST);
-    can_pay_special_action_cost_after_auto_tap(state, player, &cost)
+    // CR 116.2h + CR 605.3b: the action carries a typed continuation, so its
+    // probe admits a replacement-paused source or a bonus-dependent echo the
+    // live path can suspend for and settle before spending.
+    let cost = foretell_special_action_cost(state, player);
+    can_pay_special_action_mana_cost_after_auto_tap(
+        state,
+        player,
+        Some(object_id),
+        &cost,
+        SpecialAction::Foretell,
+        PausedManaPayment::Resumable,
+    )
 }
 
 /// Enumerates the current holder's finite Foretell special-action primers from
@@ -2400,17 +2401,80 @@ pub fn handle_foretell(
     let foretell_cost = super::keywords::effective_foretell_cost(state, object_id)
         .ok_or_else(|| EngineError::ActionNotAllowed("Card does not have foretell".to_string()))?;
 
-    pay_unless_cost(
+    // CR 116.2h + CR 702.143a-b: paying {2} is a special action, so its mana
+    // payment carries a typed continuation. A replacement-aware source cost or
+    // a pre-spend echo choice suspends here with the card still in hand and no
+    // mana spent; the action completes only when the continuation does.
+    let payment_cost = foretell_special_action_cost(state, player);
+    let turn_foretold = state.turn_number;
+    let resume = crate::types::game_state::ManaAbilityResume::Foretell {
+        player,
+        object_id,
+        cost: foretell_cost.clone(),
+        payment_cost: payment_cost.clone(),
+        turn_foretold,
+    };
+    match pay_foretell_payment(state, player, object_id, &payment_cost, &resume, events)? {
+        SpecialActionManaPayment::Paid => begin_foretell_cost_move(
+            state,
+            player,
+            object_id,
+            foretell_cost,
+            turn_foretold,
+            events,
+        ),
+        SpecialActionManaPayment::Paused => Ok(state.waiting_for.clone()),
+    }
+}
+
+/// CR 116.2h + CR 118.7a: the {2} foretell special-action cost, reduced by any
+/// active `ReduceActionCost { action: Foretell }` statics. Single authority for
+/// the legality probe and the live payment.
+fn foretell_special_action_cost(state: &GameState, player: PlayerId) -> ManaCost {
+    apply_special_action_cost_reduction(
         state,
         player,
-        &ManaCost::generic(FORETELL_SPECIAL_ACTION_COST),
+        SpecialAction::Foretell,
+        ManaCost::generic(FORETELL_SPECIAL_ACTION_COST),
+    )
+}
+
+/// CR 116.2h + CR 605.3b + CR 616.1: pay the latched foretell cost through the
+/// shared special-action continuation.
+fn pay_foretell_payment(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    payment_cost: &ManaCost,
+    resume: &crate::types::game_state::ManaAbilityResume,
+    events: &mut Vec<GameEvent>,
+) -> Result<SpecialActionManaPayment, EngineError> {
+    pay_special_action_mana_cost_with_resume(
+        state,
+        player,
+        Some(object_id),
+        payment_cost,
+        SpecialAction::Foretell,
+        Some(resume),
         events,
-    )?;
+    )
+}
+
+/// CR 702.143a-b + CR 614.1 + CR 616.1: begin the replacement-aware zone move
+/// that exiles the paid card face down and stamps its foretell permission.
+fn begin_foretell_cost_move(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    cost: ManaCost,
+    turn_foretold: u32,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
     state.pending_cost_move_resume = Some(PendingCostMoveResume::Foretell {
         player,
         object_id,
-        cost: foretell_cost,
-        turn_foretold: state.turn_number,
+        cost,
+        turn_foretold,
     });
 
     let move_event_start = events.len();
@@ -2437,6 +2501,47 @@ pub fn handle_foretell(
             unreachable!("foretell moves a hand card to exile, never an aura to the battlefield")
         }
     }
+}
+
+/// CR 116.2h + CR 605.3b + CR 616.1: resume a foretell special action whose
+/// auto-tapped source paused or whose pre-spend echo choice has been answered.
+/// The payment cost and permission fields were latched at announcement and are
+/// not re-derived; a second pause keeps the same typed root.
+pub(crate) fn resume_foretell_payment(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    cost: ManaCost,
+    payment_cost: ManaCost,
+    turn_foretold: u32,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    let resume = crate::types::game_state::ManaAbilityResume::Foretell {
+        player,
+        object_id,
+        cost: cost.clone(),
+        payment_cost: payment_cost.clone(),
+        turn_foretold,
+    };
+    match pay_foretell_payment(state, player, object_id, &payment_cost, &resume, events)? {
+        SpecialActionManaPayment::Paid => {
+            begin_foretell_cost_move(state, player, object_id, cost, turn_foretold, events)
+        }
+        SpecialActionManaPayment::Paused => Ok(state.waiting_for.clone()),
+    }
+}
+
+/// CR 116.2h + CR 118.3b: the mana component was already spent before a
+/// deferred life payment. Finish the paid action without paying again.
+pub(crate) fn finish_paid_foretell(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    cost: ManaCost,
+    turn_foretold: u32,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    begin_foretell_cost_move(state, player, object_id, cost, turn_foretold, events)
 }
 
 /// CR 702.143a-c + CR 614.1 + CR 616.1: A card is foretold only when the
@@ -23773,9 +23878,10 @@ pub(crate) fn pay_special_action_mana_cost_with_resume(
 /// CR 116.2 + CR 106.6: Whether a special action's mana cost is payable after
 /// auto-tapping sources. Every shipped special action that pays a mana cost
 /// (companion to hand, planar die roll, turning a morph face up, ending a
-/// continuous effect, unlocking a Room door) carries a typed continuation and
-/// passes `PausedManaPayment::Resumable`, so a replacement choice or a
-/// pre-spend echo choice on an auto-tapped source is still payable.
+/// continuous effect, unlocking a Room door, foretelling a card from hand)
+/// carries a typed continuation and passes `PausedManaPayment::Resumable`, so
+/// a replacement choice or a pre-spend echo choice on an auto-tapped source is
+/// still payable.
 pub(crate) fn can_pay_special_action_mana_cost_after_auto_tap(
     state: &GameState,
     player: PlayerId,

@@ -3255,7 +3255,8 @@ fn fund_restricted_pool(
 /// is paid through `PaymentContext::SpecialAction(TurnFaceUp)`, the permanent
 /// flips face up, a `TurnedFaceUp` event fires, and the pool empties. This is the
 /// positive reach-guard proving the payment routes through the real
-/// `pay_special_action_mana_cost` site, so R2/R3's negatives aren't vacuous.
+/// `pay_special_action_mana_cost_with_resume` site, so R2/R3's negatives aren't
+/// vacuous.
 #[test]
 fn turn_face_up_restricted_mana_funds_special_action() {
     use crate::types::mana::{ManaRestriction, SpecialAction};

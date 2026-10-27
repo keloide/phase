@@ -4178,6 +4178,24 @@ fn resume_mana_ability_root_payment(
             door,
             cost,
         } => super::room::resume_room_unlock_payment(state, player, object_id, door, cost, events),
+        // CR 116.2h + CR 605.3b: NOT compiler-forced — the `resume =>`
+        // catch-all below would silently route a paused foretell payment into
+        // `resume_waiting_for`, which `unreachable!()`s for this family.
+        ManaAbilityResume::Foretell {
+            player,
+            object_id,
+            cost,
+            payment_cost,
+            turn_foretold,
+        } => super::casting::resume_foretell_payment(
+            state,
+            player,
+            object_id,
+            cost,
+            payment_cost,
+            turn_foretold,
+            events,
+        ),
         // CR 605.3a + CR 602.2b: the window's activation completed; the pending
         // activation decides its payment again.
         ManaAbilityResume::ManaAbilityManaPayment {
@@ -4319,6 +4337,22 @@ pub(crate) fn finish_mana_root_after_deferred_life_payment(
         } => Ok(super::room::finish_paid_room_unlock(
             state, player, object_id, door, events,
         )),
+        // CR 116.2h + CR 118.3b: the deferred life component finished, so the
+        // paid foretell action exiles and stamps the card once.
+        ManaAbilityResume::Foretell {
+            player,
+            object_id,
+            cost,
+            turn_foretold,
+            ..
+        } => super::casting::finish_paid_foretell(
+            state,
+            player,
+            object_id,
+            cost,
+            turn_foretold,
+            events,
+        ),
         // CR 116.2i + CR 118.3b: the deferred life component finished, so the
         // paid roll commits once with its locked cost.
         ManaAbilityResume::PlanarDieRoll { player, .. } => {
@@ -6084,12 +6118,13 @@ pub(crate) fn resume_waiting_for(
         | ManaAbilityResume::FinalizePendingManaPayment { .. }
         | ManaAbilityResume::CombatTaxPayment { .. }
         | ManaAbilityResume::CompanionToHand { .. }
-        // CR 116.2c + CR 116.2i + CR 116.2b + CR 116.2m: like
-        // `CompanionToHand`, the pay-to-end, planar-die, turn-face-up, and
-        // Room-unlock special actions are resumed by `resume_mana_ability_root`'s
-        // named arms, never here.
+        // CR 116.2c + CR 116.2i + CR 116.2b + CR 116.2m + CR 116.2h: like
+        // `CompanionToHand`, the pay-to-end, planar-die, turn-face-up,
+        // Room-unlock, and foretell special actions are resumed by
+        // `resume_mana_ability_root`'s named arms, never here.
         | ManaAbilityResume::EndContinuousEffect { .. }
         | ManaAbilityResume::RoomUnlock { .. }
+        | ManaAbilityResume::Foretell { .. }
         | ManaAbilityResume::PlanarDieRoll { .. }
         | ManaAbilityResume::TurnFaceUp { .. } => {
             unreachable!("effect-cost resume is handled by resume_mana_ability_root")

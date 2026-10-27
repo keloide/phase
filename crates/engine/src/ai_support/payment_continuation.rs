@@ -775,6 +775,7 @@ fn classify_deferred_life_root(
             | ManaAbilityResume::PlanarDieRoll { .. }
             | ManaAbilityResume::EndContinuousEffect { .. }
             | ManaAbilityResume::RoomUnlock { .. }
+            | ManaAbilityResume::Foretell { .. }
             | ManaAbilityResume::TurnFaceUp { .. }
             | ManaAbilityResume::UnlessPayment { .. }
             | ManaAbilityResume::CombatTaxPayment { .. }
@@ -879,6 +880,7 @@ fn record_root_from_resume(
         | ManaAbilityResume::PlanarDieRoll { .. }
         | ManaAbilityResume::EndContinuousEffect { .. }
         | ManaAbilityResume::RoomUnlock { .. }
+        | ManaAbilityResume::Foretell { .. }
         | ManaAbilityResume::TurnFaceUp { .. }
         | ManaAbilityResume::UnlessPayment { .. }
         | ManaAbilityResume::CombatTaxPayment { .. }
