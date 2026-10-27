@@ -34,6 +34,7 @@ use crate::types::resolved_commands::ResolvedStackEntryFinalizeCommand;
 use crate::types::statics::{CostModifyMode, CostReductionReach, StaticMode, StaticModeKind};
 use crate::types::zones::{ExileCostSourceZone, Zone};
 
+use super::announcement_triggers::stage_with_pending_owner;
 use super::casting::emit_targeting_events;
 use super::effects::counters::add_counter_with_replacement;
 use super::engine::EngineError;
@@ -1206,7 +1207,9 @@ pub(crate) fn eligible_behold_choices(
     source: ObjectId,
     filter: &TargetFilter,
 ) -> Vec<ObjectId> {
-    let ctx = super::filter::FilterContext::from_source(state, source);
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player);
     let mut choices: Vec<ObjectId> = state
         .battlefield
         .iter()
@@ -2125,6 +2128,7 @@ pub(crate) fn begin_deferred_target_selection(
         );
         // CR 601.2c + CR 603.2: each automatically declared target becomes the
         // target of the spell or ability once, as a prompted declaration emits it.
+        let event_start = events.len();
         super::casting::emit_targeting_events(
             state,
             &declared_targets_in_chain(&pending.ability),
@@ -2133,6 +2137,14 @@ pub(crate) fn begin_deferred_target_selection(
             super::casting::pending_cast_targeter(state, &pending),
             events,
         );
+        // CR 601.2c + CR 603.2: Stage announcement triggers (e.g., Horobi) after
+        // target declaration but before cost payment, so automatic mana payments
+        // (e.g., sacrificing Blood Pet) don't move the target before the trigger
+        // is matched. The activation route uses begin_activation_trigger_collection();
+        // spells use the in-flight spell trigger carrier.
+        if pending.activation_ability_index.is_none() {
+            stage_with_pending_owner(state, &pending, events, event_start);
+        }
         if pending.activation_ability_index.is_some() {
             // CR 602.2b + CR 601.2c: automatic target declaration remains
             // before the activation's payment boundary, including after X was
@@ -2160,6 +2172,7 @@ pub(crate) fn begin_deferred_target_selection(
         );
         // CR 601.2c + CR 603.2: each automatically declared target becomes the
         // target of the spell or ability once, as a prompted declaration emits it.
+        let event_start = events.len();
         super::casting::emit_targeting_events(
             state,
             &declared_targets_in_chain(&pending.ability),
@@ -2168,6 +2181,14 @@ pub(crate) fn begin_deferred_target_selection(
             super::casting::pending_cast_targeter(state, &pending),
             events,
         );
+        // CR 601.2c + CR 603.2: Stage announcement triggers (e.g., Horobi) after
+        // target declaration but before cost payment, so automatic mana payments
+        // (e.g., sacrificing Blood Pet) don't move the target before the trigger
+        // is matched. The activation route uses begin_activation_trigger_collection();
+        // spells use the in-flight spell trigger carrier.
+        if pending.activation_ability_index.is_none() {
+            stage_with_pending_owner(state, &pending, events, event_start);
+        }
         if pending.activation_ability_index.is_some() {
             // CR 602.2b + CR 601.2c: automatic target declaration remains
             // before the activation's payment boundary, including after X was
@@ -2833,12 +2854,107 @@ fn park_cost_payment_triggers_if_paused(
 /// terminal completion. Mirrors the pair `PendingCostMoveResume::SacrificeForCost`
 /// carries. Both fields live in `PendingCostMoveResume::Cast` while paused.
 #[derive(Debug, Default)]
-struct CostMoveLedger {
+pub(crate) struct CostMoveLedger {
     /// Cost events emitted in earlier actions of this one logical payment,
     /// withheld from trigger collection until the group is stamped.
     deferred_cost_events: Vec<GameEvent>,
     /// Per-turn LKI record identities of the battlefield departures so far.
     departure_record_indices: Vec<usize>,
+}
+
+impl CostMoveLedger {
+    /// Rebuild the ledger a paused cost-move root carried across its pause.
+    pub(crate) fn resumed(
+        deferred_cost_events: Vec<GameEvent>,
+        departure_record_indices: Vec<usize>,
+    ) -> Self {
+        Self {
+            deferred_cost_events,
+            departure_record_indices,
+        }
+    }
+
+    /// Hand the ledger's parts to the typed resume root that carries them
+    /// across a pause: `(deferred_cost_events, departure_record_indices)`.
+    pub(crate) fn into_parts(self) -> (Vec<GameEvent>, Vec<usize>) {
+        (self.deferred_cost_events, self.departure_record_indices)
+    }
+
+    /// CR 603.2c + CR 603.10a: A move of `chosen` paused for a replacement
+    /// choice after emitting `fragment`. Record its departures and, while a
+    /// simultaneous-departure group can still form, withhold the fragment so
+    /// terminal settlement collects the whole group's triggers once. Returns
+    /// whether the fragment was withheld; when it was not, the caller parks the
+    /// fragment's triggers itself.
+    pub(crate) fn retain_paused_fragment(
+        &mut self,
+        state: &GameState,
+        fragment: &[GameEvent],
+        chosen: &[ObjectId],
+    ) -> bool {
+        record_sacrifice_cost_departure_records(
+            &mut self.departure_record_indices,
+            fragment,
+            chosen,
+        );
+        let withhold = cost_move_group_may_form(state, chosen, &self.departure_record_indices);
+        if withhold {
+            self.deferred_cost_events.extend_from_slice(fragment);
+        }
+        withhold
+    }
+
+    /// CR 603.10a + CR 603.2c: Every selected object has moved. Stamp the
+    /// selected battlefield departures, across the withheld fragments and
+    /// `events[current_start..]`, as one simultaneous departure (events and the
+    /// per-turn LKI records), then collect the withheld fragments together with
+    /// the current one exactly once. With nothing withheld the current fragment
+    /// stays with the action's ordinary trigger collection.
+    pub(crate) fn settle(
+        self,
+        state: &mut GameState,
+        pending: Option<&mut PendingCast>,
+        chosen: &[ObjectId],
+        events: &mut [GameEvent],
+        current_start: usize,
+    ) {
+        let Self {
+            mut deferred_cost_events,
+            mut departure_record_indices,
+        } = self;
+        record_sacrifice_cost_departure_records(
+            &mut departure_record_indices,
+            &events[current_start..],
+            chosen,
+        );
+        let group = selected_battlefield_departures(
+            chosen,
+            deferred_cost_events
+                .iter()
+                .chain(events[current_start..].iter()),
+        );
+        crate::game::zones::mark_simultaneous_departures(&mut deferred_cost_events, &group);
+        crate::game::zones::mark_simultaneous_departures(&mut events[current_start..], &group);
+        crate::game::zones::mark_simultaneous_departure_records(
+            state,
+            &departure_record_indices,
+            &group,
+        );
+        if !deferred_cost_events.is_empty() {
+            // CR 603.2 + CR 603.3b: earlier action fragments of this payment were
+            // withheld from trigger collection; collect the fully stamped group
+            // once, together with this action's fragment.
+            let current_end = events.len();
+            settle_sacrifice_for_cost_events(
+                state,
+                pending,
+                deferred_cost_events,
+                events,
+                current_start,
+                current_end,
+            );
+        }
+    }
 }
 
 /// CR 603.10a: Whether the selected objects can still leave the battlefield
@@ -2921,18 +3037,8 @@ fn move_cost_objects(
                 // CR 603.10a: the departures so far, and (while a group can still
                 // form) their events, travel with the root so terminal completion
                 // stamps the whole group and collects its triggers once.
-                record_sacrifice_cost_departure_records(
-                    &mut ledger.departure_record_indices,
-                    &events[cost_event_start..],
-                    chosen,
-                );
                 let withhold =
-                    cost_move_group_may_form(state, chosen, &ledger.departure_record_indices);
-                if withhold {
-                    ledger
-                        .deferred_cost_events
-                        .extend_from_slice(&events[cost_event_start..]);
-                }
+                    ledger.retain_paused_fragment(state, &events[cost_event_start..], chosen);
                 state.pending_cost_move_resume = Some(PendingCostMoveResume::Cast {
                     player,
                     pending: Some(Box::new(pending.clone())),
@@ -3005,42 +3111,8 @@ fn finish_cost_object_moves(
     // Evidence, craft's graveyard materials), which are never part of it, and a
     // call resumed after a replacement-choice pause recomputes the whole group
     // from the ledger it carried.
-    let CostMoveLedger {
-        mut deferred_cost_events,
-        mut departure_record_indices,
-    } = ledger;
-    record_sacrifice_cost_departure_records(
-        &mut departure_record_indices,
-        &events[cost_event_start..],
-        &chosen,
-    );
-    let group = selected_battlefield_departures(
-        &chosen,
-        deferred_cost_events
-            .iter()
-            .chain(events[cost_event_start..].iter()),
-    );
-    crate::game::zones::mark_simultaneous_departures(&mut deferred_cost_events, &group);
-    crate::game::zones::mark_simultaneous_departures(&mut events[cost_event_start..], &group);
-    crate::game::zones::mark_simultaneous_departure_records(
-        state,
-        &departure_record_indices,
-        &group,
-    );
     let mut pending = pending;
-    if !deferred_cost_events.is_empty() {
-        // CR 603.2 + CR 603.3b: earlier action fragments of this payment were
-        // withheld from trigger collection; collect the fully stamped group once,
-        // together with this action's fragment.
-        settle_sacrifice_for_cost_events(
-            state,
-            Some(&mut pending),
-            deferred_cost_events,
-            events,
-            cost_event_start,
-            events.len(),
-        );
-    }
+    ledger.settle(state, Some(&mut pending), &chosen, events, cost_event_start);
 
     // CR 400.7j + CR 400.7 + CR 608.2k + CR 608.2h: Every cost object move above is now
     // complete, so settle the cost-paid provenance: re-pin the referent to the
@@ -3670,7 +3742,9 @@ fn validate_deferred_spell_sacrifices_at_commit(
             state,
             id,
             &selection.filter,
-            &super::filter::FilterContext::from_source(state, pending.object_id),
+            // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+            // activated ability).
+            &super::filter::FilterContext::from_source_with_controller(pending.object_id, player),
         ) {
             return Err(EngineError::ActionNotAllowed(
                 "Deferred sacrifice permanent no longer matches the sacrifice cost".to_string(),
@@ -3877,7 +3951,7 @@ fn pay_delve_at_commit(
 /// that has actually left the battlefield in this action fragment. The matching
 /// event copy is kept separately in the typed resume root so terminal stamping
 /// can update both event buffers and the authoritative LKI ledger.
-fn record_sacrifice_cost_departure_records(
+pub(crate) fn record_sacrifice_cost_departure_records(
     departure_record_indices: &mut Vec<usize>,
     events: &[GameEvent],
     chosen: &[ObjectId],
@@ -4806,7 +4880,9 @@ pub(crate) fn handle_unattach_for_cost(
             "Must unattach at least one attachment to pay the cost".to_string(),
         ));
     }
-    let ctx = super::filter::FilterContext::from_source(state, pending.object_id)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(pending.object_id, player)
         .with_granting_object(pending.ability.context.granting_object);
     for &id in chosen {
         if !choices.contains(&id) {
@@ -6212,6 +6288,31 @@ pub(crate) fn finish_activated_ability_at_payment_boundary(
         )
     })?;
 
+    // CR 601.2c + CR 602.2b + CR 603.2: Targets have been declared and targeting
+    // events emitted before costs are paid. Collect any pre-payment announcement
+    // triggers now against the pre-payment game state so costs (such as activating
+    // mana abilities that sacrifice a creature target, or paying non-mana costs)
+    // do not alter the target's qualification or zone before becomes-target triggers
+    // are matched. Only an owned announcement scope has a carrier to commit them;
+    // an unowned one leaves collection to the priority pipeline.
+    if let crate::types::game_state::AnnouncementEventScope::From { start } =
+        state.announcement_event_scope
+    {
+        let unclaimed = super::announcement_triggers::unclaimed_events(state, events, start);
+        if !unclaimed.is_empty() {
+            pending.begin_activation_trigger_collection();
+            if let Some(collection) = pending.activation_trigger_collection.as_deref_mut() {
+                collection.collect(state, &unclaimed);
+                super::announcement_triggers::claim_ordinary_collected_span(
+                    state,
+                    events,
+                    start,
+                    events.len(),
+                );
+            }
+        }
+    }
+
     if !pending.cost.is_without_paying_mana() {
         return super::casting::finalize_pending_activation_mana_payment(
             state,
@@ -7084,6 +7185,24 @@ fn surface_next_interactive_activation_cost_leg(
         })
     {
         if let Some(filter) = filter {
+            // CR 107.3a + CR 602.2b: the announced X is the number of cards revealed.
+            let count =
+                super::quantity::resolve_quantity_with_targets(state, count, &pending.ability)
+                    .max(0) as usize;
+            if count == 0 {
+                // CR 107.3a + CR 601.2h: an announced X of 0 reveals no cards, so
+                // the leg is paid by doing nothing — no dead prompt.
+                pending.activation_cost = remove_first_activation_cost_matching(
+                    pending
+                        .activation_cost
+                        .take()
+                        .expect("checked activation cost is present"),
+                    |cost| matches!(cost, AbilityCost::Reveal { .. }),
+                );
+                return surface_next_unpaid_interactive_activation_cost(
+                    state, player, pending, events,
+                );
+            }
             let choices = super::casting::find_eligible_reveal_targets(
                 state,
                 player,
@@ -7091,7 +7210,7 @@ fn surface_next_interactive_activation_cost_leg(
                 granting_object,
                 filter,
             );
-            if choices.len() < *count as usize {
+            if choices.len() < count {
                 return Err(EngineError::ActionNotAllowed(
                     "Not enough eligible cards in hand to reveal".to_string(),
                 ));
@@ -7108,7 +7227,7 @@ fn surface_next_interactive_activation_cost_leg(
                 player,
                 kind: PayCostKind::Reveal,
                 choices,
-                count: *count as usize,
+                count,
                 min_count: 0,
                 resume: CostResume::Spell {
                     spell: Box::new(pending),
@@ -8221,6 +8340,10 @@ pub(super) fn begin_required_cost_before_targets(
     pending.casting_permission_index = casting_permission_index;
     pending.cast_timing_permission = cast_timing_permission;
     pending.distribute = distribute;
+    // CR 601.2c: the targets this deferred selection chooses must satisfy the
+    // spell's cross-target constraints ("from a single graveyard"); the spell's
+    // resolved ability carries them, built from its definition.
+    pending.target_constraints = pending.ability.target_constraints.clone();
     pending.origin_zone = origin_zone;
     pending.payment_mode = payment_mode;
     pending.deferred_target_selection = true;
@@ -10758,27 +10881,14 @@ fn pay_additional_cost_with_source(
             // source is eligible unless a {T} cost is also present in the
             // activation cost (in which case the source was already tapped, so
             // !obj.tapped naturally excludes it).
-            let eligible: Vec<ObjectId> = state
-                .battlefield
-                .iter()
-                .copied()
-                .filter(|id| {
-                    state.objects.get(id).is_some_and(|obj| {
-                        obj.controller == player
-                            && !obj.tapped
-                            && super::filter::matches_target_filter(
-                                state,
-                                obj.id,
-                                filter,
-                                &super::filter::FilterContext::from_source(
-                                    state,
-                                    pending.object_id,
-                                )
-                                .with_granting_object(pending.ability.context.granting_object),
-                            )
-                    })
-                })
-                .collect();
+            let eligible = super::casting::find_eligible_tap_creatures_for_cost(
+                state,
+                player,
+                pending.object_id,
+                pending.ability.context.granting_object,
+                &cost,
+                filter,
+            );
             // CR 601.2b: The requirement shapes drive different prompts.
             // Fixed-count taps exactly `count`; the X-sentinel form (CR 107.3a)
             // taps freely within [0, eligible]; aggregate (Crew/Saddle/Teamwork)
@@ -10859,6 +10969,16 @@ fn pay_additional_cost_with_source(
                 }
                 return finish_pending_cost_or_cast(state, player, pending, events);
             };
+            // CR 107.3a: the pending ability carries the announced X that a
+            // "reveal X red cards" count reads.
+            let count =
+                super::quantity::resolve_quantity_with_targets(state, &count, &pending.ability)
+                    .max(0) as usize;
+            // CR 107.3a + CR 601.2h: an announced X of 0 reveals no cards;
+            // continue with the remaining costs.
+            if count == 0 {
+                return finish_pending_cost_or_cast(state, player, pending, events);
+            }
             // CR 701.20a + CR 601.2b: A filtered reveal requires interactive
             // card selection — return a WaitingFor, mirroring Discard.
             let eligible = super::casting::find_eligible_reveal_targets(
@@ -10869,7 +10989,7 @@ fn pay_additional_cost_with_source(
                 &filter,
             );
             // CR 601.2b: Defense-in-depth — payability already gated this.
-            if eligible.len() < count as usize {
+            if eligible.len() < count {
                 return Err(EngineError::ActionNotAllowed(
                     "Not enough eligible cards in hand to reveal".to_string(),
                 ));
@@ -10878,7 +10998,7 @@ fn pay_additional_cost_with_source(
                 player,
                 kind: PayCostKind::Reveal,
                 choices: eligible,
-                count: count as usize,
+                count,
                 min_count: 0,
                 resume: CostResume::Spell {
                     spell: Box::new(pending),
@@ -10946,6 +11066,13 @@ pub(crate) fn handle_reveal_for_cost(
             expected,
             chosen.len()
         )));
+    }
+    // CR 601.2h + CR 701.20a: revealing X cards shows X different cards, so
+    // the chosen cards must be distinct — one card can't pay for two.
+    if (0..chosen.len()).any(|i| chosen[i + 1..].contains(&chosen[i])) {
+        return Err(EngineError::InvalidAction(
+            "Selected cards must be unique".to_string(),
+        ));
     }
     for card_id in chosen {
         if !legal_cards.contains(card_id) {
@@ -11148,6 +11275,24 @@ fn additional_cost_x_max(
             .max()
             .unwrap_or(0),
         ),
+        // CR 107.3a + CR 601.2h: X in a reveal count is announced before the
+        // reveal; the engine caps it at the matching cards in hand, since
+        // revealing more is an unpayable cost (CR 118.3).
+        AbilityCost::Reveal {
+            count,
+            filter: Some(filter),
+        } if is_bare_x_count(count) => Some(
+            super::casting::find_eligible_reveal_targets(
+                state,
+                player,
+                source_id,
+                granting_object,
+                filter,
+            )
+            .len()
+            .try_into()
+            .unwrap_or(u32::MAX),
+        ),
         AbilityCost::Sacrifice(cost)
             if cost.requirement == SacrificeRequirement::Count { count: u32::MAX } =>
         {
@@ -11235,9 +11380,9 @@ fn additional_cost_x_max(
     }
 }
 
-/// True when a cost's count is exactly the announced X ("discard X cards"),
-/// the only X-count shape printed on a discard cost; the discardable-card
-/// count is then X's exact bound.
+/// True when a cost's count is exactly the announced X ("discard X cards",
+/// "reveal X red cards"), the shape printed on discard and reveal costs; the
+/// payable-card count is then X's exact bound.
 fn is_bare_x_count(count: &QuantityExpr) -> bool {
     matches!(
         count,
@@ -11277,7 +11422,9 @@ pub(super) fn activation_cost_needs_x_choice(
 /// announced before payment: a variable counter-removal count (CR 601.2b), a
 /// variable `{E}` amount (CR 107.3a + CR 601.2b, e.g. "Pay X {E}" — Chthonian
 /// Nightmare, issue #1092), or a discard whose count or mana-value filter reads
-/// X (CR 107.3a, e.g. "Discard X cards" — Gix, Yawgmoth Praetor). `AbilityCost::PayLife`/`PaySpeed` variable amounts
+/// X (CR 107.3a, e.g. "Discard X cards" — Gix, Yawgmoth Praetor), or a reveal
+/// whose count is X (CR 107.3a, e.g. "Reveal X red cards from your hand" —
+/// Martyr cycle). `AbilityCost::PayLife`/`PaySpeed` variable amounts
 /// are handled by a separate, older path (`additional_cost_x_max`'s `PayLife`
 /// arm feeds `pay_additional_cost_with_source` directly; `PaySpeed` rides the
 /// mana-ability `PayAmountChoice` channel) so are intentionally not duplicated
@@ -11292,6 +11439,10 @@ fn cost_needs_activation_x_announcement(cost: &AbilityCost) -> bool {
                     .as_ref()
                     .is_some_and(super::cost_payability::target_filter_has_x_mana_value_constraint)
         }
+        AbilityCost::Reveal {
+            count,
+            filter: Some(_),
+        } => is_bare_x_count(count),
         AbilityCost::Composite { costs } => costs.iter().any(cost_needs_activation_x_announcement),
         _ => false,
     }
@@ -14050,6 +14201,7 @@ fn spell_graveyard_replacement_def(
                 target: TargetFilter::SelfRef,
                 count: QuantityExpr::Fixed { value: 1 },
                 position,
+                arranger: None,
             },
             "CR 614.1a: if this spell would be put into its owner's graveyard, put it on its \
              owner's library instead.",
@@ -30009,7 +30161,7 @@ its replicate cost was paid.)\nDraw a card.";
             (
                 "reveal",
                 AbilityCost::Reveal {
-                    count: 1,
+                    count: QuantityExpr::Fixed { value: 1 },
                     filter: None,
                 },
             ),

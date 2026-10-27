@@ -19068,6 +19068,29 @@ fn announce_spell_on_stack(
     Ok(())
 }
 
+fn pending_cast_from_prepared(
+    prepared: &PreparedSpellCast,
+    resolved: ResolvedAbility,
+) -> PendingCast {
+    let mut pending = PendingCast::new(
+        prepared.object_id,
+        prepared.card_id,
+        resolved,
+        prepared.mana_cost.clone(),
+    );
+    pending.base_cost = Some(prepared.base_mana_cost.clone());
+    pending.casting_variant = prepared.casting_variant;
+    pending.casting_permission_index = prepared.casting_permission_index;
+    pending.cast_timing_permission = prepared.cast_timing_permission;
+    pending.distribute = prepared
+        .ability_def
+        .as_ref()
+        .and_then(|a| a.distribute.clone());
+    pending.origin_zone = prepared.origin_zone;
+    pending.payment_mode = prepared.payment_mode;
+    pending
+}
+
 /// Continue the casting pipeline from a PreparedSpellCast.
 /// Handles modal selection, targeting, aura targeting, and mana payment.
 /// Shared by handle_cast_spell and handle_warp_cost_choice.
@@ -19253,6 +19276,7 @@ fn continue_with_prepared(
             if let Some(targets) = auto_select_targets(&target_slots, &[])? {
                 let mut resolved = resolved;
                 assign_targets_in_chain(state, &mut resolved, &targets)?;
+                let event_start = events.len();
                 emit_targeting_events(
                     state,
                     &declared_targets_in_chain(&resolved),
@@ -19260,6 +19284,16 @@ fn continue_with_prepared(
                     player,
                     spell_targeter(state, prepared.object_id),
                     events,
+                );
+                // CR 601.2c + CR 603.2: stage announcement triggers for the Aura before
+                // payment, so automatic mana payment (e.g. sacrificing Blood Pet) does not
+                // move the target before triggers match.
+                let pending = pending_cast_from_prepared(&prepared, resolved.clone());
+                super::announcement_triggers::stage_with_pending_owner(
+                    state,
+                    &pending,
+                    events,
+                    event_start,
                 );
                 return check_additional_cost_or_pay(
                     state,
@@ -19278,22 +19312,7 @@ fn continue_with_prepared(
                 );
             } else {
                 let selection = begin_target_selection(&target_slots, &[])?;
-                let mut pending_aura = PendingCast::new(
-                    prepared.object_id,
-                    prepared.card_id,
-                    resolved,
-                    prepared.mana_cost.clone(),
-                );
-                pending_aura.base_cost = Some(prepared.base_mana_cost.clone());
-                pending_aura.casting_variant = prepared.casting_variant;
-                pending_aura.casting_permission_index = prepared.casting_permission_index;
-                pending_aura.cast_timing_permission = prepared.cast_timing_permission;
-                pending_aura.distribute = prepared
-                    .ability_def
-                    .as_ref()
-                    .and_then(|a| a.distribute.clone());
-                pending_aura.origin_zone = prepared.origin_zone;
-                pending_aura.payment_mode = prepared.payment_mode;
+                let pending_aura = pending_cast_from_prepared(&prepared, resolved);
                 return Ok(WaitingFor::TargetSelection {
                     player,
                     pending_cast: Box::new(pending_aura),
@@ -19340,6 +19359,7 @@ fn continue_with_prepared(
         if let Some(targets) = auto_select_targets(&target_slots, &[])? {
             let mut resolved = resolved;
             assign_targets_in_chain(state, &mut resolved, &targets)?;
+            let event_start = events.len();
             emit_targeting_events(
                 state,
                 &declared_targets_in_chain(&resolved),
@@ -19347,6 +19367,16 @@ fn continue_with_prepared(
                 player,
                 spell_targeter(state, prepared.object_id),
                 events,
+            );
+            // CR 601.2c + CR 603.2: stage announcement triggers for the mutating creature spell
+            // before payment, so automatic mana payment (e.g. sacrificing Blood Pet) does not
+            // move the target before triggers match.
+            let pending = pending_cast_from_prepared(&prepared, resolved.clone());
+            super::announcement_triggers::stage_with_pending_owner(
+                state,
+                &pending,
+                events,
+                event_start,
             );
             return check_additional_cost_or_pay(
                 state,
@@ -19365,22 +19395,7 @@ fn continue_with_prepared(
             );
         } else {
             let selection = begin_target_selection(&target_slots, &[])?;
-            let mut pending_mutate = PendingCast::new(
-                prepared.object_id,
-                prepared.card_id,
-                resolved,
-                prepared.mana_cost.clone(),
-            );
-            pending_mutate.base_cost = Some(prepared.base_mana_cost.clone());
-            pending_mutate.casting_variant = prepared.casting_variant;
-            pending_mutate.casting_permission_index = prepared.casting_permission_index;
-            pending_mutate.cast_timing_permission = prepared.cast_timing_permission;
-            pending_mutate.distribute = prepared
-                .ability_def
-                .as_ref()
-                .and_then(|a| a.distribute.clone());
-            pending_mutate.origin_zone = prepared.origin_zone;
-            pending_mutate.payment_mode = prepared.payment_mode;
+            let pending_mutate = pending_cast_from_prepared(&prepared, resolved);
             return Ok(WaitingFor::TargetSelection {
                 player,
                 pending_cast: Box::new(pending_mutate),
@@ -19736,6 +19751,7 @@ fn continue_with_prepared(
         {
             let mut resolved = resolved;
             assign_selected_slots_in_chain(state, &mut resolved, &targets)?;
+            let event_start = events.len();
             emit_targeting_events(
                 state,
                 &declared_targets_in_chain(&resolved),
@@ -19743,6 +19759,16 @@ fn continue_with_prepared(
                 player,
                 spell_targeter(state, prepared.object_id),
                 events,
+            );
+            // CR 601.2c + CR 603.2: stage announcement triggers for the spell before
+            // payment, so automatic mana payment (e.g. sacrificing Blood Pet) does not
+            // move the target before triggers match.
+            let pending = pending_cast_from_prepared(&prepared, resolved.clone());
+            super::announcement_triggers::stage_with_pending_owner(
+                state,
+                &pending,
+                events,
+                event_start,
             );
             return check_additional_cost_or_pay(
                 state,
@@ -19767,23 +19793,8 @@ fn continue_with_prepared(
             &target_slots,
             &target_constraints,
         )?;
-        let mut pending_targets = PendingCast::new(
-            prepared.object_id,
-            prepared.card_id,
-            resolved,
-            prepared.mana_cost.clone(),
-        );
-        pending_targets.base_cost = Some(prepared.base_mana_cost.clone());
-        pending_targets.casting_variant = prepared.casting_variant;
-        pending_targets.casting_permission_index = prepared.casting_permission_index;
-        pending_targets.cast_timing_permission = prepared.cast_timing_permission;
-        pending_targets.distribute = prepared
-            .ability_def
-            .as_ref()
-            .and_then(|a| a.distribute.clone());
+        let mut pending_targets = pending_cast_from_prepared(&prepared, resolved);
         pending_targets.target_constraints = target_constraints;
-        pending_targets.origin_zone = prepared.origin_zone;
-        pending_targets.payment_mode = prepared.payment_mode;
         return Ok(WaitingFor::TargetSelection {
             player,
             pending_cast: Box::new(pending_targets),
@@ -25191,7 +25202,9 @@ fn find_eligible_hand_cost_targets(
 ) -> Vec<ObjectId> {
     let effective_filter = super::cost_payability::cost_filter_before_x_announcement(filter);
     let filter_ref = effective_filter.as_ref();
-    let ctx = super::filter::FilterContext::from_source(state, source)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
         .with_granting_object(granting_object);
     state
         .players
@@ -25287,7 +25300,9 @@ pub(crate) fn find_eligible_exile_for_cost_targets(
             find_eligible_hand_cost_targets(state, player, source, granting_object, filter_ref)
         }
         ExileCostSourceZone::Graveyard => {
-            let ctx = super::filter::FilterContext::from_source(state, source)
+            // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+            // activated ability).
+            let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
                 .with_granting_object(granting_object);
             state
                 .players
@@ -25325,7 +25340,9 @@ pub(crate) fn find_eligible_unattach_for_cost_targets(
     filter: &TargetFilter,
     n: u32,
 ) -> Vec<ObjectId> {
-    let ctx = super::filter::FilterContext::from_source(state, source)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
         .with_granting_object(granting_object);
     state
         .battlefield
@@ -25622,7 +25639,9 @@ pub(crate) fn find_eligible_return_to_hand_targets(
     granting_object: Option<ObjectIncarnationRef>,
     filter: Option<&TargetFilter>,
 ) -> Vec<ObjectId> {
-    let ctx = super::filter::FilterContext::from_source(state, source)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
         .with_granting_object(granting_object);
     state
         .battlefield
@@ -25680,7 +25699,9 @@ pub(crate) fn find_eligible_remove_counter_for_cost_targets(
     counter_type: &crate::types::counter::CounterMatch,
     count: u32,
 ) -> Vec<ObjectId> {
-    let ctx = super::filter::FilterContext::from_source(state, source)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
         .with_granting_object(granting_object);
     state
         .battlefield
@@ -25707,7 +25728,9 @@ pub(super) fn find_eligible_tap_creatures_for_cost(
     cost: &AbilityCost,
     filter: &TargetFilter,
 ) -> Vec<ObjectId> {
-    let ctx = super::filter::FilterContext::from_source(state, source)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
         .with_granting_object(granting_object);
     let exclude_source = requires_untapped(cost);
     state
@@ -26332,13 +26355,19 @@ pub(crate) fn activated_ability_granting_object(
 /// eligible fodder under a "players can't sacrifice" effect. `pub` so `phase-ai`'s
 /// cast-time cost gates share it with the payment path in `cost_payability.rs` and
 /// `casting_costs.rs`.
-pub fn find_eligible_sacrifice_targets(
+/// CR 601.2h / CR 602.2b / CR 702.37e: The single authority for sacrifice-cost
+/// eligibility, parameterized by payment scope. Cast and activation scopes enforce
+/// static "players can't sacrifice permanents to cast spells or activate abilities"
+/// prohibitions (Yasharn, Angel of Jubilation); turn-face-up special actions do not.
+pub(crate) fn find_eligible_sacrifice_targets_for_scope(
     state: &GameState,
     player: PlayerId,
     source_id: ObjectId,
     granting_object: Option<ObjectIncarnationRef>,
     filter: &TargetFilter,
+    scope: Option<&super::costs::PaymentScope>,
 ) -> Vec<ObjectId> {
+    let skip_cant_sacrifice = matches!(scope, Some(super::costs::PaymentScope::TurnFaceUp { .. }));
     state
         .battlefield
         .iter()
@@ -26350,7 +26379,14 @@ pub fn find_eligible_sacrifice_targets(
             if obj.controller != player {
                 return false;
             }
-            if super::static_abilities::player_cant_sacrifice_as_cost(state, player, id) {
+            // CR 701.21a: A permanent with "can't be sacrificed" cannot be sacrificed
+            // for any cost regardless of payment scope (e.g. Assault Suit).
+            if super::static_abilities::object_has_static_other(state, id, "CantBeSacrificed") {
+                return false;
+            }
+            if !skip_cant_sacrifice
+                && super::static_abilities::player_cant_sacrifice_as_cost(state, player, id)
+            {
                 return false;
             }
             // CR 109.5 + CR 113.8: An activated cost's “you” refers to its activator.
@@ -26365,6 +26401,23 @@ pub fn find_eligible_sacrifice_targets(
             )
         })
         .collect()
+}
+
+pub fn find_eligible_sacrifice_targets(
+    state: &GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    granting_object: Option<ObjectIncarnationRef>,
+    filter: &TargetFilter,
+) -> Vec<ObjectId> {
+    find_eligible_sacrifice_targets_for_scope(
+        state,
+        player,
+        source_id,
+        granting_object,
+        filter,
+        None,
+    )
 }
 
 /// CR 118.3 + CR 601.2h: Activation-time affordability pre-gate. Delegates to
@@ -29226,6 +29279,14 @@ fn activate_with_cost_carrier(
         Err(error) => return Err(error),
     };
 
+    // CR 601.2c + CR 602.2b: the ability's cross-target constraints ("from a
+    // single graveyard") bind the whole target set it declares, whether its
+    // targets are chosen now, before any cost, or after an X announcement that
+    // sets how many it has (`deferred_target_selection`). Stated once and
+    // carried onto every target-bearing pending activation built below, as the
+    // modal sibling (`engine_modes::route_activated_modes`) carries its modes'.
+    let target_constraints = ability_def.target_constraints.clone();
+
     // CR 602.2b + CR 601.2b-i: announcement-only choices are resolved before
     // entering the shared target-before-cost boundary below.
     if let Some(ref cost) = activation_cost {
@@ -29263,6 +29324,7 @@ fn activate_with_cost_carrier(
             );
             pending_x.activation_phyrexian_intent = phyrexian_intent.clone();
             pending_x.activation_cost = remaining;
+            pending_x.target_constraints = target_constraints;
             pending_x.deferred_target_selection = has_effect_targets;
             // CR 601.2g + CR 601.2h: if a non-self battlefield-removal sub-cost
             // (Sacrifice / battlefield Exile / ReturnToHand) is still
@@ -29307,6 +29369,7 @@ fn activate_with_cost_carrier(
             );
             pending_x.activation_phyrexian_intent = phyrexian_intent.clone();
             pending_x.activation_cost = remaining;
+            pending_x.target_constraints = target_constraints;
             pending_x.deferred_target_selection = has_effect_targets;
             // CR 601.2f + CR 601.2h: POSITIVE signal — the residual non-mana tail
             // in `activation_cost` is still OUTSTANDING after mana payment, so
@@ -29900,7 +29963,6 @@ fn activate_with_cost_carrier(
 
     let target_slots = build_target_slots(state, &resolved)?;
     if !target_slots.is_empty() {
-        let target_constraints = ability_def.target_constraints.clone();
         if let Some(targets) =
             auto_select_targets_for_ability(state, &resolved, &target_slots, &target_constraints)?
         {
@@ -31554,6 +31616,11 @@ fn filter_prop_reads_chosen_target(prop: &FilterProp, read: TargetRead) -> bool 
         | FilterProp::DistinctFrom { reference: filter }
         | FilterProp::TargetsOnly { filter }
         | FilterProp::Targets { filter } => target_filter_reads_chosen_target(filter, read),
+        // CR 701.3a: the filter-matched host axis nests its own `TargetFilter`, so
+        // whether it reads a chosen target is exactly whether that filter does.
+        FilterProp::AttachedTo {
+            to: AttachmentReferent::Host { filter },
+        } => target_filter_reads_chosen_target(filter, read),
         FilterProp::SharesQuality { reference, .. } => reference
             .as_deref()
             .is_some_and(|x| target_filter_reads_chosen_target(x, read)),
@@ -34299,7 +34366,8 @@ fn cant_cast_filter_matches_for(
                 ChosenAttribute::CardName(n) => Some(n.as_str()),
                 _ => None,
             });
-            chosen_name.is_some_and(|name| name.eq_ignore_ascii_case(&spell_obj.name))
+            chosen_name
+                .is_some_and(|name| crate::game::filter::card_names_match(name, &spell_obj.name))
         }
         // Everything else — including IsChosenColor / IsChosenCardType properties —
         // flows through the shared source-aware typed-filter conjunction.

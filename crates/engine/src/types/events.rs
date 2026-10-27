@@ -889,6 +889,12 @@ impl EventObjectSnapshot {
             | FilterProp::AttachedTo { to: AttachmentReferent::Recipient }
             | FilterProp::AttachedTo { to: AttachmentReferent::Player { .. } }
             | FilterProp::AttachedTo { to: AttachmentReferent::DeclaredTarget { .. } }
+            // CR 701.3a: event snapshots carry no host relation, exactly as they
+            // carry none for the other four referents, so a `Host` filter must
+            // fail the reach gate LOUDLY rather than read an unhosted snapshot.
+            | FilterProp::AttachedTo {
+                to: AttachmentReferent::Host { .. },
+            }
             | FilterProp::Unpaired
             | FilterProp::OtherThanTriggerObject
             | FilterProp::MostPrevalentCreatureTypeIn { .. }
@@ -1755,6 +1761,15 @@ pub enum GameEvent {
         player_id: PlayerId,
         source_id: Option<ObjectId>,
         choice: String,
+    },
+    /// CR 608.2d: A player chose a card name as an instruction resolved
+    /// ("Choose a nonland card name" — Brain Pry). Chosen names are public, so
+    /// this carries the name for the game log and the frontend rather than
+    /// leaving it only on the source's `ChosenAttribute::CardName`.
+    CardNamed {
+        player_id: PlayerId,
+        source_id: Option<ObjectId>,
+        name: String,
     },
     /// CR 701.19a: Regeneration shield — consumed on use, expires at cleanup.
     Regenerated {

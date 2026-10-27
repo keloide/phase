@@ -5516,6 +5516,7 @@ fn floating_replacement_can_name_object(
         runtime_execute,
         mode,
         valid_card,
+        triggering_spell,
         condition,
         damage_modification,
         damage_source_filter,
@@ -5532,6 +5533,7 @@ fn floating_replacement_can_name_object(
         destination_zone: _,
         active_zones: _,
         damage_target_filter: _,
+        target_recipient_incarnation: _,
         combat_scope: _,
         draw_scope: _,
         die_ignore_rule: _,
@@ -5557,6 +5559,8 @@ fn floating_replacement_can_name_object(
         || runtime_execute.is_some()
         || !matches!(mode, crate::types::ability::ReplacementMode::Mandatory)
         || valid_card.is_some()
+        // Conservatively retain object-naming authority carried by the pin.
+        || triggering_spell.is_some()
         || condition.is_some()
         || damage_modification.is_some()
         || damage_source_filter.is_some()
@@ -8521,8 +8525,10 @@ mod tests {
         flate2::read::GzDecoder::new(gz)
             .read_to_string(&mut json)
             .expect("fixture .json.gz must inflate to UTF-8 JSON");
-        let envelope: serde_json::Value =
+        let mut envelope: serde_json::Value =
             serde_json::from_str(&json).expect("dump envelope parses as JSON");
+        // Committed pre-onset capture; onset-independent test (see record_captured_onsets).
+        crate::types::game_state::record_captured_onsets(&mut envelope);
         serde_json::from_value::<crate::types::game_state::PersistedGameState>(
             envelope["gameState"].clone(),
         )
@@ -18420,8 +18426,10 @@ mod tests {
         flate2::read::GzDecoder::new(&gz[..])
             .read_to_string(&mut json)
             .expect("fixture .json.gz must inflate to UTF-8 JSON");
-        let envelope: serde_json::Value =
+        let mut envelope: serde_json::Value =
             serde_json::from_str(&json).expect("dump envelope parses as JSON");
+        // Committed pre-onset capture; onset-independent test (see record_captured_onsets).
+        crate::types::game_state::record_captured_onsets(&mut envelope);
         // Cross the dump through the PRODUCTION decoder rather than a bare `GameState`
         // decode wrapped in `Raw`: `PersistedGameState`'s own `Deserialize` runs
         // `reject_legacy_raw_prompt_authority` and `decode_persisted_resolution_state`
@@ -26244,6 +26252,7 @@ mod tests {
                 is_suspected: false,
                 was_prepared: false,
                 attachments: Vec::new(),
+                intensity: 0,
             },
         );
         s
