@@ -2557,6 +2557,8 @@ pub(crate) fn can_pay_turn_face_up(
                 Some(object_id),
                 &cost,
                 crate::types::mana::SpecialAction::TurnFaceUp,
+                // Live payment carries `ManaAbilityResume::TurnFaceUp`.
+                PausedManaPayment::Resumable,
             )
         }
         AbilityCost::ReturnToHand {
