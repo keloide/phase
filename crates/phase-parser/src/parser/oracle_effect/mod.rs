@@ -50338,15 +50338,26 @@ fn parse_effect_chain_ir_body(
             }
         });
         // CR 608.2c + CR 608.2d + CR 118.12: an "any opponent / any player / any other
-        // player may" body is performed by the player who accepts, so its third-person
-        // anaphors name that player. Only when no rung above supplied a scope, the seed
-        // is applied to a counterfactual parse of the body and recorded as operand
-        // bindings (`lower::accepting_player_bindings`), emitted under
-        // `lower_effect_chain_ir`'s confinement check. It never enters the chunk context.
-        let accepting_player_bindings = match opponent_may_scope {
-            Some(_) if ctx.relative_player_scope.is_none() => {
+        // player may" action is performed by the player who accepts. Its immediate
+        // "if a player does" consequence names that same player, even when an enclosing
+        // trigger has a different relative player (for example, the upkeep player).
+        // Seed that consequence only when it directly follows an accepting-may clause;
+        // unrelated trigger-event anaphors keep the existing scope. The counterfactual
+        // parse records direct operand changes as bindings and lowering admits them only
+        // when they remain inside the accepting frame. The seed never enters chunk ctx.
+        let follows_accepting_may_action = opponent_may_scope.is_none()
+            && condition
+                .as_ref()
+                .is_some_and(AbilityCondition::is_optional_effect_performed)
+            && builder
+                .clauses()
+                .last()
+                .is_some_and(|previous| previous.opponent_may_scope.is_some());
+        let accepting_player_bindings = match (opponent_may_scope, follows_accepting_may_action) {
+            (Some(_), false) if ctx.relative_player_scope.is_none() => {
                 lower::accepting_player_bindings(&text_no_qty, ctx)
             }
+            (None, true) => lower::accepting_player_bindings(&text_no_qty, ctx),
             _ => Vec::new(),
         };
         // CR 608.2c + CR 614.1c: an entry-counter rider binds to the producer of

@@ -100967,6 +100967,24 @@ fn self_named_damage_to_that_player_keeps_accepting_player_binding() {
             .is_some_and(|trigger| trigger.execute.is_some()),
         "Sin Prodder's upkeep trigger must remain parsed"
     );
+    let trigger = &parsed.triggers[0];
+    let mut node = trigger.execute.as_deref();
+    let damage_target = loop {
+        match node {
+            Some(ability) => {
+                if let Effect::DealDamage { target, .. } = ability.effect.as_ref() {
+                    break Some(target);
+                }
+                node = ability.sub_ability.as_deref();
+            }
+            None => break None,
+        }
+    };
+    assert_eq!(
+        damage_target,
+        Some(&TargetFilter::ScopedPlayer),
+        "the accepted opponent must shadow the upkeep event player in the IfYouDo consequence: {trigger:#?}"
+    );
 
     let bindings = super::lower::accepting_player_bindings(
         "this creature deals damage to that player equal to that card's mana value",
