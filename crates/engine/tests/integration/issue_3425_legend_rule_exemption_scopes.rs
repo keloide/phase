@@ -194,7 +194,7 @@ fn hall_of_echoes_exempts_live_permanents_for_its_activator() {
         assert!(legend_rule_exempt(state, id));
         assert!(artifact
             .static_definitions
-            .iter()
+            .iter_all()
             .all(|definition| definition.mode != StaticMode::LegendRuleDoesntApply));
     }
 
