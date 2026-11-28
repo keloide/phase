@@ -353,6 +353,7 @@ fn hall_of_echoes_losing_its_only_target_prevents_both_instructions() {
     scenario.at_phase(Phase::PreCombatMain);
     let hall = add_funded_hall(&mut scenario);
     let donor = add_isamaru(&mut scenario, P0);
+    let alternate_donor = scenario.add_creature(P0, "Grizzly Bears", 2, 2).id();
     let (incumbent_mox, incoming_mox) = add_mox_pair(&mut scenario);
     scenario.with_mana_pool(
         P1,
@@ -387,7 +388,10 @@ fn hall_of_echoes_losing_its_only_target_prevents_both_instructions() {
         );
     };
     assert_eq!(target_slots.len(), 1);
-    assert_eq!(target_slots[0].legal_targets, [TargetRef::Object(donor)]);
+    let legal_targets = &target_slots[0].legal_targets;
+    assert_eq!(legal_targets.len(), 2);
+    assert!(legal_targets.contains(&TargetRef::Object(donor)));
+    assert!(legal_targets.contains(&TargetRef::Object(alternate_donor)));
     assert!(!target_slots[0].optional);
     runner
         .act(GameAction::ChooseTarget {
