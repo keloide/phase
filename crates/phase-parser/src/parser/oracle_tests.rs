@@ -11,7 +11,7 @@ use crate::types::ability::TurnWindow;
 use crate::types::ability::{
     AdditionalCostOrigin, AdditionalCostPaymentSource, BlockPairDirection, ChooseOneOfKind,
     CoinFlipRun, CombatRelation, CombatRelationSubject, CopyRecipient, CountScope,
-    CounterAdjustment, DamageKindFilter, DoorLockOp, ManaProduction, PlayerRelation,
+    CounterAdjustment, DamageKindFilter, DoorLockOp, PlayerRelation,
     SpellStackToGraveyardReplacement, SubAbilityLink, TargetReadOrigin,
 };
 use crate::types::counter::{CounterMatch, CounterType};
