@@ -16,6 +16,7 @@ use crate::game::conditions::{
     eval_source_is_tapped_on_battlefield,
 };
 use crate::game::devotion::count_devotion;
+use crate::game::effects::effect::is_live_object_rule_effect;
 use crate::game::filter::{
     attachment_relation_rejects, matches_target_filter, target_filter_characteristic_reads,
     target_filter_characteristic_reads_at, CharacteristicKinds, FilterContext,
@@ -10036,25 +10037,17 @@ fn gather_transient_continuous_effects_with(
             // `iter_cast_free_permission_source_ids`, giving one grant two
             // sources. CR 701.15b: `Goaded` is likewise a designation, not
             // an ability on the recipient; combat reads the live TCE directly.
-            // CR 611.2c + CR 613.11: a resolved `CantBeTargeted` rule effect
-            // (Vines of Vastwood, Veilstone Amulet) is read directly off the TCE by
-            // `static_abilities::transient_cant_be_targeted_prohibits`, so it is
-            // not an ability on the recipient and "loses all abilities" cannot
-            // clear it.
-            // CR 611.2c + CR 101.2: CantBeCountered is likewise a live rule
-            // prohibition, not an ability that can be removed from its recipient.
-            // CR 611.2c + CR 613.11: Combat reads admitted opponent-relative
-            // restrictions after characteristic and ability changes.
-            if transient_relative_blocker_filter(modification).is_some()
+            // CR 613.11: Direct transient object rules and opponent-relative
+            // combat restrictions apply after characteristic and ability changes.
+            if is_live_object_rule_effect(modification)
+                || transient_relative_blocker_filter(modification).is_some()
                 || matches!(
                     modification,
                     ContinuousModification::AddStaticMode {
                         mode: StaticMode::MayLookAtFaceDown
                             | StaticMode::ReduceAbilityCost { .. }
                             | StaticMode::CastFromHandFree { .. }
-                            | StaticMode::Goaded
-                            | StaticMode::CantBeTargeted { .. }
-                            | StaticMode::CantBeCountered,
+                            | StaticMode::Goaded,
                     }
                 )
             {

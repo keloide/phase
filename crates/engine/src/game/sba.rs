@@ -1382,12 +1382,9 @@ fn stamp_sba_departures(state: &mut GameState, events: &mut [GameEvent], perform
     zones::mark_simultaneous_departures(events, &departed);
 }
 
-/// CR 704.5j: A legendary permanent is exempt from the legend rule while an
-/// active `LegendRuleDoesntApply` static has an `affected` filter that matches
-/// it (Mirror Gallery's global exemption, Sakashima of a Thousand Faces /
-/// Mirror Box's "permanents you control", Cadric / Sliver Gravemother's
-/// type-scoped variants). The candidate is passed as the target object so
-/// type-scoped exemptions are evaluated per-permanent, not per-player.
+/// CR 704.5j: A legendary permanent is exempt from the legend rule while a
+/// functioning static (Mirror Box, Cadric, Soul Kindler) or a live rule effect
+/// (Hall of Echoes) exempts it. The affected filter is evaluated per permanent.
 ///
 /// This is the single authority the legend-rule SBA consults; it is public so
 /// rules-aware consumers (e.g. the AI's anti-self-harm policy) can ask the same
@@ -1398,24 +1395,29 @@ pub fn legend_rule_exempt(
     state: &GameState,
     permanent_id: crate::types::identifiers::ObjectId,
 ) -> bool {
-    let has_legend_rule_exemption_static = legend_rule_exemption_static_present(state);
-    legend_rule_exempt_with_gate(state, permanent_id, has_legend_rule_exemption_static)
+    let has_legend_rule_exemption = legend_rule_exemption_present(state);
+    legend_rule_exempt_with_gate(state, permanent_id, has_legend_rule_exemption)
 }
 
-fn legend_rule_exemption_static_present(state: &GameState) -> bool {
+fn legend_rule_exemption_present(state: &GameState) -> bool {
     crate::game::perf_counters::record_legend_rule_mode_gate_scan();
-    // Read the discriminant from the O(1) `StaticModePresence` index (Unit 1) instead of
-    // sweeping `game_functioning_statics`. A post-flush-precise superset: a spurious `true`
-    // falls through to the exact per-permanent exemption check.
+    // Read the static discriminant from the O(1) `StaticModePresence` index.
+    // A stored transient is also enough to reach the per-permanent liveness check.
     static_kind_present(state, StaticModeKind::LegendRuleDoesntApply)
+        || super::static_abilities::transient_object_rule_effects(
+            state,
+            &StaticMode::LegendRuleDoesntApply,
+        )
+        .next()
+        .is_some()
 }
 
 fn legend_rule_exempt_with_gate(
     state: &GameState,
     permanent_id: crate::types::identifiers::ObjectId,
-    has_legend_rule_exemption_static: bool,
+    has_legend_rule_exemption: bool,
 ) -> bool {
-    if !has_legend_rule_exemption_static {
+    if !has_legend_rule_exemption {
         return false;
     }
 
@@ -1426,6 +1428,10 @@ fn legend_rule_exempt_with_gate(
             target_id: Some(permanent_id),
             ..Default::default()
         },
+    ) || super::static_abilities::transient_object_rule_applies(
+        state,
+        permanent_id,
+        &StaticMode::LegendRuleDoesntApply,
     )
 }
 
@@ -1453,7 +1459,7 @@ fn check_legend_rule(
     any_performed: &mut bool,
     battlefield_snapshot: &[ObjectId],
 ) -> SbaPassControl {
-    let has_legend_rule_exemption_static = legend_rule_exemption_static_present(state);
+    let has_legend_rule_exemption = legend_rule_exemption_present(state);
 
     // A format may declare the pre-M14 scope, which is a different rule rather
     // than a variation on this one — global and choiceless. See
@@ -1464,7 +1470,7 @@ fn check_legend_rule(
             events,
             any_performed,
             battlefield_snapshot,
-            has_legend_rule_exemption_static,
+            has_legend_rule_exemption,
         );
     }
 
@@ -1483,12 +1489,8 @@ fn check_legend_rule(
                     })
                     .unwrap_or(false)
                     // CR 704.5j: a permanent exempted by a "legend rule doesn't
-                    // apply" static is excluded from the same-name grouping.
-                    && !legend_rule_exempt_with_gate(
-                        state,
-                        *id,
-                        has_legend_rule_exemption_static,
-                    )
+                    // apply" effect is excluded from the same-name grouping.
+                    && !legend_rule_exempt_with_gate(state, *id, has_legend_rule_exemption)
             })
             .collect();
 
@@ -1541,7 +1543,7 @@ fn check_legend_rule_pre_m14(
     events: &mut Vec<GameEvent>,
     any_performed: &mut bool,
     battlefield_snapshot: &[ObjectId],
-    has_legend_rule_exemption_static: bool,
+    has_legend_rule_exemption: bool,
 ) -> SbaPassControl {
     // BTreeMap (not HashMap) so the grouping is name-sorted and deterministic
     // across processes — issue #4878, same reason as the modern path.
@@ -1555,11 +1557,8 @@ fn check_legend_rule_pre_m14(
             continue;
         }
         let name = obj.name.clone();
-        // The exemption is scope-independent: a permanent a "legend rule
-        // doesn't apply" static exempts (Mirror Gallery, Sakashima, Mirror Box)
-        // is outside the grouping under either rule, so the shared filter is
-        // reused unchanged rather than re-derived.
-        if legend_rule_exempt_with_gate(state, id, has_legend_rule_exemption_static) {
+        // The same per-permanent exemption applies under either grouping rule.
+        if legend_rule_exempt_with_gate(state, id, has_legend_rule_exemption) {
             continue;
         }
         by_name.entry(name).or_default().push(id);

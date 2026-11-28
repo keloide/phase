@@ -279,14 +279,15 @@ fn evaluate_static_condition_for_ability(
     }
 }
 
-/// CR 611.2c: a resolved targeting or countering prohibition is a rule effect read
-/// straight off its transient effect, not an ability on the recipient.
-fn is_live_prohibition_rule_effect(modification: &ContinuousModification) -> bool {
+/// CR 611.2c + CR 613.11: these resolved effects modify the rules. Their
+/// enforcement reads the transient effect directly and can reach new objects.
+pub(crate) fn is_live_object_rule_effect(modification: &ContinuousModification) -> bool {
     matches!(
         modification,
         ContinuousModification::AddStaticMode {
-            mode: crate::types::statics::StaticMode::CantBeTargeted { .. }
-                | crate::types::statics::StaticMode::CantBeCountered,
+            mode: StaticMode::CantBeTargeted { .. }
+                | StaticMode::CantBeCountered
+                | StaticMode::LegendRuleDoesntApply,
         }
     )
 }
@@ -334,7 +335,7 @@ fn install_transient(
     let affected_recipient = match &affected {
         TargetFilter::SpecificObject { id }
             if modifications.iter().any(|modification| {
-                is_live_prohibition_rule_effect(modification)
+                is_live_object_rule_effect(modification)
                     || crate::game::layers::transient_relative_blocker_filter(modification)
                         .is_some()
             }) =>
@@ -641,26 +642,21 @@ fn bind_transient_effect(
         }
     }
 
-    // CR 611.2c + CR 613.11 + CR 109.5: A duration-bound "creatures you control
-    // can't be the targets of spells or abilities your opponents control this
-    // turn" (Veilstone Amulet) is a rule-changing effect, so it "can affect
-    // objects that weren't affected when that continuous effect began" — a
-    // creature that enters after it resolves is protected too. Keep the affected
-    // filter INTACT on one TCE rather than freezing it to a resolution-time
-    // `SpecificObject` set; the targeting gate reads the TCE directly
-    // (`static_abilities::transient_cant_be_targeted_prohibits`) and `layers.rs`
-    // never grafts it onto an object. A targeted grant (Vines of Vastwood) falls
-    // through to the chosen-target arms, which bind the recipient's incarnation
-    // (see `install_transient`).
+    // CR 611.2c + CR 613.11: Keep the affected filter intact on one TCE for
+    // direct rules such as Veilstone Amulet's targeting prohibition and Hall of
+    // Echoes's legend-rule exemption. Their enforcement re-evaluates the filter
+    // so objects that enter later can qualify. CR 109.5: "you" uses the ability
+    // controller stored on the TCE. A targeted version (Vines of Vastwood) takes
+    // the chosen-target path below and binds the recipient's incarnation.
     if let Some(affected) = static_def.affected.clone() {
         if !generic_effect_affected_uses_inherited_targets(&affected)
-            && modifications.iter().any(is_live_prohibition_rule_effect)
+            && modifications.iter().any(is_live_object_rule_effect)
         {
             // CR 611.2c: determine rule-changing and characteristic-changing
             // populations independently, even when one definition contains both.
             let (rules, characteristics): (Vec<_>, Vec<_>) = modifications
                 .into_iter()
-                .partition(is_live_prohibition_rule_effect);
+                .partition(is_live_object_rule_effect);
             install_transient(
                 state,
                 end_permission,

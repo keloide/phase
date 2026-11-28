@@ -75,7 +75,9 @@ use crate::parser::oracle_nom::enters_under::{
     bind_control_clause, fold_control_clauses, name_entry_control_antecedent,
 };
 use crate::parser::oracle_nom::error::{oracle_err, OracleError};
-use crate::parser::oracle_static::parse_passive_cant_be_cast_spell_filter;
+use crate::parser::oracle_static::{
+    parse_legend_rule_exemption, parse_passive_cant_be_cast_spell_filter,
+};
 #[cfg(test)]
 use crate::parser::oracle_trigger::parse_trigger_line;
 use crate::parser::oracle_trigger::{split_spell_or_activation_disjunction, SubjectPerson};
@@ -14293,6 +14295,25 @@ fn parse_effect_clause_inner_with_damage_context(
     // CR 614.16: "Damage can't be prevented [this turn]" → Effect::AddRestriction
     if let Some(clause) = try_parse_damage_prevention_disabled(tp) {
         return clause;
+    }
+
+    // CR 611.2a + CR 704.5j: a resolved legend-rule exemption lasts for
+    // the stated duration, or for the rest of the game if none is stated.
+    if let Some(mut definition) = parse_legend_rule_exemption(&tp, text) {
+        definition
+            .affected
+            .get_or_insert_with(|| TargetFilter::Typed(TypedFilter::permanent()));
+        definition
+            .modifications
+            .push(ContinuousModification::AddStaticMode {
+                mode: definition.mode.clone(),
+            });
+        return parsed_clause(Effect::GenericEffect {
+            static_abilities: vec![definition],
+            duration: Some(Duration::Permanent),
+            target: None,
+            end_cost: None,
+        });
     }
 
     // CR 611.2a + CR 614.1d: "[<type>] cards can't enter [the battlefield] from

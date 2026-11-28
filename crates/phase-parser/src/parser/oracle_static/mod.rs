@@ -113,6 +113,7 @@ pub(crate) use keyword_grant::is_nth_qualified_spell_flash_permission;
 use prelude::StaticIr;
 pub(crate) use restriction::is_control_players_during_own_library_search;
 pub(crate) use restriction::is_graveyard_cast_permission_lead;
+pub(crate) use restriction::parse_legend_rule_exemption;
 pub(crate) use restriction::try_parse_exclusive_own_cast_permission;
 
 mod support {

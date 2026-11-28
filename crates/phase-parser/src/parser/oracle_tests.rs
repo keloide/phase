@@ -10,9 +10,9 @@ use crate::parser::oracle_util::GRANTING_SELF_PLACEHOLDER;
 use crate::types::ability::TurnWindow;
 use crate::types::ability::{
     AdditionalCostOrigin, AdditionalCostPaymentSource, BlockPairDirection, ChooseOneOfKind,
-    CoinFlipRun, CombatRelation, CombatRelationSubject, CountScope, CounterAdjustment,
-    DamageKindFilter, DoorLockOp, PlayerRelation, SpellStackToGraveyardReplacement, SubAbilityLink,
-    TargetReadOrigin,
+    CoinFlipRun, CombatRelation, CombatRelationSubject, CopyRecipient, CountScope,
+    CounterAdjustment, DamageKindFilter, DoorLockOp, ManaProduction, PlayerRelation,
+    SpellStackToGraveyardReplacement, SubAbilityLink, TargetReadOrigin,
 };
 use crate::types::counter::{CounterMatch, CounterType};
 use crate::types::identifiers::TrackedSetId;
@@ -28401,6 +28401,91 @@ fn thespians_stage_emits_retain_printed_ability_from_source() {
         }
         other => panic!("expected BecomeCopy on second activated ability, got {other:?}"),
     }
+}
+
+/// SHAPE: Hall of Echoes has a mana ability and a two-instruction copy activation.
+#[test]
+fn hall_of_echoes_parses_copy_and_timed_legend_rule_exemption() {
+    let parsed = parse(
+        "{T}: Add {C}.\n{5}: This land becomes a copy of target creature you control until end of turn. The \"legend rule\" doesn't apply to permanents you control this turn.",
+        "Hall of Echoes",
+        &[],
+        &["Land"],
+        &[],
+    );
+    let [mana, copy] = parsed.abilities.as_slice() else {
+        panic!("expected two activated abilities: {:?}", parsed.abilities);
+    };
+    // CR 605.1a: the separate tap ability adds one colorless mana without a target.
+    assert_eq!(mana.kind, AbilityKind::Activated);
+    assert!(matches!(
+        mana.effect.as_ref(),
+        Effect::Mana {
+            produced: ManaProduction::Colorless {
+                count: QuantityExpr::Fixed { value: 1 }
+            },
+            target: None,
+            ..
+        }
+    ));
+    assert!(mana.sub_ability.is_none());
+
+    // CR 115.1c + CR 707.2 + CR 514.2: copy the chosen donor onto the source until cleanup.
+    assert_eq!(copy.kind, AbilityKind::Activated);
+    let Effect::BecomeCopy {
+        target,
+        recipient: CopyRecipient::Source,
+        duration: Some(Duration::UntilEndOfTurn),
+        ..
+    } = copy.effect.as_ref()
+    else {
+        panic!("expected a temporary self copy: {:?}", copy.effect);
+    };
+    assert_eq!(
+        *target,
+        TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You)),
+    );
+
+    // CR 608.2c + CR 704.5j + CR 514.2: the exemption is the second,
+    // untargeted instruction and also ends at cleanup.
+    let exemption = copy
+        .sub_ability
+        .as_deref()
+        .expect("legend rule instruction");
+    let Effect::GenericEffect {
+        static_abilities,
+        duration: Some(Duration::UntilEndOfTurn),
+        target: None,
+        end_cost: None,
+    } = exemption.effect.as_ref()
+    else {
+        panic!(
+            "expected a temporary untargeted rule effect: {:?}",
+            exemption.effect
+        );
+    };
+    let [definition] = static_abilities.as_slice() else {
+        panic!("expected only the legend rule exemption: {static_abilities:?}");
+    };
+    assert_eq!(definition.mode, StaticMode::LegendRuleDoesntApply);
+    assert_eq!(
+        definition.affected,
+        Some(TargetFilter::Typed(
+            TypedFilter::permanent().controller(ControllerRef::You),
+        )),
+    );
+    assert_eq!(
+        definition.modifications,
+        [ContinuousModification::AddStaticMode {
+            mode: StaticMode::LegendRuleDoesntApply,
+        }],
+    );
+    assert!(exemption.sub_ability.is_none());
+    assert!(
+        parsed.parse_warnings.is_empty(),
+        "{:?}",
+        parsed.parse_warnings
+    );
 }
 
 /// Regression: pin Puresteel Paladin's Metalcraft static-grant-of-equip line

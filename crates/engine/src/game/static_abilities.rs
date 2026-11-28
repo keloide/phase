@@ -12,7 +12,7 @@ use crate::types::ability::{
     ContinuousModification, ControllerRef, CostCategory, ManaSpendPermission, StaticCondition,
     StaticDefinition, TargetFilter, TypedFilter,
 };
-use crate::types::game_state::GameState;
+use crate::types::game_state::{GameState, TransientContinuousEffect};
 use crate::types::identifiers::ObjectId;
 use crate::types::keywords::Keyword;
 use crate::types::player::PlayerId;
@@ -1236,6 +1236,37 @@ pub(crate) fn transient_grants_static_mode_to_object(
     false
 }
 
+/// Stored effects supplying an exact object rule. The applicability query
+/// evaluates the lifetime and affected population for each candidate.
+pub(crate) fn transient_object_rule_effects<'a>(
+    state: &'a GameState,
+    mode: &'a StaticMode,
+) -> impl Iterator<Item = &'a TransientContinuousEffect> {
+    state.transient_continuous_effects.iter().filter(move |tce| {
+        tce.modifications.iter().any(|modification| {
+            matches!(modification, ContinuousModification::AddStaticMode { mode: candidate } if candidate == mode)
+        })
+    })
+}
+
+/// CR 611.2c: a resolved object's rule effect reads the current population.
+/// CR 109.5: "you" refers to the ability controller stored on the effect.
+pub(crate) fn transient_object_rule_applies(
+    state: &GameState,
+    object_id: ObjectId,
+    mode: &StaticMode,
+) -> bool {
+    transient_object_rule_effects(state, mode).any(|tce| {
+        crate::game::layers::transient_effect_is_live(state, tce)
+            && matches_target_filter(
+                state,
+                object_id,
+                &tce.affected,
+                &FilterContext::from_source_with_controller(tce.source_id, tce.controller),
+            )
+    })
+}
+
 /// CR 611.2c + CR 101.2: a resolved countering prohibition modifies the rules,
 /// so its spell population is read live rather than installed as an ability.
 /// CR 109.5: "you" remains the resolving ability's controller after its source leaves.
@@ -1252,22 +1283,7 @@ pub(crate) fn transient_cant_be_countered_prohibits(
     }) {
         return false;
     }
-    state.transient_continuous_effects.iter().any(|tce| {
-        tce.modifications.iter().any(|modification| {
-            matches!(
-                modification,
-                ContinuousModification::AddStaticMode {
-                    mode: StaticMode::CantBeCountered
-                }
-            )
-        }) && crate::game::layers::transient_effect_is_live(state, tce)
-            && matches_target_filter(
-                state,
-                object_id,
-                &tce.affected,
-                &FilterContext::from_source_with_controller(tce.source_id, tce.controller),
-            )
-    })
+    transient_object_rule_applies(state, object_id, &StaticMode::CantBeCountered)
 }
 
 /// CR 611.2c + CR 613.11 + CR 109.5: True iff a live resolution-created effect
